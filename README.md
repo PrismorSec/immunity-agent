@@ -156,7 +156,7 @@ All events are stored under `.prismor-warden/` in your project:
 MCP servers and skills extend what your agent can do — but they also extend the attack surface. Studies have found that a significant percentage of community skills contain malicious patterns. Warden's skill scanner checks every MCP server and skill config installed on your machine before you use them.
 
 ```bash
-warden scan                    # scan all agents (Claude, Cursor, Windsurf, OpenClaw)
+warden scan                    # scan all agents (Claude, Cursor, Windsurf, OpenClaw, Hermes)
 warden scan --agent claude     # only Claude Code configs
 warden scan --json             # machine-readable output
 ```
@@ -169,8 +169,11 @@ The scanner automatically discovers configs from:
 | Cursor      | `~/.cursor/mcp.json`, `.cursor/mcp.json`                    |
 | Windsurf    | `~/.codeium/windsurf/mcp_config.json`, `.windsurf/mcp.json` |
 | OpenClaw    | `~/.openclaw/config.json`, `~/.openclaw/skills.json`        |
+| Hermes      | `~/.hermes/config.json`, `~/.hermes/skills.json`, `~/.hermes/plugins.json` |
 
 Each MCP server and skill entry is evaluated against Warden's policy rules. Findings are sorted by severity (critical first) so the most dangerous issues are always at the top.
+
+> **Hermes gateway notes** — Hermes stores per-session JSONL transcripts at `~/.hermes/sessions/` and a queryable SQLite index with FTS5 at `~/.hermes/state.db`. Warden hooks intercept tool calls at the gateway layer (before the transcript is written); the session store can be ingested offline with `warden ingest --input ~/.hermes/sessions/<id>.jsonl --agent hermes` for retrospective analysis.
 
 ### Network Isolation
 
@@ -267,7 +270,7 @@ The setup wizard lets you:
 
 1. Choose enforcement mode (`observe` or `enforce`)
 2. Toggle detection rules on/off — each rule shows exactly what it catches
-3. Select which agents to hook (Claude Code, Cursor, Windsurf, OpenClaw)
+3. Select which agents to hook (Claude Code, Cursor, Windsurf, OpenClaw, Hermes)
 4. Review and confirm before installing
 
 After setup, restart your shell and the `warden` command is available from any directory.

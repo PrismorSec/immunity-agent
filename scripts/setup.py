@@ -203,6 +203,7 @@ def detect_agents(target):
         "cursor":   (td/".cursor").exists() or (home/".cursor").exists(),
         "windsurf": (td/".windsurf").exists() or (home/".codeium").exists(),
         "openclaw": shutil.which("openclaw") is not None or (td/".openclaw").exists() or (home/".openclaw").exists(),
+        "hermes":   shutil.which("hermes") is not None or (td/".hermes").exists() or (home/".hermes").exists(),
     }
 
 # ── Severity colors ──────────────────────────────────────────────────────────
@@ -306,6 +307,7 @@ def step_agents(target):
         {"name": "cursor",   "label": "Cursor",      "on": detected.get("cursor", False)},
         {"name": "windsurf", "label": "Windsurf",     "on": detected.get("windsurf", False)},
         {"name": "openclaw", "label": "OpenClaw",     "on": detected.get("openclaw", False)},
+        {"name": "hermes",   "label": "Hermes",       "on": detected.get("hermes", False)},
     ]
     if not any(a["on"] for a in agents):
         agents[0]["on"] = True

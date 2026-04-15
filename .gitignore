@@ -29,6 +29,10 @@ temp/
 .cursor/hooks.json
 .windsurf/hooks.json
 
+# Scaffolded plugin packages (created by install-hooks --agent openclaw/hermes)
+warden/openclaw-plugin/
+warden/hermes-plugin/
+
 # IDEs and OS files
 .vscode/
 .idea/

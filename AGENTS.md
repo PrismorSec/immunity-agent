@@ -129,7 +129,7 @@ Warden uses a **YAML-based policy engine**. All detection rules, enforcement set
 | `warden/default_policy.yaml` | All default rules, settings (block_categories, manifest_patterns) |
 | `warden/policy_schema.json` | JSON Schema for validating policy files |
 | `warden/cli.py` | CLI entry point — check, status, sessions, info, policy, hooks |
-| `warden/hooks.py` | IDE hook installation and event normalization (Claude, Cursor, Windsurf, OpenClaw) |
+| `warden/hooks.py` | IDE hook installation and event normalization (Claude, Cursor, Windsurf, OpenClaw, Hermes) |
 | `warden/store.py` | SQLite + JSONL session storage |
 | `warden/feed.py` | Correlates findings with threat advisories |
 | `warden/policies.py` | Legacy hardcoded patterns — kept for backward compat with tests only |
@@ -171,6 +171,7 @@ warden policy init                             # scaffold .prismor-warden/policy
 warden policy validate <file>                  # validate a policy file
 warden install-hooks --agent all --mode enforce
 warden install-hooks --agent openclaw --mode enforce
+warden install-hooks --agent hermes --mode enforce
 ```
 
 **Workspace registry:** Workspaces are auto-registered in `~/.prismor/workspaces.json` whenever hooks are installed or events are dispatched. The `dashboard` and `--global` commands read from this registry — no filesystem scanning.

@@ -1,7 +1,7 @@
 """Skill / MCP server scanner for Prismor Warden.
 
 Discovers MCP server and skill configurations across supported agents
-(Claude Code, Cursor, Windsurf, OpenClaw), synthesizes skill_manifest
+(Claude Code, Cursor, Windsurf, OpenClaw, Hermes), synthesizes skill_manifest
 events from each entry, and evaluates them through the PolicyEngine.
 
 Usage (from CLI):
@@ -64,11 +64,22 @@ def _openclaw_configs() -> List[Path]:
     return [p for p in candidates if p.exists()]
 
 
+def _hermes_configs() -> List[Path]:
+    home = Path.home()
+    candidates = [
+        home / ".hermes" / "config.json",
+        home / ".hermes" / "skills.json",
+        home / ".hermes" / "plugins.json",
+    ]
+    return [p for p in candidates if p.exists()]
+
+
 _AGENT_DISCOVERERS = {
     "claude": _claude_configs,
     "cursor": _cursor_configs,
     "windsurf": _windsurf_configs,
     "openclaw": _openclaw_configs,
+    "hermes": _hermes_configs,
 }
 
 

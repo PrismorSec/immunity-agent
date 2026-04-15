@@ -211,7 +211,8 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
             agent="all",
             scope="project",
         )
-        self.assertEqual(len(results), 3)
+        from warden.hooks import _SUPPORTED_AGENTS
+        self.assertEqual(len(results), len(_SUPPORTED_AGENTS))
         for r in results:
             self.assertTrue(r["removed"])
 

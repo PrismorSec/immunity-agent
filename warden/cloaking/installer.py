@@ -7,8 +7,9 @@ identified by a unique marker string (its absolute script path), and
 uninstall only strips entries matching the marker — leaving everything
 else intact.
 
-Currently supports Claude Code only. Cursor, Windsurf, and OpenClaw do not
-yet expose equivalent ``updatedInput`` / ``updatedMCPToolOutput`` fields.
+Currently supports Claude Code only. Cursor, Windsurf, OpenClaw, and Hermes
+do not yet expose equivalent ``updatedInput`` / ``updatedMCPToolOutput``
+fields.
 """
 from __future__ import annotations
 

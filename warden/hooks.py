@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from warden.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw"]
+_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes"]
 
 
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
@@ -25,6 +25,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_cursor(config, command)
         elif current_agent == "openclaw":
             config = _merge_openclaw(config, command, repo_root)
+        elif current_agent == "hermes":
+            config = _merge_hermes(config, command, repo_root)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -49,13 +51,20 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
                 config, removed = _strip_cursor(config, marker)
             elif current_agent == "openclaw":
                 config, removed = _strip_openclaw(config, marker)
+            elif current_agent == "hermes":
+                config, removed = _strip_hermes(config, marker)
             else:
                 config, removed = _strip_windsurf(config, marker)
             if removed:
                 config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-        # Also clean up internal hook directory for openclaw
+        # Also clean up internal hook directory for openclaw / hermes
         if current_agent == "openclaw":
             internal_hook = Path.home() / ".openclaw" / "hooks" / "prismor-warden"
+            if internal_hook.exists():
+                shutil.rmtree(internal_hook, ignore_errors=True)
+                removed = True
+        if current_agent == "hermes":
+            internal_hook = Path.home() / ".hermes" / "hooks" / "prismor-warden"
             if internal_hook.exists():
                 shutil.rmtree(internal_hook, ignore_errors=True)
                 removed = True
@@ -80,6 +89,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_windsurf(payload, session_id)
     elif agent == "openclaw":
         event = _normalize_openclaw(payload, session_id)
+    elif agent == "hermes":
+        event = _normalize_hermes(payload, session_id)
     else:
         event = _normalize_cursor(payload, session_id)
     return {"sessionId": session_id, "event": event}
@@ -111,6 +122,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".cursor" / "hooks.json"
         if agent == "openclaw":
             return workspace / ".openclaw" / "plugins.json"
+        if agent == "hermes":
+            return workspace / ".hermes" / "plugins.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -119,6 +132,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".cursor" / "hooks.json"
     if agent == "openclaw":
         return home / ".openclaw" / "config.json"
+    if agent == "hermes":
+        return home / ".hermes" / "config.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -367,6 +382,143 @@ def _scaffold_openclaw_internal_hook(hooks_dir: Path, command: str) -> None:
     (hooks_dir / "handler.js").write_text(js, encoding="utf-8")
 
 
+def _merge_hermes(config: Dict[str, Any], command: str, repo_root: Path) -> Dict[str, Any]:
+    # 1. Scaffold the plugin package
+    plugin_dir = repo_root / "warden" / "hermes-plugin"
+    _scaffold_hermes_plugin(plugin_dir, command)
+
+    # 2. Register plugin path in config
+    plugins = list(config.get("plugins", []))
+    plugin_path = str(plugin_dir)
+    if plugin_path not in plugins:
+        plugins.append(plugin_path)
+
+    # 3. Scaffold internal hook for message:received
+    hooks_dir = Path.home() / ".hermes" / "hooks" / "prismor-warden"
+    _scaffold_hermes_internal_hook(hooks_dir, command)
+
+    return {**config, "plugins": plugins}
+
+
+def _strip_hermes(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    plugins = list(config.get("plugins", []))
+    filtered = [p for p in plugins if "prismor" not in p.lower() and "warden" not in p.lower()]
+    removed = len(filtered) < len(plugins)
+    return {**config, "plugins": filtered}, removed
+
+
+_HERMES_PLUGIN_JS = """\
+"use strict";
+
+const { execSync } = require("child_process");
+
+const WARDEN_COMMAND = "__WARDEN_COMMAND__";
+
+function dispatch(payload) {
+  try {
+    execSync(WARDEN_COMMAND, {
+      input: JSON.stringify(payload),
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10000,
+    });
+    return { block: false };
+  } catch (err) {
+    if (err.status === 2) {
+      const stderr = (err.stderr || "").toString().trim();
+      return { block: true, reason: stderr || "Blocked by Prismor Warden" };
+    }
+    return { block: false };
+  }
+}
+
+exports.before_tool_call = function (event) {
+  return dispatch({
+    hookEvent: "before_tool_call",
+    toolName: event.toolName || "",
+    toolInput: event.toolInput || {},
+    sessionId: event.sessionId || "",
+    gatewayId: event.gatewayId || "",
+    timestamp: event.timestamp || Date.now(),
+  });
+};
+
+exports.message_sending = function (event) {
+  return dispatch({
+    hookEvent: "message_sending",
+    toolName: "__message__",
+    toolInput: { content: event.content || "" },
+    sessionId: event.sessionId || "",
+    gatewayId: event.gatewayId || "",
+    timestamp: event.timestamp || Date.now(),
+  });
+};
+"""
+
+_HERMES_HOOK_MD = """---
+event: message:received
+---
+
+Prismor Warden prompt injection detection hook for Hermes gateway.
+Scans inbound messages for prompt injection patterns before they reach
+the model.
+"""
+
+_HERMES_HOOK_JS = """\
+"use strict";
+const { execSync } = require("child_process");
+
+const WARDEN_COMMAND = "__WARDEN_COMMAND__";
+
+module.exports = function (event) {
+  var payload = {
+    hookEvent: "message_received",
+    toolName: "__message__",
+    toolInput: {
+      content: (event.context && event.context.content) || "",
+      from: (event.context && event.context.from) || "",
+    },
+    sessionId: event.sessionKey || "",
+    timestamp: event.timestamp || Date.now(),
+  };
+  try {
+    execSync(WARDEN_COMMAND, {
+      input: JSON.stringify(payload),
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10000,
+    });
+  } catch (err) {
+    // Internal hooks cannot block — stderr warnings still surface
+  }
+};
+"""
+
+
+def _scaffold_hermes_plugin(plugin_dir: Path, command: str) -> None:
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    pkg = {
+        "name": "@prismor/hermes-warden",
+        "version": "0.1.0",
+        "description": "Prismor Warden security hooks for Hermes gateway",
+        "main": "index.js",
+        "hermes": {
+            "hooks": {
+                "before_tool_call": "./index.js",
+                "message_sending": "./index.js",
+            }
+        },
+    }
+    (plugin_dir / "package.json").write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    js = _HERMES_PLUGIN_JS.replace("__WARDEN_COMMAND__", command)
+    (plugin_dir / "index.js").write_text(js, encoding="utf-8")
+
+
+def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str) -> None:
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "HOOK.md").write_text(_HERMES_HOOK_MD, encoding="utf-8")
+    js = _HERMES_HOOK_JS.replace("__WARDEN_COMMAND__", command)
+    (hooks_dir / "handler.js").write_text(js, encoding="utf-8")
+
+
 def _merge_claude_entries(entries: List[Dict[str, Any]], new_entry: Dict[str, Any]) -> List[Dict[str, Any]]:
     next_entries = list(entries)
     existing = next((entry for entry in next_entries if entry.get("matcher") == new_entry["matcher"]), None)
@@ -481,6 +633,32 @@ def _normalize_cursor(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
         return {**base, "type": "file_write", "path": payload.get("path") or payload.get("filePath") or "", "content": payload.get("content", "")}
     if "read" in hook_event.lower():
         return {**base, "type": "file_read", "path": payload.get("path") or payload.get("filePath") or ""}
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_hermes(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    hook_event = payload.get("hookEvent", "before_tool_call")
+    tool_name = payload.get("toolName", "")
+    tool_input = payload.get("toolInput", {})
+    base = {
+        "ts": payload.get("timestamp"),
+        "session_id": session_id,
+        "agent": "hermes",
+        "agent_event": hook_event,
+        "metadata": {"gatewayId": payload.get("gatewayId"), "raw": payload},
+    }
+    if hook_event == "message_received":
+        return {**base, "type": "prompt", "prompt": tool_input.get("content", "")}
+    if hook_event == "message_sending":
+        return {**base, "type": "tool_result", "response": tool_input.get("content", "")}
+    if tool_name in {"Bash", "shell", "exec"}:
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name in {"FileRead", "Read", "read"}:
+        return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
+    if tool_name in {"FileWrite", "FileEdit", "Write", "Edit", "write"}:
+        return {**base, "type": "file_write", "path": tool_input.get("file_path") or tool_input.get("path", ""), "content": tool_input.get("content", "")}
+    if tool_name in {"WebFetch", "WebSearch", "web_search", "browser"}:
+        return {**base, "type": "network", "url": tool_input.get("url", "")}
     return {**base, "type": "tool_result", "response": json.dumps(payload)}
 
 
