@@ -202,7 +202,7 @@ def fetch_nvd_data(keyword, last_mod_start_date=None, last_mod_end_date=None):
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.get(NVD_API_URL, params=params, headers=headers)
+            response = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
             
             if response.status_code == 200:
                 data = response.json()
