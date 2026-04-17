@@ -200,6 +200,7 @@ def _scan_directory(gitleaks: str, directory: Path) -> list[dict]:
                 "-l", "warn",
             ],
             capture_output=True,
+            timeout=30,
         )
         report = Path(report_path)
         if report.exists() and report.stat().st_size > 0:
