@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from warden.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes"]
+_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "gemini"]
 
 
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
@@ -27,6 +27,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_openclaw(config, command, repo_root)
         elif current_agent == "hermes":
             config = _merge_hermes(config, command, repo_root)
+        elif current_agent == "gemini":
+            config = _merge_gemini(config, command)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -53,6 +55,8 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
                 config, removed = _strip_openclaw(config, marker)
             elif current_agent == "hermes":
                 config, removed = _strip_hermes(config, marker)
+            elif current_agent == "gemini":
+                config, removed = _strip_gemini(config, marker)
             else:
                 config, removed = _strip_windsurf(config, marker)
             if removed:
@@ -91,6 +95,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_openclaw(payload, session_id)
     elif agent == "hermes":
         event = _normalize_hermes(payload, session_id)
+    elif agent == "gemini":
+        event = _normalize_gemini(payload, session_id)
     else:
         event = _normalize_cursor(payload, session_id)
     return {"sessionId": session_id, "event": event}
@@ -124,6 +130,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".openclaw" / "plugins.json"
         if agent == "hermes":
             return workspace / ".hermes" / "plugins.json"
+        if agent == "gemini":
+            return workspace / ".gemini" / "settings.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -134,6 +142,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".openclaw" / "config.json"
     if agent == "hermes":
         return home / ".hermes" / "config.json"
+    if agent == "gemini":
+        return home / ".gemini" / "settings.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -517,6 +527,108 @@ def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str) -> None:
     (hooks_dir / "HOOK.md").write_text(_HERMES_HOOK_MD, encoding="utf-8")
     js = _HERMES_HOOK_JS.replace("__WARDEN_COMMAND__", command)
     (hooks_dir / "handler.js").write_text(js, encoding="utf-8")
+
+
+def _merge_gemini(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    hooks = dict(config.get("hooks", {}))
+    tool_entry = {
+        "matcher": ".*",
+        "hooks": [{"type": "command", "command": command, "name": "prismor-warden", "timeout": 60000}],
+    }
+    agent_entry = {
+        "hooks": [{"type": "command", "command": command, "name": "prismor-warden", "timeout": 60000}],
+    }
+    hooks["BeforeTool"] = _merge_gemini_entries(hooks.get("BeforeTool", []), tool_entry, command, has_matcher=True)
+    hooks["AfterTool"] = _merge_gemini_entries(hooks.get("AfterTool", []), tool_entry, command, has_matcher=True)
+    hooks["BeforeAgent"] = _merge_gemini_entries(hooks.get("BeforeAgent", []), agent_entry, command, has_matcher=False)
+    return {**config, "hooks": hooks}
+
+
+def _strip_gemini(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _merge_gemini_entries(
+    entries: List[Dict[str, Any]],
+    new_entry: Dict[str, Any],
+    command: str,
+    *,
+    has_matcher: bool,
+) -> List[Dict[str, Any]]:
+    next_entries = list(entries)
+    if has_matcher:
+        matcher = new_entry["matcher"]
+        existing = next((e for e in next_entries if e.get("matcher") == matcher), None)
+        if existing is None:
+            next_entries.append(new_entry)
+            return next_entries
+        existing_commands = {hook.get("command") for hook in existing.get("hooks", [])}
+        for hook in new_entry["hooks"]:
+            if hook.get("command") not in existing_commands:
+                existing.setdefault("hooks", []).append(hook)
+        return next_entries
+
+    for entry in next_entries:
+        existing_commands = {hook.get("command") for hook in entry.get("hooks", [])}
+        if command in existing_commands:
+            return next_entries
+    next_entries.append(new_entry)
+    return next_entries
+
+
+def _normalize_gemini(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    hook_event = payload.get("hook_event_name", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp"),
+        "session_id": session_id,
+        "agent": "gemini",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "BeforeAgent":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if hook_event == "AfterAgent":
+        return {**base, "type": "tool_result", "response": payload.get("prompt_response", "")}
+    if tool_name in {"run_shell_command", "shell", "bash"}:
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name in {"read_file", "read_many_files"}:
+        return {
+            **base,
+            "type": "file_read",
+            "path": tool_input.get("absolute_path") or tool_input.get("file_path") or tool_input.get("path", ""),
+        }
+    if tool_name in {"write_file", "replace", "edit"}:
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("file_path") or tool_input.get("path", ""),
+            "content": tool_input.get("content") or tool_input.get("new_string", ""),
+        }
+    if tool_name in {"web_fetch", "web_search", "google_web_search"}:
+        return {
+            **base,
+            "type": "network",
+            "url": tool_input.get("url") or tool_input.get("query", ""),
+            "response": (payload.get("tool_response") or {}).get("llmContent", ""),
+        }
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
 
 
 def _merge_claude_entries(entries: List[Dict[str, Any]], new_entry: Dict[str, Any]) -> List[Dict[str, Any]]:

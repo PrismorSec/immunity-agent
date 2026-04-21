@@ -15,8 +15,8 @@ _Last updated: 2026-04-21._
 | Windsurf | ✅ | ✅ | ✅ | `.windsurf/hooks.json` |
 | OpenClaw | ✅ | — | ✅ | JS plugin at `~/.openclaw/hooks/` |
 | Hermes | ✅ | — | ✅ | JS plugin at `~/.hermes/hooks/` |
+| Gemini CLI | ✅ | ✅ | ✅ | `~/.gemini/settings.json` hooks block |
 | Codex (OpenAI) | 🟡 partial | ✅ | — | `~/.codex/hooks.json` (experimental, Bash-only) |
-| Gemini CLI | 🟡 roadmap | — | — | `settings.json` hooks block (stable) |
 | OpenCode | 🟡 roadmap | — | — | JS plugin `tool.execute.before` |
 | Kiro | 🟡 roadmap | — | — | `preToolUse` hooks (exit-2 blocks) |
 | Factory Droid | 🟡 roadmap | — | — | `PreToolUse` plugin (`permissionDecision`) |
@@ -70,11 +70,20 @@ _Last updated: 2026-04-21._
 - **Session ingest:** offline analysis of `~/.hermes/sessions/*.jsonl` via `warden ingest --input <file> --agent hermes`.
 - **Code:** `warden/hooks.py` `_merge_hermes()`, `_normalize_hermes()`.
 
+### Gemini CLI (Google)
+
+- **Config:** `.gemini/settings.json` (project) or `~/.gemini/settings.json` (user). Hooks block merges into the existing `hooks` object — co-exists with user-defined hooks.
+- **Events hooked:** `BeforeTool`, `AfterTool` (matcher `.*`), `BeforeAgent`. Additional Gemini events (`BeforeModel`, `BeforeToolSelection`, `AfterModel`, `SessionStart`, `SessionEnd`, `Notification`, `PreCompress`) are available but not wired by default — add them manually if needed.
+- **Blocking:** exit 2 from hook → "System Block"; stderr → rejection reason (sent to the agent as a tool error for tool events, aborts the turn for agent events). Exit 0 with empty stdout = allow (silence-on-stdout is the Gemini convention).
+- **Sweep target:** `~/.gemini/`.
+- **Skill scan:** `mcpServers` block in `~/.gemini/settings.json` or `.gemini/settings.json`.
+- **Code:** `warden/hooks.py` `_merge_gemini()`, `_normalize_gemini()`.
+
 ---
 
 ## Roadmap — hook adapters planned
 
-Each agent below exposes a blocking pre-tool hook. An adapter requires (1) config-merge in `warden/hooks.py`, (2) `_normalize_*` function, (3) registration in `_SUPPORTED_AGENTS` and `warden/store.py`, (4) sweep target in `warden/sweep.py` if applicable.
+Each agent below exposes a blocking pre-tool hook. An adapter requires (1) config-merge in `warden/hooks.py`, (2) `_normalize_*` function, (3) registration in `_SUPPORTED_AGENTS`, (4) sweep target in `warden/sweep.py` if applicable.
 
 ### Codex (OpenAI) — partial
 
@@ -85,15 +94,6 @@ Each agent below exposes a blocking pre-tool hook. An adapter requires (1) confi
 - **Blocking:** exit 2 → block, stderr → reason. `PreToolUse` and `PermissionRequest` support `systemMessage` output.
 - **Sweep target:** `~/.codex/` (already covered).
 - **Adapter work:** payload shape mirrors Claude Code — `_normalize_claude` can be reused with minor field renames. Document the `apply_patch` blind spot to users.
-
-### Gemini CLI (Google)
-
-- **Status:** stable — launched as a core feature on the [Google Developers Blog](https://developers.googleblog.com/tailor-gemini-cli-to-your-workflow-with-hooks/). Cleanest drop-in of the roadmap set.
-- **Config:** `.gemini/settings.json` (project) → `~/.gemini/settings.json` (user) → `/etc/gemini-cli/settings.json` (system), layered. `hooks.<Event>[].matcher` + `.hooks[]` with `{name, type: "command", command, timeout}`.
-- **Events:** `BeforeTool`, `AfterTool`, `BeforeAgent`, `AfterAgent`, `BeforeModel`, `BeforeToolSelection`, `AfterModel`, `SessionStart`, `SessionEnd`, `Notification`, `PreCompress`.
-- **Payload:** JSON on stdin — shared `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `timestamp`, plus event-specific fields (`tool_name`, `prompt`, etc.).
-- **Blocking:** exit 2 → "System Block" (stderr → rejection reason; for tool events blocks the call but agent continues; for agent/model events aborts the turn). Other non-zero exits → non-fatal warning.
-- **Adapter work:** write hooks block into `~/.gemini/settings.json`, map `BeforeTool`→pre, `AfterTool`→post, `SessionStart`. Reuse Claude-shape normalizer.
 
 ### OpenCode
 

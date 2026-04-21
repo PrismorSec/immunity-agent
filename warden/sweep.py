@@ -30,6 +30,7 @@ TOOL_DIRS: dict[str, Path] = {
     "antigravity": Path.home() / ".antigravity",
     "cursor": Path.home() / ".config" / "Cursor",
     "claude": Path.home() / ".claude",
+    "gemini": Path.home() / ".gemini",
 }
 
 # Config files that should NEVER be redacted (they hold keys the tools need)
