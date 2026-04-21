@@ -24,8 +24,8 @@ _Last updated: 2026-04-21._
 | VS Code Copilot Chat | 🟡 roadmap (preview) | — | — | `PreToolUse` hook |
 | Google Antigravity | — | ✅ | — | no hooks — rules + interactive permissions |
 | Aider | — | — | — | `CONVENTIONS.md` — no hooks |
-| Trae / Trae CN | — | — | — | `.trae/rules/` — no hooks (MCP is the only dynamic surface) |
-| Kilocode | soft only | — | — | `session.chat.before` injects guardrail prompt, can't veto |
+| Trae / Trae CN | — | ✅ | — | `.trae/rules/` — no hooks (MCP is the only dynamic surface) |
+| Kilocode | soft only | ✅ | — | `session.chat.before` injects guardrail prompt, can't veto |
 
 ✅ shipped · 🟡 planned (adapter not implemented) · — not applicable
 
@@ -158,13 +158,13 @@ These agents don't expose a programmable pre-tool hook. Integration is limited t
 
 - **Hooks:** none. MCP is the only dynamic surface — wrapping Warden as an MCP proxy is feasible but out of scope.
 - **Surface:** `.trae/rules/` markdown + MCP server registration.
-- **Config dir:** `~/.trae/`, workspace `.trae/rules/` and `.trae/agents/`.
+- **Config dir:** `~/.trae/` (scanned by `warden sweep`), workspace `.trae/rules/` and `.trae/agents/`.
 
 ### Kilocode
 
 - **Hooks:** soft only. `session.chat.before` can inject a guardrail prompt into chat params but cannot veto a tool call. Tool filtering is permission/approval UI, not programmable.
 - **Surface:** `AGENTS.md`, `.kilocode/rules/`, `kilo.jsonc`; plugin can inject prompt-level policy.
-- **Config dir:** `~/.kilocode/`, workspace `.kilocode/rules/`.
+- **Config dir:** `~/.kilocode/` (scanned by `warden sweep`), workspace `.kilocode/rules/`.
 
 ---
 
