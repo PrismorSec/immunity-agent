@@ -15,7 +15,7 @@ _Last updated: 2026-04-21._
 | Windsurf | ✅ | ✅ | ✅ | `.windsurf/hooks.json` |
 | OpenClaw | ✅ | — | ✅ | JS plugin at `~/.openclaw/hooks/` |
 | Hermes | ✅ | — | ✅ | JS plugin at `~/.hermes/hooks/` |
-| Codex (OpenAI) | 🟡 partial | ✅ | — | `~/.codex/hooks.json` (experimental, Bash-only) |
+| Codex (OpenAI) | ✅ partial | ✅ | ✅ | `~/.codex/hooks.json` (experimental — Bash-only, `apply_patch` blind spot) |
 | Gemini CLI | 🟡 roadmap | — | — | `settings.json` hooks block (stable) |
 | OpenCode | 🟡 roadmap | — | — | JS plugin `tool.execute.before` |
 | Kiro | 🟡 roadmap | — | — | `preToolUse` hooks (exit-2 blocks) |
@@ -70,21 +70,21 @@ _Last updated: 2026-04-21._
 - **Session ingest:** offline analysis of `~/.hermes/sessions/*.jsonl` via `warden ingest --input <file> --agent hermes`.
 - **Code:** `warden/hooks.py` `_merge_hermes()`, `_normalize_hermes()`.
 
+### Codex (OpenAI) — partial
+
+- **Why partial:** `PreToolUse` / `PostToolUse` fire only for Bash/shell today — `apply_patch` file writes are not hooked ([openai/codex#16732](https://github.com/openai/codex/issues/16732)). Hooks themselves are opt-in behind `[features] codex_hooks = true` in `~/.codex/config.toml`; `warden install-hooks --agent codex` sets this automatically.
+- **Config:** `~/.codex/hooks.json` (user) or `<repo>/.codex/hooks.json` (project). All matching layers run additively.
+- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit` (matcher `*`).
+- **Payload:** JSON on stdin — shared `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, plus event-specific fields (`tool_input.command`, etc.).
+- **Blocking:** exit 2 → block, stderr → reason — same contract as Claude Code, so Warden's dispatcher is reused unchanged.
+- **Sweep target:** `~/.codex/`.
+- **Code:** `warden/hooks.py` `_merge_codex()`, `_normalize_codex()`, `_ensure_codex_feature_flag()`.
+
 ---
 
 ## Roadmap — hook adapters planned
 
-Each agent below exposes a blocking pre-tool hook. An adapter requires (1) config-merge in `warden/hooks.py`, (2) `_normalize_*` function, (3) registration in `_SUPPORTED_AGENTS` and `warden/store.py`, (4) sweep target in `warden/sweep.py` if applicable.
-
-### Codex (OpenAI) — partial
-
-- **Why partial:** hooks are experimental, opt-in via `[features] codex_hooks = true` in `~/.codex/config.toml`. `PreToolUse`/`PostToolUse` currently fire only for Bash/shell — `apply_patch` file writes are **not** hooked ([openai/codex#16732](https://github.com/openai/codex/issues/16732)).
-- **Config:** `~/.codex/hooks.json` (user) or `<repo>/.codex/hooks.json` (project). All matching layers run additively.
-- **Events:** `SessionStart`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `UserPromptSubmit`, `Stop`.
-- **Payload:** JSON on stdin — shared `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, plus event-specific fields (`tool_input.command`, etc.). Default timeout 600s.
-- **Blocking:** exit 2 → block, stderr → reason. `PreToolUse` and `PermissionRequest` support `systemMessage` output.
-- **Sweep target:** `~/.codex/` (already covered).
-- **Adapter work:** payload shape mirrors Claude Code — `_normalize_claude` can be reused with minor field renames. Document the `apply_patch` blind spot to users.
+Each agent below exposes a blocking pre-tool hook. An adapter requires (1) config-merge in `warden/hooks.py`, (2) `_normalize_*` function, (3) registration in `_SUPPORTED_AGENTS`, (4) sweep target in `warden/sweep.py` if applicable.
 
 ### Gemini CLI (Google)
 

@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from warden.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes"]
+_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "codex"]
 
 
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
@@ -27,6 +27,9 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_openclaw(config, command, repo_root)
         elif current_agent == "hermes":
             config = _merge_hermes(config, command, repo_root)
+        elif current_agent == "codex":
+            config = _merge_codex(config, command)
+            _ensure_codex_feature_flag()
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -53,6 +56,8 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
                 config, removed = _strip_openclaw(config, marker)
             elif current_agent == "hermes":
                 config, removed = _strip_hermes(config, marker)
+            elif current_agent == "codex":
+                config, removed = _strip_codex(config, marker)
             else:
                 config, removed = _strip_windsurf(config, marker)
             if removed:
@@ -91,6 +96,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_openclaw(payload, session_id)
     elif agent == "hermes":
         event = _normalize_hermes(payload, session_id)
+    elif agent == "codex":
+        event = _normalize_codex(payload, session_id)
     else:
         event = _normalize_cursor(payload, session_id)
     return {"sessionId": session_id, "event": event}
@@ -124,6 +131,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".openclaw" / "plugins.json"
         if agent == "hermes":
             return workspace / ".hermes" / "plugins.json"
+        if agent == "codex":
+            return workspace / ".codex" / "hooks.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -134,6 +143,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".openclaw" / "config.json"
     if agent == "hermes":
         return home / ".hermes" / "config.json"
+    if agent == "codex":
+        return home / ".codex" / "hooks.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -704,3 +715,80 @@ def _is_pre_action(agent_event: str) -> bool:
         or lower.startswith("before")
         or agent_event in {"PreToolUse", "UserPromptSubmit"}
     )
+
+
+def _merge_codex(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    hooks = dict(config.get("hooks", {}))
+    entry = {"matcher": "*", "hooks": [{"type": "command", "command": command}]}
+    hooks["PreToolUse"] = _merge_claude_entries(hooks.get("PreToolUse", []), entry)
+    hooks["PostToolUse"] = _merge_claude_entries(hooks.get("PostToolUse", []), entry)
+    hooks["UserPromptSubmit"] = _merge_claude_entries(
+        hooks.get("UserPromptSubmit", []),
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+    )
+    return {**config, "hooks": hooks}
+
+
+def _strip_codex(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    return _strip_claude(config, marker)
+
+
+def _normalize_codex(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    hook_event = payload.get("hook_event_name", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp"),
+        "session_id": session_id,
+        "agent": "codex",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "model": payload.get("model"), "raw": payload},
+    }
+    if hook_event == "UserPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    command = tool_input.get("command") or tool_input.get("bash") or ""
+    if command or tool_name in {"Bash", "shell", "exec"}:
+        return {**base, "type": "shell", "command": command}
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _ensure_codex_feature_flag() -> None:
+    """Idempotently set [features] codex_hooks = true in ~/.codex/config.toml.
+
+    Codex hooks are opt-in behind this flag. Without it, the hooks.json
+    entries this module writes are silently ignored by the Codex CLI.
+    """
+    import re
+
+    config_path = Path.home() / ".codex" / "config.toml"
+    header = "[features]"
+    flag_line = "codex_hooks = true"
+
+    if not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(f"{header}\n{flag_line}\n", encoding="utf-8")
+        return
+
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        import tomllib
+
+        data = tomllib.loads(text)
+        if data.get("features", {}).get("codex_hooks") is True:
+            return
+    except ImportError:
+        if flag_line in text:
+            return
+
+    if re.search(r"^\s*\[features\]\s*$", text, re.MULTILINE):
+        text = re.sub(
+            r"^(\s*\[features\]\s*\n)",
+            r"\1" + flag_line + "\n",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        text = text.rstrip() + f"\n\n{header}\n{flag_line}\n"
+
+    config_path.write_text(text, encoding="utf-8")

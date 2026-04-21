@@ -74,12 +74,23 @@ def _hermes_configs() -> List[Path]:
     return [p for p in candidates if p.exists()]
 
 
+def _codex_configs() -> List[Path]:
+    home = Path.home()
+    candidates = [
+        home / ".codex" / "config.toml",
+        home / ".codex" / "mcp.json",
+        Path.cwd() / ".codex" / "config.toml",
+    ]
+    return [p for p in candidates if p.exists()]
+
+
 _AGENT_DISCOVERERS = {
     "claude": _claude_configs,
     "cursor": _cursor_configs,
     "windsurf": _windsurf_configs,
     "openclaw": _openclaw_configs,
     "hermes": _hermes_configs,
+    "codex": _codex_configs,
 }
 
 
