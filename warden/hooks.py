@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from warden.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes"]
+_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"]
 
 
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
@@ -27,6 +27,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_openclaw(config, command, repo_root)
         elif current_agent == "hermes":
             config = _merge_hermes(config, command, repo_root)
+        elif current_agent == "copilot":
+            config = _merge_copilot(config, command)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -53,6 +55,8 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
                 config, removed = _strip_openclaw(config, marker)
             elif current_agent == "hermes":
                 config, removed = _strip_hermes(config, marker)
+            elif current_agent == "copilot":
+                config, removed = _strip_copilot(config, marker)
             else:
                 config, removed = _strip_windsurf(config, marker)
             if removed:
@@ -91,6 +95,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_openclaw(payload, session_id)
     elif agent == "hermes":
         event = _normalize_hermes(payload, session_id)
+    elif agent == "copilot":
+        event = _normalize_copilot(payload, session_id)
     else:
         event = _normalize_cursor(payload, session_id)
     return {"sessionId": session_id, "event": event}
@@ -124,6 +130,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".openclaw" / "plugins.json"
         if agent == "hermes":
             return workspace / ".hermes" / "plugins.json"
+        if agent == "copilot":
+            return workspace / ".github" / "copilot" / "hooks.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -134,6 +142,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".openclaw" / "config.json"
     if agent == "hermes":
         return home / ".hermes" / "config.json"
+    if agent == "copilot":
+        return home / ".copilot" / "hooks.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -517,6 +527,59 @@ def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str) -> None:
     (hooks_dir / "HOOK.md").write_text(_HERMES_HOOK_MD, encoding="utf-8")
     js = _HERMES_HOOK_JS.replace("__WARDEN_COMMAND__", command)
     (hooks_dir / "handler.js").write_text(js, encoding="utf-8")
+
+
+def _merge_copilot(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    hooks = dict(config.get("hooks", {}))
+    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmitted"]:
+        hooks[event_name] = _merge_simple_command_entries(hooks.get(event_name, []), command)
+    return {**config, "version": config.get("version", 1), "hooks": hooks}
+
+
+def _strip_copilot(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        filtered = [e for e in entries if marker not in e.get("command", "")]
+        if len(filtered) < len(entries):
+            removed = True
+        hooks[event_name] = filtered
+    return {**config, "hooks": hooks}, removed
+
+
+def _normalize_copilot(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    hook_event = payload.get("hookEventName") or payload.get("hook_event_name") or "unknown"
+    tool_name = payload.get("toolName") or payload.get("tool_name") or ""
+    # Copilot sends toolArgs as a JSON-encoded string; parse it.
+    tool_args_raw = payload.get("toolArgs") or payload.get("tool_args") or "{}"
+    if isinstance(tool_args_raw, str):
+        try:
+            tool_args: Dict[str, Any] = json.loads(tool_args_raw)
+        except (json.JSONDecodeError, ValueError):
+            tool_args = {"raw": tool_args_raw}
+    else:
+        tool_args = tool_args_raw
+    base = {
+        "ts": payload.get("timestamp"),
+        "session_id": session_id,
+        "agent": "copilot",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "UserPromptSubmitted":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt") or tool_args.get("prompt", "")}
+    if tool_name in {"ShellCommand", "run_shell_command", "Bash"}:
+        return {**base, "type": "shell", "command": tool_args.get("command") or tool_args.get("cmd", "")}
+    if tool_name in {"ReadFile", "read_file", "Read"}:
+        return {**base, "type": "file_read", "path": tool_args.get("path") or tool_args.get("filePath", "")}
+    if tool_name in {"WriteFile", "write_file", "EditFile", "Write", "Edit"}:
+        return {**base, "type": "file_write", "path": tool_args.get("path") or tool_args.get("filePath", ""), "content": tool_args.get("content", "")}
+    if tool_name in {"WebFetch", "web_fetch", "WebSearch"}:
+        return {**base, "type": "network", "url": tool_args.get("url", "")}
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
 
 
 def _merge_claude_entries(entries: List[Dict[str, Any]], new_entry: Dict[str, Any]) -> List[Dict[str, Any]]:

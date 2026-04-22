@@ -468,10 +468,17 @@ def main() -> None:
         current_findings = _current_engine.evaluate(event, len(events) - 1, session_id=normalized["sessionId"])
         blocking = should_block(current_findings, event, block_categories=set(result.get("blockCategories", [])))
         if args.mode == "enforce" and blocking is not None:
-            sys.stderr.write(f"Prismor Warden blocked this action: [{blocking['severity']}] {blocking['title']}\n")
-            if blocking.get("evidence"):
-                sys.stderr.write(f"{blocking['evidence']}\n")
-            raise SystemExit(2)
+            if args.agent == "copilot":
+                # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
+                reason = f"[{blocking['severity']}] {blocking['title']}"
+                if blocking.get("evidence"):
+                    reason += f"\n{blocking['evidence']}"
+                sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
+            else:
+                sys.stderr.write(f"Prismor Warden blocked this action: [{blocking['severity']}] {blocking['title']}\n")
+                if blocking.get("evidence"):
+                    sys.stderr.write(f"{blocking['evidence']}\n")
+                raise SystemExit(2)
         elif args.mode == "observe" and blocking is not None:
             # Show warnings in observe mode so humans/agents see feedback.
             sys.stderr.write(_color(f"[warden] ", _YELLOW) + f"[{blocking['severity']}] {blocking['title']}\n")
@@ -698,7 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── scan ──────────────────────────────────────────────────────────
     scan_parser = subparsers.add_parser("scan", help="Scan all MCP servers and skills for security risks")
     scan_parser.add_argument("--workspace", help="Workspace path")
-    scan_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes"], help="Only scan configs for this agent")
+    scan_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"], help="Only scan configs for this agent")
     scan_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── audit ──────────────────────────────────────────────────────────
@@ -742,20 +749,20 @@ def build_parser() -> argparse.ArgumentParser:
     # ── install-hooks ──────────────────────────────────────────────────
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
     install_parser.add_argument("--workspace", help="Workspace path")
-    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "all"], required=True, help="Which agent/IDE")
+    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot", "all"], required=True, help="Which agent/IDE")
     install_parser.add_argument("--scope", choices=["project", "user"], default="project", help="Hook scope (default: project)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
 
     # ── uninstall-hooks ────────────────────────────────────────────────
     uninstall_parser = subparsers.add_parser("uninstall-hooks", help="Remove IDE hooks")
     uninstall_parser.add_argument("--workspace", help="Workspace path")
-    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "all"], required=True, help="Which agent/IDE")
+    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot", "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user"], default="project", help="Hook scope")
 
     # ── hook-dispatch (internal) ───────────────────────────────────────
     hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
     hook_dispatch.add_argument("--workspace", help="Workspace path")
-    hook_dispatch.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes"], required=True)
+    hook_dispatch.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"], required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
 
     # ── policy ─────────────────────────────────────────────────────────
@@ -872,7 +879,7 @@ def _print_info(workspace: Path) -> None:
     # Hooks — check which agents have hooks installed
     agents_with_hooks = []
     mode = None
-    for agent_name in ("claude", "cursor", "windsurf", "openclaw", "hermes"):
+    for agent_name in ("claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"):
         hook_path = _find_hook_config(agent_name, workspace)
         if hook_path and hook_path.exists():
             try:
@@ -921,6 +928,8 @@ def _find_hook_config(agent: str, workspace: Path) -> Path:
         return workspace / ".openclaw" / "plugins.json"
     if agent == "hermes":
         return workspace / ".hermes" / "plugins.json"
+    if agent == "copilot":
+        return workspace / ".github" / "copilot" / "hooks.json"
     return workspace / ".windsurf" / "hooks.json"
 
 
@@ -967,7 +976,7 @@ def _print_dashboard() -> None:
 
         # Mode detection
         mode = ""
-        for agent_name in ("claude", "cursor", "windsurf", "openclaw", "hermes"):
+        for agent_name in ("claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"):
             hook_path = _find_hook_config(agent_name, ws)
             if hook_path and hook_path.exists():
                 try:

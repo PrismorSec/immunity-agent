@@ -20,8 +20,7 @@ _Last updated: 2026-04-21._
 | OpenCode | 🟡 roadmap | — | — | JS plugin `tool.execute.before` |
 | Kiro | 🟡 roadmap | — | — | `preToolUse` hooks (exit-2 blocks) |
 | Factory Droid | 🟡 roadmap | — | — | `PreToolUse` plugin (`permissionDecision`) |
-| GitHub Copilot CLI | 🟡 roadmap | — | — | `permissionRequest` hook |
-| VS Code Copilot Chat | 🟡 roadmap (preview) | — | — | `PreToolUse` hook |
+| GitHub Copilot CLI | ✅ | — | — | `.github/copilot/hooks.json` |
 | Google Antigravity | — | ✅ | — | no hooks — rules + interactive permissions |
 | Aider | — | — | — | `CONVENTIONS.md` — no hooks |
 | Trae / Trae CN | — | — | — | `.trae/rules/` — no hooks (MCP is the only dynamic surface) |
@@ -70,6 +69,15 @@ _Last updated: 2026-04-21._
 - **Session ingest:** offline analysis of `~/.hermes/sessions/*.jsonl` via `warden ingest --input <file> --agent hermes`.
 - **Code:** `warden/hooks.py` `_merge_hermes()`, `_normalize_hermes()`.
 
+### GitHub Copilot CLI
+
+- **Config:** `~/.copilot/hooks.json` (user) or `.github/copilot/hooks.json` (project).
+- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmitted`.
+- **Blocking:** hook emits `{"permissionDecision": "deny", "permissionDecisionReason": "..."}` on stdout. Exit-2 convention is not used — Copilot reads the JSON response instead.
+- **Static layer:** `--allow-tool` / `--deny-tool` / `--allow-all-tools` CLI flags apply before the hook fires (deny beats allow). Useful as defense-in-depth.
+- **Payload note:** `toolArgs` arrives as a JSON-encoded string; `_normalize_copilot()` parses it before evaluation.
+- **Code:** `warden/hooks.py` `_merge_copilot()`, `_strip_copilot()`, `_normalize_copilot()`.
+
 ---
 
 ## Roadmap — hook adapters planned
@@ -116,22 +124,6 @@ Each agent below exposes a blocking pre-tool hook. An adapter requires (1) confi
 - **Hooks:** `PreToolUse`, `PostToolUse` (Claude-Code-compatible JSON contract). Matchers like `Write|Edit` shown in plugin examples.
 - **Blocking:** return `{permissionDecision: "deny", reason}`; `updatedInput` supports input rewriting before execution.
 - **Adapter work:** the JSON-response contract differs from Claude's exit-2 convention — dispatcher needs to emit a response object, not just an exit code. Otherwise reuse normalizer.
-
-### GitHub Copilot CLI
-
-- **Config:** `~/.copilot/` (hooks in the Copilot CLI config file).
-- **Hooks:** `permissionRequest` (fires after static allow/deny rules miss), plus lifecycle hooks (`PreToolUse`, `PostToolUse`, etc.).
-- **Blocking:** return `permissionDecision: "deny"`. Only `"deny"` is currently processed — `"allow"` and `"ask"` are no-ops.
-- **Static layer:** `--allow-tool`, `--deny-tool`, `--allow-all-tools` flags apply before the hook (deny beats allow) — useful as defense-in-depth, not a substitute for the hook.
-- **Adapter work:** hook adapter plus an optional `warden export --copilot-cli` subcommand that emits a stable `--deny-tool` list from the policy.
-
-### VS Code Copilot Chat — preview
-
-- **Config:** `.vscode/` (workspace) + user `settings.json`.
-- **Hooks:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`.
-- **Blocking:** return `hookSpecificOutput.permissionDecision: "allow"|"deny"|"ask"` — most-restrictive wins; `continue: false` halts the turn.
-- **Caveat:** preview feature — recheck GA status and payload stability before shipping. Distinct from Copilot CLI.
-- **Adapter work:** similar to Claude adapter shape. Payload TBD against GA.
 
 ---
 
