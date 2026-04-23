@@ -80,6 +80,7 @@ def run_audit(
     findings.extend(_check_feed_signature(repo_root))
     findings.extend(_check_egress_allowlist(workspace))
     findings.extend(_check_network_rules(workspace))
+    findings.extend(_check_lockfile_presence(workspace))
 
     findings.sort(key=lambda f: AuditFinding.SEVERITY_ORDER.get(f.severity, 99))
     return findings
@@ -465,5 +466,36 @@ def _check_network_rules(workspace: Path) -> List[AuditFinding]:
             category="network",
             message=f"All {len(network_rule_ids)} network isolation rules active",
         ))
+
+    return findings
+
+
+def _check_lockfile_presence(workspace: Path) -> List[AuditFinding]:
+    """Check that lockfiles exist alongside dependency manifests."""
+    findings: List[AuditFinding] = []
+
+    try:
+        from warden.deps import check_lockfile_presence as check_locks
+    except ImportError:
+        return findings
+
+    issues = check_locks(workspace)
+    if issues:
+        for issue in issues:
+            findings.append(AuditFinding(
+                severity=issue["severity"],
+                category="supply_chain",
+                message=issue["message"],
+            ))
+    else:
+        # Only report PASS if there are manifests at all
+        from warden.deps import find_manifests
+        manifests = find_manifests(workspace)
+        if manifests:
+            findings.append(AuditFinding(
+                severity="PASS",
+                category="supply_chain",
+                message="All dependency manifests have corresponding lockfiles",
+            ))
 
     return findings

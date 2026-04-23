@@ -22,6 +22,7 @@ settings:
     - skill_risk
     - persistence
     - security_bypass
+    - dependency_risk
 
   # Egress allowlist — when set, any outbound network call to a domain NOT in
   # this list triggers a warning. Supports wildcards: "*.github.com" matches
@@ -562,5 +563,140 @@ rules:
       - 'python3?\s+-c\s+[^\n]*(urllib|requests|httpx)[^\n]*(open|post|put|send)'
       - 'python3?\s+-c\s+[^\n]*socket[^\n]*connect[^\n]*send'
     action: warn
+
+  # ════════════════════════════════════════════════════════════════════
+  # Supply chain security rules — package install interception,
+  # lockfile integrity, dependency confusion, enhanced skill scanning
+  # ════════════════════════════════════════════════════════════════════
+
+  # ── HIGH: Package install from URL/git (not registry) ────────────
+  - id: pkg-install-from-url
+    severity: HIGH
+    category: dependency_risk
+    title: Package installed from URL or git source instead of registry
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bpip3?\s+install\b[^\n]*(https?://|git\+|ftp://)'
+      - '\bnpm\s+install\b[^\n]*(https?://|git\+|git://)'
+      - '\byarn\s+add\b[^\n]*(https?://|git\+|git://)'
+      - '\bgem\s+install\b[^\n]*--source\s+https?://'
+      - '\bcargo\s+install\b[^\n]*--git\s+'
+    action: warn
+
+  # ── MEDIUM: Package install with unsafe flags ────────────────────
+  - id: pkg-install-unsafe-flags
+    severity: MEDIUM
+    category: dependency_risk
+    title: Package install bypasses safety checks (--no-deps, --force, --ignore-scripts)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bpip3?\s+install\b[^\n]*--no-deps\b'
+      - '\bnpm\s+install\b[^\n]*--ignore-scripts\b'
+      - '\bnpm\s+install\b[^\n]*--force\b'
+      - '\byarn\s+add\b[^\n]*--ignore-scripts\b'
+    action: warn
+
+  # ── MEDIUM: Global package install ───────────────────────────────
+  - id: pkg-install-global
+    severity: MEDIUM
+    category: dependency_risk
+    title: Global package install affects all projects on this machine
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bnpm\s+install\b[^\n]*\s-[a-zA-Z]*g\b'
+      - '\bpip3?\s+install\b[^\n]*--user\b'
+      - '\bgem\s+install\b(?![^\n]*--install-dir)'
+    action: warn
+
+  # ── HIGH: Suspicious package name (typosquatting/malware) ────────
+  - id: pkg-suspicious-name
+    severity: HIGH
+    category: dependency_risk
+    title: Package name contains malware/typosquatting indicators
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(pip3?\s+install|npm\s+install|yarn\s+add)\b[^\n]*\s\S*-(stealer|grabber|exfil|keylog|backdoor|trojan|malware|rat)\b'
+      - '\b(pip3?\s+install|npm\s+install|yarn\s+add)\b[^\n]*\s\S*-(dumper|hijack|inject|payload|exploit|rootkit)\b'
+    action: warn
+
+  # ── HIGH: NPM lifecycle script execution ─────────────────────────
+  - id: pkg-postinstall-script
+    severity: HIGH
+    category: dependency_risk
+    title: Explicit execution of npm lifecycle scripts (common malware vector)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bnpm\s+run\s+(preinstall|postinstall|prepare)\b'
+      - '\bnpx\s+.*\bpostinstall\b'
+    action: warn
+
+  # ── HIGH: Lockfile manual edit ───────────────────────────────────
+  - id: lockfile-direct-edit
+    severity: HIGH
+    category: dependency_risk
+    title: Manual edit of lockfile — lockfiles should only be modified by package managers
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(vim?|nano|emacs|code|subl|sed|awk|perl)\b[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+      - '\b(echo|cat|printf)\b[^\n]*>\s*[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+    action: warn
+
+  # ── HIGH: Lockfile deletion ──────────────────────────────────────
+  - id: lockfile-deletion
+    severity: HIGH
+    category: dependency_risk
+    title: Lockfile deletion forces fresh dependency resolution — supply chain risk
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\brm\b[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+    action: block
+
+  # ── HIGH: Dependency confusion indicators ────────────────────────
+  - id: dependency-confusion
+    severity: HIGH
+    category: dependency_risk
+    title: Dependency confusion — publish or install from non-default registry
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bnpm\s+publish\b[^\n]*--registry\s+https?://'
+      - '\bpip3?\s+install\b[^\n]*\s-i\s+https?://(?!pypi\.org)'
+      - '\btwine\s+upload\b[^\n]*--repository-url\b'
+    action: warn
+
+  # ── HIGH: Skill makes outbound POST/PUT requests ─────────────────
+  - id: skill-network-exfil
+    severity: HIGH
+    category: skill_risk
+    title: Skill contains outbound data-sending patterns
+    event_types: [skill_manifest]
+    fields: [combined_text]
+    patterns:
+      - '\b(requests\.post|requests\.put|httpx\.post|httpx\.put)\b'
+      - '\burllib\.request\.(urlopen|Request)\b[^\n]*POST'
+      - '\bfetch\s*\([^\n]*method:\s*[''"]POST'
+      - '\bXMLHttpRequest\b[^\n]*\.send\s*\('
+    action: block
+
+  # ── CRITICAL: Skill uses dynamic code loading ────────────────────
+  - id: skill-dynamic-import
+    severity: CRITICAL
+    category: skill_risk
+    title: Skill uses dynamic code loading (import/eval/compile)
+    event_types: [skill_manifest]
+    fields: [combined_text]
+    patterns:
+      - '\b__import__\s*\('
+      - '\bimportlib\.import_module\b'
+      - '\bnew\s+Function\s*\('
+      - '\bcompile\s*\([^\n]*[''"]exec[''"]'
+    action: block
 
 allowlists: []

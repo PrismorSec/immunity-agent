@@ -12,10 +12,21 @@ Usage (from CLI):
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from warden.policy_engine import PolicyEngine
+
+# Maximum size of skill source files to read (100 KB).
+_MAX_SOURCE_SIZE = 100 * 1024
+
+# File extensions considered readable source code.
+_SOURCE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx",
+    ".rb", ".go", ".rs", ".java", ".php", ".sh", ".bash",
+}
 
 # Severity ordering for descending sort.
 _SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
@@ -153,6 +164,79 @@ def parse_config(config_path: Path) -> List[Dict[str, Any]]:
     return entries
 
 
+# ── Source code resolution ──────────────────────────────────────────────────
+
+def _resolve_skill_source(entry: Dict[str, Any]) -> Optional[str]:
+    """Try to read the source code of a locally-installed MCP server/skill.
+
+    Parses the 'command' field from the config to extract a script path,
+    then reads the file if it exists and is a recognized source type.
+    Returns the source code as a string, or None.
+    """
+    cfg = entry.get("config", {})
+    if not isinstance(cfg, dict):
+        return None
+
+    command = cfg.get("command", "")
+    args = cfg.get("args", [])
+    if not command:
+        return None
+
+    # Build the full command line to extract the script path.
+    # Common patterns:
+    #   command: "python3", args: ["server.py"]
+    #   command: "node",    args: ["/path/to/index.js"]
+    #   command: "/usr/bin/python3", args: ["-m", "myserver"]
+    #   command: "npx",     args: ["@scope/pkg"]
+    script_path = None
+
+    if isinstance(args, list) and args:
+        for arg in args:
+            arg_str = str(arg)
+            # Skip flags
+            if arg_str.startswith("-"):
+                continue
+            # Check if it looks like a file path with a source extension
+            p = Path(arg_str)
+            if p.suffix in _SOURCE_EXTENSIONS:
+                script_path = p
+                break
+    elif isinstance(command, str) and " " in command:
+        # command might be "python3 /path/to/server.py"
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+        for part in parts[1:]:
+            if part.startswith("-"):
+                continue
+            p = Path(part)
+            if p.suffix in _SOURCE_EXTENSIONS:
+                script_path = p
+                break
+
+    if script_path is None:
+        return None
+
+    # Resolve relative paths against the config's source directory
+    if not script_path.is_absolute():
+        source_dir = Path(entry.get("source", "")).parent
+        if source_dir.exists():
+            script_path = source_dir / script_path
+
+    if not script_path.exists() or not script_path.is_file():
+        return None
+
+    # Size check
+    try:
+        size = script_path.stat().st_size
+        if size > _MAX_SOURCE_SIZE or size == 0:
+            return None
+        return script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 # ── Event synthesis ─────────────────────────────────────────────────────────
 
 def _synthesize_event(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -173,6 +257,11 @@ def _synthesize_event(entry: Dict[str, Any]) -> Dict[str, Any]:
                     combined += "\n" + json.dumps(val)
                 else:
                     combined += f"\n{val}"
+
+    # Also include source code if the skill is locally installed.
+    source_code = _resolve_skill_source(entry)
+    if source_code:
+        combined += "\n--- source code ---\n" + source_code
 
     return {
         "type": "skill_manifest",

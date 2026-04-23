@@ -4,6 +4,7 @@
 Commands:
   check         Quick pre-check a command or file path against policy rules
   scan          Scan all MCP servers and skills for security risks
+  deps          Check workspace dependencies against threat feed
   audit         Full security posture check across all Warden subsystems
   audit --fix   Auto-remediate fixable issues
   status        Show findings from the most recent session
@@ -221,6 +222,68 @@ def main() -> None:
             raise SystemExit(2)
         return
 
+    # ── deps: dependency-to-feed correlation ─────────────────────────
+    if args.command == "deps":
+        from warden.deps import scan_workspace as deps_scan
+        feed = load_feed(repo_root)
+        result = deps_scan(workspace, feed)
+
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+            return
+
+        print()
+        print(f"  {_color('PRISMOR WARDEN', _BOLD)}  dependency check")
+        print(f"  {_color('─' * 50, _DIM)}")
+        print()
+
+        manifests = result["manifests"]
+        if not manifests:
+            print(f"  {_color('No dependency manifests found.', _DIM)}")
+            print()
+            return
+
+        for m in manifests:
+            print(f"  {_color('Manifest:', _GREEN)}  [{m['ecosystem']}] {m['path']}")
+        print(f"  {_color('Dependencies:', _GREEN)} {result['dependencies']} total")
+        print()
+
+        feed_matches = result["feed_matches"]
+        lockfile_issues = result["lockfile_issues"]
+
+        if not feed_matches and not lockfile_issues:
+            print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
+            print()
+            return
+
+        if feed_matches:
+            print(f"  {_color('Feed matches:', _BOLD)}")
+            for match in feed_matches:
+                sev = match["severity"]
+                color = _RED if sev in ("critical", "high") else _YELLOW
+                print(f"    {_color(f'[{sev.upper()}]', color)}  {match['advisory_id']}: {match['title']}")
+                print(f"             affected: {match['affected']}")
+                if match.get("action"):
+                    print(f"             action: {match['action']}")
+            print()
+
+        if lockfile_issues:
+            print(f"  {_color('Lockfile issues:', _BOLD)}")
+            for issue in lockfile_issues:
+                sev = issue["severity"]
+                print(f"    {_color(f'[{sev}]', _YELLOW)}  {issue['message']}")
+            print()
+
+        # Summary
+        total_issues = len(feed_matches) + len(lockfile_issues)
+        print(f"  {_color('─' * 50, _DIM)}")
+        print(f"  {total_issues} issue(s) found")
+        print()
+
+        if feed_matches:
+            raise SystemExit(1)
+        return
+
     # ── audit: full security posture check ──────────────────────────
     if args.command == "audit":
         from warden.audit import run_audit, apply_fixes, AuditFinding
@@ -252,6 +315,7 @@ def main() -> None:
             "permissions": "Secret Permissions",
             "feed": "Threat Feed",
             "network": "Network Isolation",
+            "supply_chain": "Supply Chain",
         }
 
         _SEV_ICON = {
@@ -707,6 +771,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--workspace", help="Workspace path")
     scan_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"], help="Only scan configs for this agent")
     scan_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # ── deps ──────────────────────────────────────────────────────────
+    deps_parser = subparsers.add_parser("deps", help="Check workspace dependencies against threat feed")
+    deps_parser.add_argument("--workspace", help="Workspace path")
+    deps_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── audit ──────────────────────────────────────────────────────────
     audit_parser = subparsers.add_parser("audit", help="Full security posture audit across all Warden subsystems")
