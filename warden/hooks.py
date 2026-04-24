@@ -4,10 +4,33 @@ import hashlib
 import json
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 from warden.store import append_session_event
+
+
+def _make_ts(payload: Dict[str, Any]) -> str:
+    """Return an ISO 8601 UTC timestamp for the event.
+
+    Agent hook payloads don't always carry a timestamp; callers used to fall
+    back to ``None`` which broke SIEM ingest. We prefer the payload's own
+    timestamp when present, otherwise stamp the event on receipt.
+    """
+    ts = payload.get("timestamp")
+    if isinstance(ts, str) and ts:
+        return ts
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _warden_marker(repo_root: Path) -> str:
+    """Substring that identifies a Warden-owned hook command entry.
+
+    Used by install_hooks to purge any existing Warden hook (regardless of
+    its --mode) before inserting the new one, so re-install is idempotent.
+    """
+    return str(repo_root / "warden" / "cli.py")
 
 _SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "copilot"]
 
@@ -15,9 +38,25 @@ _SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "copi
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
     agents = list(_SUPPORTED_AGENTS) if agent == "all" else [agent]
     results = []
+    marker = _warden_marker(repo_root)
     for current_agent in agents:
         config_path = _config_path(current_agent, scope, workspace)
         config = _read_json(config_path)
+        # Purge any pre-existing Warden hook (could be stale mode/command) so
+        # re-install is idempotent rather than append-and-duplicate.
+        if config:
+            if current_agent == "claude":
+                config, _ = _strip_claude(config, marker)
+            elif current_agent == "cursor":
+                config, _ = _strip_cursor(config, marker)
+            elif current_agent == "openclaw":
+                config, _ = _strip_openclaw(config, marker)
+            elif current_agent == "hermes":
+                config, _ = _strip_hermes(config, marker)
+            elif current_agent == "copilot":
+                config, _ = _strip_copilot(config, marker)
+            else:
+                config, _ = _strip_windsurf(config, marker)
         command = _dispatcher_command(repo_root=repo_root, workspace=workspace, agent=current_agent, mode=mode)
         if current_agent == "claude":
             config = _merge_claude(config, command, workspace)
@@ -34,7 +73,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-        results.append({"agent": current_agent, "configPath": str(config_path)})
+        results.append({"agent": current_agent, "configPath": str(config_path), "scope": scope, "mode": mode})
     return results
 
 
@@ -600,7 +639,7 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str) -> Dict[str, An
     else:
         tool_args = tool_args_raw
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": _make_ts(payload),
         "session_id": session_id,
         "agent": "copilot",
         "agent_event": hook_event,
@@ -664,7 +703,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": _make_ts(payload),
         "session_id": session_id,
         "agent": "claude",
         "agent_event": hook_event,
@@ -692,7 +731,7 @@ def _normalize_windsurf(payload: Dict[str, Any], session_id: str) -> Dict[str, A
     hook_event = payload.get("agent_action_name", "unknown")
     tool_info = payload.get("tool_info", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": _make_ts(payload),
         "session_id": session_id,
         "agent": "windsurf",
         "agent_event": hook_event,
@@ -719,7 +758,7 @@ def _normalize_cursor(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
         or "unknown"
     )
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": _make_ts(payload),
         "session_id": session_id,
         "agent": "cursor",
         "agent_event": hook_event,
@@ -741,7 +780,7 @@ def _normalize_hermes(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
     tool_name = payload.get("toolName", "")
     tool_input = payload.get("toolInput", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": _make_ts(payload),
         "session_id": session_id,
         "agent": "hermes",
         "agent_event": hook_event,
@@ -767,7 +806,7 @@ def _normalize_openclaw(payload: Dict[str, Any], session_id: str) -> Dict[str, A
     tool_name = payload.get("toolName", "")
     tool_input = payload.get("toolInput", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": _make_ts(payload),
         "session_id": session_id,
         "agent": "openclaw",
         "agent_event": hook_event,

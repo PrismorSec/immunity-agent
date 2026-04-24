@@ -54,6 +54,22 @@ _DEFAULT_FIELDS: Dict[str, List[str]] = {
     "skill_manifest": ["combined_text"],
 }
 
+# Accept CLI-style event types (``warden check --type {command,read,write}``)
+# as aliases for the engine-internal canonical types. Lets embedders pass
+# whichever vocabulary is natural for their layer.
+_EVENT_TYPE_ALIASES: Dict[str, str] = {
+    "command": "shell",
+    "shell": "shell",
+    "read": "file_read",
+    "file_read": "file_read",
+    "write": "file_write",
+    "file_write": "file_write",
+    "network": "network",
+    "prompt": "prompt",
+    "tool_result": "tool_result",
+    "skill_manifest": "skill_manifest",
+}
+
 
 class CompiledRule:
     """A single policy rule with compiled regex patterns."""
@@ -116,6 +132,19 @@ class PolicyEngine:
         self.egress_allowlist: List[str] = []
         self.outputs: List[Dict[str, Any]] = []
         self._load(workspace, policy_path)
+
+    @classmethod
+    def from_defaults(
+        cls,
+        workspace: Optional[Path] = None,
+        policy_path: Optional[Path] = None,
+    ) -> "PolicyEngine":
+        """Construct an engine using the shipped default policy.
+
+        Convenience factory for SDK embedders who want an explicit entry
+        point rather than relying on ``__init__`` side effects.
+        """
+        return cls(workspace=workspace, policy_path=policy_path)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
         default_raw = _load_yaml(_DEFAULT_POLICY_PATH)
@@ -195,11 +224,20 @@ class PolicyEngine:
     def evaluate(
         self,
         event: Dict[str, Any],
-        index: int,
+        index: int = 0,
         session_id: str = "",
     ) -> List[Dict[str, Any]]:
-        """Evaluate a single event against all loaded rules. Returns findings."""
-        event_type = str(event.get("type", "")).lower()
+        """Evaluate a single event against all loaded rules. Returns findings.
+
+        Event types accept CLI-style aliases for embedder convenience:
+        ``command`` -> ``shell``, ``read`` -> ``file_read``,
+        ``write`` -> ``file_write``. ``index`` and ``session_id`` default
+        so ``engine.evaluate(event)`` is a valid call.
+        """
+        event_type = _EVENT_TYPE_ALIASES.get(
+            str(event.get("type", "")).lower(),
+            str(event.get("type", "")).lower(),
+        )
         if not event_type:
             return []
 

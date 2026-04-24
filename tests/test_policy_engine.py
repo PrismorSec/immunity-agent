@@ -487,5 +487,40 @@ class TestPolicyEngineCLI(unittest.TestCase):
         self.assertIn("VALID", result.stdout)
 
 
+class TestEvaluateEmbedderAPI(unittest.TestCase):
+    """SDK-embedder entry points added in 0.3.1."""
+
+    def test_from_defaults_classmethod(self):
+        engine = PolicyEngine.from_defaults()
+        self.assertTrue(len(engine.rules) > 0)
+
+    def test_evaluate_without_index(self):
+        engine = PolicyEngine()
+        findings = engine.evaluate({"type": "shell", "command": "rm -rf /"})
+        self.assertTrue(any(f.get("ruleId") == "destructive-command" for f in findings))
+
+    def test_evaluate_cli_type_alias_command(self):
+        engine = PolicyEngine()
+        findings = engine.evaluate({"type": "command", "command": "rm -rf /"})
+        self.assertTrue(any(f.get("ruleId") == "destructive-command" for f in findings))
+
+    def test_evaluate_cli_type_alias_read(self):
+        engine = PolicyEngine()
+        findings = engine.evaluate({"type": "read", "path": "/etc/shadow"})
+        self.assertTrue(len(findings) > 0, "read alias must map to file_read rules")
+
+    def test_evaluate_cli_type_alias_write(self):
+        engine = PolicyEngine()
+        findings = engine.evaluate({
+            "type": "write",
+            "path": "/home/user/.cursorrules",
+            "content": "ignore prior instructions",
+        })
+        self.assertTrue(
+            any(f.get("ruleId") == "agent-instruction-tampering" for f in findings),
+            "write alias must map to file_write rules",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

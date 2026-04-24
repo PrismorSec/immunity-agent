@@ -139,7 +139,7 @@ def _format_cef(event: Dict[str, Any]) -> str:
     sev_map = {"CRITICAL": 10, "HIGH": 8, "MEDIUM": 5, "LOW": 3}
     severity = sev_map.get(str(event.get("severity", "")).upper(), 3)
     header = (
-        "CEF:0|Prismor|Warden|0.3.0|"
+        "CEF:0|Prismor|Warden|0.3.1|"
         f"{event.get('rule_id','unknown')}|"
         f"{event.get('title','finding')}|"
         f"{severity}"

@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -564,7 +564,13 @@ def main() -> None:
         )
         register_workspace(workspace)
         for item in results:
-            print(f"Installed {item['agent']} hooks at {item['configPath']}")
+            print(f"Installed {item['agent']} hooks at {item['configPath']}  (scope={item.get('scope','project')}, mode={item.get('mode','enforce')})")
+        # Scope hint: help the user discover the global install path.
+        if getattr(args, "scope", "project") == "project":
+            print(
+                "  hint: installed at project scope (affects this workspace only).\n"
+                "        For global coverage of every agent session, rerun with --scope user."
+            )
         return
 
     # ── uninstall-hooks ────────────────────────────────────────────────
@@ -628,6 +634,21 @@ def main() -> None:
                 sys.stderr.write(f"[warden] sink dispatch error: {_sink_exc}\n")
 
         blocking = should_block(current_findings, event, block_categories=set(result.get("blockCategories", [])))
+
+        # Surface warn-level findings regardless of the block decision. Prior
+        # versions were silent on action=warn, which meant a HIGH-severity
+        # warning could fire without the user (or agent) ever seeing it.
+        for _f in current_findings:
+            if (_f.get("action") or "").lower() != "warn":
+                continue
+            if blocking is not None and _f.get("ruleId") == blocking.get("ruleId"):
+                continue  # block line below carries the signal
+            sys.stderr.write(
+                _color("[warden WARN] ", _YELLOW)
+                + f"[{_f.get('severity','')}] "
+                + f"{_f.get('ruleId','')}: {_f.get('title','')}\n"
+            )
+
         if args.mode == "enforce" and blocking is not None:
             if args.agent == "copilot":
                 # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
@@ -902,7 +923,7 @@ def main() -> None:
             _policy_validate(Path(args.file))
             return
         if args.policy_command == "show":
-            _policy_show(workspace)
+            _policy_show(workspace, as_json=getattr(args, "json", False))
             return
         if args.policy_command == "edit":
             _policy_edit(workspace)
@@ -922,6 +943,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", help="Workspace path (applies to all commands)")
     parser.add_argument("--version", action="version", version=f"prismor-warden {__version__}")
     subparsers = parser.add_subparsers(dest="command")
+
+    # When a subcommand is present but a flag is wrong, argparse defaults to
+    # printing the top-level usage. Wrap error() so we show the relevant
+    # subcommand's usage and a scoped error line instead.
+    _orig_error = parser.error
+
+    def _scoped_error(message: str) -> None:  # pragma: no cover — exercised via CLI
+        argv = sys.argv[1:]
+        for arg in argv:
+            if arg in subparsers.choices:
+                sp = subparsers.choices[arg]
+                sp.print_usage(sys.stderr)
+                sys.stderr.write(f"warden {arg}: error: {message}\n")
+                sys.exit(2)
+        _orig_error(message)
+
+    parser.error = _scoped_error  # type: ignore[assignment]
 
     # ── info ───────────────────────────────────────────────────────────
     subparsers.add_parser("info", help="Show workspace, mode, rules, and hook status")
@@ -1029,6 +1067,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_show = policy_sub.add_parser("show", help="Show active policy rules (default + project overrides)")
     policy_show.add_argument("--workspace", help="Workspace path")
+    policy_show.add_argument("--json", action="store_true", help="Emit the rule list as JSON for scripts")
 
     policy_edit = policy_sub.add_parser("edit", help="Interactive rule toggle — select which rules to enable/disable")
     policy_edit.add_argument("--workspace", help="Workspace path")
@@ -1485,14 +1524,41 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
         raise SystemExit(1)
 
 
-def _policy_show(workspace: Path) -> None:
+def _policy_show(workspace: Path, as_json: bool = False) -> None:
     """Show all active rules after merging defaults + project overrides."""
     engine = PolicyEngine(workspace=workspace)
+    override_path = workspace / ".prismor-warden" / "policy.yaml"
+
+    if as_json:
+        payload = {
+            "workspace": str(workspace),
+            "projectPolicy": str(override_path) if override_path.exists() else None,
+            "activeRuleCount": len(engine.rules),
+            "allowlistCount": len(engine.allowlists),
+            "rules": [
+                {
+                    "id": r.id,
+                    "severity": r.severity,
+                    "category": r.category,
+                    "title": r.title,
+                    "action": r.action,
+                    "eventTypes": sorted(r.event_types),
+                    "fields": list(r.fields),
+                }
+                for r in sorted(engine.rules, key=lambda r: SEVERITY_WEIGHT.get(r.severity, 0), reverse=True)
+            ],
+            "allowlists": [
+                {"id": al.id, "ruleIds": list(al.rule_ids), "reason": al.reason}
+                for al in engine.allowlists
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
     print(f"Active rules: {len(engine.rules)}")
     print(f"Allowlists:   {len(engine.allowlists)}")
     print()
 
-    override_path = workspace / ".prismor-warden" / "policy.yaml"
     if override_path.exists():
         print(f"Project policy: {override_path}")
     else:

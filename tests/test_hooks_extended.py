@@ -418,5 +418,80 @@ class TestIsPreActionExtended(unittest.TestCase):
         self.assertTrue(_is_pre_action("beforeSubmitPrompt"))
 
 
+class TestInstallIdempotent(unittest.TestCase):
+    """install_hooks re-run must not append duplicate entries (regression)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.workspace = Path(self.tmpdir) / "project"
+        self.workspace.mkdir()
+        self.repo_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _count_claude_entries(self):
+        path = self.workspace / ".claude" / "settings.json"
+        cfg = json.loads(path.read_text())
+        hooks = cfg.get("hooks", {})
+        totals = {}
+        for ev, entries in hooks.items():
+            if not isinstance(entries, list):
+                continue
+            count = 0
+            for e in entries:
+                for h in e.get("hooks", []) if isinstance(e, dict) else []:
+                    if "warden/cli.py" in h.get("command", ""):
+                        count += 1
+            totals[ev] = count
+        return totals
+
+    def test_claude_install_twice_same_mode_is_idempotent(self):
+        for _ in range(2):
+            install_hooks(repo_root=self.repo_root, workspace=self.workspace,
+                          agent="claude", scope="project", mode="enforce")
+        totals = self._count_claude_entries()
+        # One Warden command per event (UserPromptSubmit, PreToolUse, PostToolUse).
+        for ev, n in totals.items():
+            self.assertEqual(n, 1, f"event {ev} had {n} Warden entries, expected 1")
+
+    def test_claude_install_twice_different_mode_replaces(self):
+        install_hooks(repo_root=self.repo_root, workspace=self.workspace,
+                      agent="claude", scope="project", mode="observe")
+        install_hooks(repo_root=self.repo_root, workspace=self.workspace,
+                      agent="claude", scope="project", mode="enforce")
+        path = self.workspace / ".claude" / "settings.json"
+        raw = path.read_text()
+        self.assertIn("--mode enforce", raw)
+        self.assertNotIn("--mode observe", raw,
+            "re-install with different --mode must replace, not append")
+
+
+class TestSessionTimestamp(unittest.TestCase):
+    """_make_ts stamps events on receipt if the payload lacks a timestamp."""
+
+    def test_normalize_claude_writes_iso_timestamp(self):
+        from warden.hooks import _normalize_claude
+        ev = _normalize_claude(
+            {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+             "tool_input": {"command": "ls"}},
+            session_id="s1",
+        )
+        ts = ev.get("ts")
+        self.assertIsInstance(ts, str)
+        self.assertRegex(ts, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+    def test_normalize_claude_preserves_payload_timestamp(self):
+        from warden.hooks import _normalize_claude
+        ev = _normalize_claude(
+            {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+             "tool_input": {"command": "ls"},
+             "timestamp": "2026-04-24T12:00:00Z"},
+            session_id="s1",
+        )
+        self.assertEqual(ev["ts"], "2026-04-24T12:00:00Z")
+
+
 if __name__ == "__main__":
     unittest.main()
