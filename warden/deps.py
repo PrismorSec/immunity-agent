@@ -247,13 +247,99 @@ def check_against_feed(
     return matches
 
 
+def check_lockfile_integrity(workspace: Path) -> List[Dict[str, Any]]:
+    """Detect lockfile issues that indicate tampering or supply-chain risk.
+
+    Specifically:
+      1. ``file:`` or ``git+`` deps in lockfiles (supply-chain bypass).
+      2. package-lock.json entries without ``integrity:`` hashes.
+      3. Deps that appear in the lockfile but NOT in package.json
+         (lockfile injection — npm will install them anyway).
+
+    Returns list of {manifest, lockfile, issue, severity, message}.
+    """
+    findings: List[Dict[str, Any]] = []
+    for pkg_json in workspace.glob("**/package.json"):
+        if ".git" in pkg_json.parts or "node_modules" in pkg_json.parts:
+            continue
+        lock_path = pkg_json.parent / "package-lock.json"
+        if not lock_path.is_file():
+            continue
+        try:
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        declared = set(
+            list((pkg.get("dependencies") or {}).keys())
+            + list((pkg.get("devDependencies") or {}).keys())
+            + list((pkg.get("optionalDependencies") or {}).keys())
+            + list((pkg.get("peerDependencies") or {}).keys())
+        )
+
+        packages = lock.get("packages") or {}
+        if not isinstance(packages, dict):
+            continue
+
+        for pkg_path, meta in packages.items():
+            # The root entry has path "" — skip
+            if not pkg_path or not isinstance(meta, dict):
+                continue
+
+            # Resolved URL: flag git / file / tarball sources that skip
+            # the registry integrity chain.
+            resolved = str(meta.get("resolved", ""))
+            version = str(meta.get("version", ""))
+            if resolved.startswith(("git+", "git://", "ssh://")) or version.startswith(("git+", "file:")):
+                pkg_name = pkg_path.split("node_modules/")[-1]
+                findings.append({
+                    "manifest": str(pkg_json),
+                    "lockfile": str(lock_path),
+                    "issue": "non-registry-source",
+                    "severity": "HIGH",
+                    "message": f"{pkg_name!r} in lockfile pulled from non-registry source ({resolved or version})",
+                })
+                continue
+
+            # Registry deps without integrity hash → possible tampering
+            if resolved.startswith("https://") and not meta.get("integrity"):
+                pkg_name = pkg_path.split("node_modules/")[-1]
+                findings.append({
+                    "manifest": str(pkg_json),
+                    "lockfile": str(lock_path),
+                    "issue": "missing-integrity",
+                    "severity": "MEDIUM",
+                    "message": f"{pkg_name!r} in lockfile has no integrity hash",
+                })
+
+        # Lockfile deps not declared in package.json (top-level only —
+        # transitive deps legitimately aren't in package.json)
+        for pkg_path in packages:
+            if not pkg_path.startswith("node_modules/"):
+                continue
+            pkg_name = pkg_path[len("node_modules/"):]
+            if "/node_modules/" in pkg_name:
+                continue  # transitive
+            if pkg_name not in declared:
+                findings.append({
+                    "manifest": str(pkg_json),
+                    "lockfile": str(lock_path),
+                    "issue": "lockfile-injection",
+                    "severity": "HIGH",
+                    "message": f"{pkg_name!r} is a direct dep in lockfile but not declared in package.json",
+                })
+
+    return findings
+
+
 def scan_workspace(
     workspace: Path,
     feed: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Full workspace dependency scan.
 
-    Returns {manifests, dependencies, feed_matches, lockfile_issues}.
+    Returns {manifests, dependencies, feed_matches, lockfile_issues, integrity_issues}.
     """
     manifests = find_manifests(workspace)
     all_deps: List[Dict[str, str]] = []
@@ -263,10 +349,12 @@ def scan_workspace(
 
     feed_matches = check_against_feed(all_deps, feed)
     lockfile_issues = check_lockfile_presence(workspace)
+    integrity_issues = check_lockfile_integrity(workspace)
 
     return {
         "manifests": [{"path": str(m["path"]), "ecosystem": m["ecosystem"]} for m in manifests],
         "dependencies": len(all_deps),
         "feed_matches": feed_matches,
         "lockfile_issues": lockfile_issues,
+        "integrity_issues": integrity_issues,
     }

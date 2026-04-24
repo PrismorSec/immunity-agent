@@ -265,6 +265,162 @@ def _resolve_skill_source(entry: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+# ── Schema audit ────────────────────────────────────────────────────────────
+
+# Words in a tool description that strongly suggest the tool can do more than
+# it claims — common in tool-poisoning attacks.
+_RISKY_DESCRIPTION_TOKENS = (
+    "bypass", "all files", "any command", "full access", "unrestricted",
+    "ignore", "override", "regardless", "sudo", "root", "admin",
+)
+
+# Tool names that imply shell execution — highest-risk category.
+_EXEC_TOOL_NAME_HINTS = (
+    "exec", "run", "shell", "bash", "system", "command", "subprocess",
+)
+
+# Tool names that imply filesystem reach.
+_FS_TOOL_NAME_HINTS = (
+    "read_file", "write_file", "edit_file", "list_dir", "glob", "delete",
+    "unlink", "rm", "copy", "move",
+)
+
+# Tool names that imply network reach.
+_NET_TOOL_NAME_HINTS = (
+    "fetch", "http", "request", "curl", "download", "upload", "send",
+    "post", "get_url",
+)
+
+
+def audit_mcp_schema(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Static analysis of an MCP server / skill config.
+
+    Returns structured findings that complement the regex-based skill_manifest
+    evaluation. Each finding has the same shape as policy_engine findings
+    (id, severity, category, title, evidence, ruleId, action).
+
+    Checks performed:
+      - ``any``-typed parameters on tools whose names imply fs/network/exec
+      - Description tokens that suggest over-broad capability
+      - Single server offering filesystem AND network AND execution tools
+      - ``allowedPaths`` / ``allowedDomains`` using unrestricted wildcards
+      - Tool schemas missing ``inputSchema`` entirely
+    """
+    findings: List[Dict[str, Any]] = []
+    cfg = entry.get("config") or {}
+    if not isinstance(cfg, dict):
+        return findings
+    name = entry.get("name", "unnamed")
+
+    # Over-broad allow-lists
+    for list_key in ("allowedPaths", "allowedDomains", "permissions"):
+        values = cfg.get(list_key)
+        if isinstance(values, list):
+            for v in values:
+                if str(v).strip() in {"*", "**", "/", "/**", "/*"}:
+                    findings.append({
+                        "id": f"mcp-broad-{list_key}-{name}",
+                        "severity": "HIGH",
+                        "category": "skill_risk",
+                        "title": f"MCP server '{name}' has unrestricted {list_key}: {v!r}",
+                        "evidence": f"{list_key}: [\"{v}\"]",
+                        "eventIndex": 0,
+                        "ruleId": "mcp-overbroad-allowlist",
+                        "action": "warn",
+                        "skillName": name,
+                    })
+
+    # Description / instructions over-broad claims
+    desc = str(cfg.get("description") or cfg.get("instructions") or "").lower()
+    for token in _RISKY_DESCRIPTION_TOKENS:
+        if token in desc:
+            findings.append({
+                "id": f"mcp-risky-desc-{name}-{token}",
+                "severity": "MEDIUM",
+                "category": "skill_risk",
+                "title": f"MCP server '{name}' description contains risky language: {token!r}",
+                "evidence": desc[:140],
+                "eventIndex": 0,
+                "ruleId": "mcp-risky-description",
+                "action": "warn",
+                "skillName": name,
+            })
+            break  # one finding per server is enough
+
+    # Per-tool schema checks (MCP `tools` list if declared inline)
+    tools = cfg.get("tools") or []
+    if isinstance(tools, list):
+        has_fs = has_net = has_exec = False
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            t_name = str(tool.get("name", "")).lower()
+            t_schema = tool.get("inputSchema") or tool.get("input_schema") or {}
+
+            # Categorise this tool's capability
+            if any(h in t_name for h in _EXEC_TOOL_NAME_HINTS):
+                has_exec = True
+            if any(h in t_name for h in _FS_TOOL_NAME_HINTS):
+                has_fs = True
+            if any(h in t_name for h in _NET_TOOL_NAME_HINTS):
+                has_net = True
+
+            # Missing or empty input schema on execution-capable tools
+            if not t_schema and any(h in t_name for h in _EXEC_TOOL_NAME_HINTS + _FS_TOOL_NAME_HINTS):
+                findings.append({
+                    "id": f"mcp-no-schema-{name}-{t_name}",
+                    "severity": "HIGH",
+                    "category": "skill_risk",
+                    "title": f"MCP tool '{t_name}' in server '{name}' has no input schema (accepts anything)",
+                    "evidence": f"tool={t_name}",
+                    "eventIndex": 0,
+                    "ruleId": "mcp-missing-schema",
+                    "action": "warn",
+                    "skillName": name,
+                })
+
+            # `any`-typed parameters on capable tools
+            properties = t_schema.get("properties") if isinstance(t_schema, dict) else None
+            if isinstance(properties, dict):
+                for pname, pspec in properties.items():
+                    if not isinstance(pspec, dict):
+                        continue
+                    ptype = pspec.get("type")
+                    if ptype in (None, "any", ["string", "object", "array"]) and any(
+                        h in t_name for h in _EXEC_TOOL_NAME_HINTS + _FS_TOOL_NAME_HINTS + _NET_TOOL_NAME_HINTS
+                    ):
+                        findings.append({
+                            "id": f"mcp-any-param-{name}-{t_name}-{pname}",
+                            "severity": "MEDIUM",
+                            "category": "skill_risk",
+                            "title": f"MCP tool '{t_name}' parameter '{pname}' accepts any type",
+                            "evidence": f"{t_name}.{pname}: {ptype!r}",
+                            "eventIndex": 0,
+                            "ruleId": "mcp-permissive-param",
+                            "action": "warn",
+                            "skillName": name,
+                        })
+
+        # Combined capabilities: a server offering fs + net + exec is a
+        # full RCE platform. Flag this even if every individual tool
+        # looks benign, because the composition is the attack surface.
+        capability_count = sum((has_fs, has_net, has_exec))
+        if capability_count >= 2 and has_exec:
+            findings.append({
+                "id": f"mcp-overbroad-capability-{name}",
+                "severity": "HIGH",
+                "category": "skill_risk",
+                "title": f"MCP server '{name}' combines execution with filesystem/network access",
+                "evidence": f"fs={has_fs} net={has_net} exec={has_exec}",
+                "eventIndex": 0,
+                "ruleId": "mcp-capability-combination",
+                "action": "warn",
+                "skillName": name,
+            })
+
+    return findings
+
+
 # ── Event synthesis ─────────────────────────────────────────────────────────
 
 def _synthesize_event(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -333,6 +489,12 @@ def scan_skills(
             f["skillSource"] = entry.get("source", "")
             f["agent"] = entry.get("agent", "unknown")
         findings.extend(entry_findings)
+
+        # Structural schema audit (complements the regex rules above).
+        for sf in audit_mcp_schema(entry):
+            sf["skillSource"] = entry.get("source", "")
+            sf["agent"] = entry.get("agent", "unknown")
+            findings.append(sf)
 
     # Sort by severity: CRITICAL first, then HIGH, MEDIUM, LOW
     findings.sort(key=lambda f: _SEVERITY_ORDER.get(f.get("severity", "UNKNOWN"), 99))

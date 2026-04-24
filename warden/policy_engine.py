@@ -114,6 +114,7 @@ class PolicyEngine:
         self.block_categories: set[str] = set()
         self._manifest_re: Optional[re.Pattern[str]] = None
         self.egress_allowlist: List[str] = []
+        self.outputs: List[Dict[str, Any]] = []
         self._load(workspace, policy_path)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -167,6 +168,9 @@ class PolicyEngine:
 
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
+        outputs = settings.get("outputs") or []
+        if isinstance(outputs, list):
+            self.outputs = [o for o in outputs if isinstance(o, dict)]
 
         manifest_pats: List[str] = settings.get("manifest_patterns", []) or []
         if manifest_pats:
@@ -247,6 +251,79 @@ class PolicyEngine:
                 "action": rule.action,
             })
 
+        # ── Canarytoken access check ────────────────────────────────────
+        # If the agent is reading a registered canarytoken path, raise a
+        # CRITICAL finding — canaries are fake credentials planted as honey
+        # tokens, so any read is by definition unauthorized reconnaissance.
+        if event_type in ("file_read", "file_write"):
+            _path = field_values.get("path", "")
+            if _path:
+                try:
+                    from warden.canary import check_path_is_canary, beacon
+                    hit = check_path_is_canary(_path.split("\n", 1)[0])
+                    if hit:
+                        finding_id = f"canary-access-{index}"
+                        prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                        findings.append({
+                            "id": prefixed_id,
+                            "severity": "CRITICAL",
+                            "category": "secret_access",
+                            "title": f"Canarytoken accessed: {hit['type']} token at {hit['path']}",
+                            "evidence": _truncate(_path),
+                            "eventIndex": index,
+                            "ruleId": "canary-access",
+                            "action": "block",
+                        })
+                        beacon(hit, f"canary-{event_type}", {"session": session_id})
+                except Exception:
+                    pass
+
+        # Canary marker found in tool stdout/stderr (PostToolUse content
+        # scanning) — catches the case where the canary is read indirectly.
+        _combined = field_values.get("combined_text", "")
+        if _combined:
+            try:
+                from warden.canary import check_content_for_markers, get_markers
+                if get_markers():  # cheap guard to avoid the scan when nothing registered
+                    marker = check_content_for_markers(_combined)
+                    if marker:
+                        finding_id = f"canary-marker-{index}"
+                        prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                        findings.append({
+                            "id": prefixed_id,
+                            "severity": "CRITICAL",
+                            "category": "secret_access",
+                            "title": "Canarytoken marker detected in tool output",
+                            "evidence": f"marker={marker[:24]}…",
+                            "eventIndex": index,
+                            "ruleId": "canary-marker",
+                            "action": "block",
+                        })
+            except Exception:
+                pass
+
+        # ── Homoglyph / Unicode-confusable path check ────────────────────
+        # Catches cases like `cat .еnv` where .еnv uses a Cyrillic 'е'
+        # (U+0435) instead of Latin 'e' — bypasses every regex rule that
+        # matches on literal ASCII strings. Evaluated for shell commands
+        # and any file event; triggers whether or not another rule fired.
+        for _field in ("command", "path", "url"):
+            _val = field_values.get(_field, "")
+            if _val and _has_suspicious_unicode(_val):
+                finding_id = f"unicode-confusable-{index}"
+                prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                findings.append({
+                    "id": prefixed_id,
+                    "severity": "HIGH",
+                    "category": "path_traversal",
+                    "title": "Path or command contains Unicode-confusable characters (homoglyph bypass)",
+                    "evidence": _truncate(_val),
+                    "eventIndex": index,
+                    "ruleId": "unicode-confusable",
+                    "action": "warn",
+                })
+                break  # one finding per event is enough
+
         # ── Egress allowlist check ──────────────────────────────────────
         if self.egress_allowlist and event_type == "network":
             url = field_values.get("url", "")
@@ -324,6 +401,60 @@ class PolicyEngine:
 
 
 # ── Shared helpers ──────────────────────────────────────────────────────────
+
+# Unicode scripts we treat as "latin-like" — mixing ASCII filenames with chars
+# from other scripts (Cyrillic, Greek, Armenian, etc.) is a classic homoglyph
+# attack vector. The check is conservative: it only fires on paths/commands
+# that contain both ASCII letters AND non-ASCII-letter characters that look
+# confusingly like ASCII letters.
+_CONFUSABLE_CODEPOINTS = frozenset({
+    # Cyrillic lookalikes: а в е к м н о р с т у х І ѕ і ј А В Е К М Н О Р С Т Х Ѵ
+    0x0430, 0x0432, 0x0435, 0x043A, 0x043C, 0x043D, 0x043E,
+    0x0440, 0x0441, 0x0442, 0x0443, 0x0445,
+    0x0406, 0x0455, 0x0456, 0x0458,
+    0x0410, 0x0412, 0x0415, 0x041A, 0x041C, 0x041D, 0x041E,
+    0x0420, 0x0421, 0x0422, 0x0425, 0x0474,
+    # Greek lookalikes: α β γ ε ζ η ι κ ν ο ρ υ χ Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ
+    0x03B1, 0x03B2, 0x03B3, 0x03B5, 0x03B6, 0x03B7, 0x03B9, 0x03BA,
+    0x03BD, 0x03BF, 0x03C1, 0x03C5, 0x03C7,
+    0x0391, 0x0392, 0x0395, 0x0396, 0x0397, 0x0399, 0x039A, 0x039C,
+    0x039D, 0x039F, 0x03A1, 0x03A4, 0x03A5, 0x03A7,
+    # Latin-extended lookalikes (ı, ł, ɑ, etc.)
+    0x0131, 0x0142, 0x0251, 0x0254, 0x0257, 0x0261, 0x0274, 0x0280,
+    # Fullwidth letters (NFKC would normalise but we check pre-normalise)
+    # (range U+FF21–U+FF3A / U+FF41–U+FF5A handled via range test)
+    # Zero-width joiners & invisible separators — often abused
+    0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF,
+})
+
+
+def _has_suspicious_unicode(text: str) -> bool:
+    """Return True if ``text`` contains known confusable or invisible
+    characters that enable homoglyph bypass of ASCII-based detection rules.
+
+    Conservative: ignores text that is purely non-ASCII (legitimate non-English
+    filenames shouldn't false-positive) — only fires when ASCII letters and
+    confusable non-ASCII letters appear in the same token.
+    """
+    if not text:
+        return False
+    has_ascii_letter = False
+    has_confusable = False
+    for ch in text:
+        cp = ord(ch)
+        if cp < 0x80:
+            if ch.isalpha():
+                has_ascii_letter = True
+            continue
+        # Fullwidth Latin letters U+FF21–U+FF5A
+        if 0xFF21 <= cp <= 0xFF5A:
+            has_confusable = True
+            continue
+        if cp in _CONFUSABLE_CODEPOINTS:
+            has_confusable = True
+            continue
+    return has_ascii_letter and has_confusable
+
 
 def _normalize_command(cmd: str) -> str:
     """Normalize a shell command for consistent pattern matching.
