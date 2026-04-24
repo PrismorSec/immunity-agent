@@ -64,12 +64,12 @@ rules:
     patterns:
       # Root wipe: rm -rf /, rm -rf /*
       - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/["'']?(\s|\*|$)'
-      # System-critical paths — block at any depth
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|\s|$)'
+      # System-critical paths — block at any depth (optional surrounding quotes)
+      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
       # Top-level user/system dirs — block only when target IS the dir
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(\s|$|&|;|\|)'
+      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(["'']|\s|$|&|;|\|)'
       # HOME wipe
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+(\$\{?HOME\}?|~)(/\*?)?(\s|$|&|;|\|)'
+      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?(\$\{?HOME\}?|~)(/\*?)?(["'']|\s|$|&|;|\|)'
       # Cwd wildcard wipe: rm -rf *
       - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\*(\s|$|;|&|\|)'
       # Parent-dir escape chain: rm -rf .. or ../.. (but NOT ../build)
