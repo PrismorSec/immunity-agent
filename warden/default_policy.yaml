@@ -123,7 +123,12 @@ rules:
     patterns:
       - 'bash\s+-i\s+>&\s*/dev/tcp/'
       - '/dev/tcp/\d'
-      - 'nc\s+.*-[a-z]*l[a-z]*\s*.*-p'
+      # nc listener with -e/-c/--exec (explicit reverse shell)
+      - '\bnc\b[^\n]*\s-[a-z]*l[a-z]*[^\n]*\s(-e|-c|--exec|--sh-exec)\b'
+      # nc with combined -lvp/-lp/-pl flags (local-port + listen, typical reverse-shell setup)
+      - '\bnc\b[^\n]*\s-[a-z]*(?:lp|pl|lvp|pvl)[a-z]*\b'
+      # Separate nc -l and -p flags
+      - '\bnc\b[^\n]*\s-[a-z]*l[a-z]*\b[^\n]*\s-[a-z]*p[a-z]*\b'
       - 'python3?\s+-c\s+.*(?:exec|eval|import\s+os)'
       - 'perl\s+-e\s+.*(?:socket|exec)'
       - 'echo\s+.*\|\s*crontab'
