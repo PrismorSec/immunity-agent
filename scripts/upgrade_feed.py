@@ -1,8 +1,25 @@
 #!/usr/bin/env python3
-"""Retroactively upgrade existing feed advisories with better titles, types, actions, and deduplicated references."""
+"""Retroactively upgrade existing feed advisories with better titles, types,
+actions, and deduplicated references.
+
+MAINTAINER TOOL — NOT for end users. Re-writing the feed invalidates the
+Ed25519 signature and breaks `warden audit`. Run this only in CI where
+PRISMOR_SIGNING_PRIVATE_KEY is available so the feed is re-signed in the
+same step.
+
+Behaviour:
+  - No changes needed           → exit 0 without touching the file (signature
+                                  stays valid).
+  - Changes applied in CI       → feed is re-signed automatically via
+                                  pipeline/sign_feed.sh.
+  - Changes applied locally     → warn loudly that the signature is now
+                                  stale; `warden audit` will fail until the
+                                  user re-clones or a signed feed is pulled.
+"""
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 
@@ -15,7 +32,9 @@ from pipeline.fetch_nvd_intel import (
     map_cwe_to_type,
 )
 
-FEED_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "advisories", "immunity-feed.json")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FEED_PATH = os.path.join(REPO_ROOT, "advisories", "immunity-feed.json")
+SIGN_SCRIPT = os.path.join(REPO_ROOT, "pipeline", "sign_feed.sh")
 
 
 def upgrade_advisory(adv):
@@ -56,7 +75,8 @@ def upgrade_advisory(adv):
 
 def main():
     with open(FEED_PATH, "r") as f:
-        feed = json.load(f)
+        original_text = f.read()
+    feed = json.loads(original_text)
 
     advisories = feed.get("advisories", [])
     total = len(advisories)
@@ -77,6 +97,13 @@ def main():
         if len(adv.get("references", [])) < old_ref_count:
             stats["refs_deduped"] += 1
 
+    changes = sum(stats.values())
+    if changes == 0:
+        print("Feed already up to date — no changes, signature preserved.", file=sys.stderr)
+        return
+
+    # Only bump 'updated' when we actually change something; prevents
+    # spurious signature invalidation on no-op runs.
     feed["updated"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     with open(FEED_PATH, "w") as f:
@@ -96,6 +123,29 @@ def main():
     print(f"\nType distribution:", file=sys.stderr)
     for t, c in type_counts.most_common():
         print(f"  {t}: {c}", file=sys.stderr)
+
+    # Re-sign or warn loudly — the feed has changed so the shipped
+    # signature no longer matches.
+    if os.environ.get("PRISMOR_SIGNING_PRIVATE_KEY") and os.path.exists(SIGN_SCRIPT):
+        print("\nRe-signing feed (PRISMOR_SIGNING_PRIVATE_KEY detected)...", file=sys.stderr)
+        result = subprocess.run(
+            ["bash", SIGN_SCRIPT],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"ERROR: sign_feed.sh failed:\n{result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        print("Feed re-signed successfully.", file=sys.stderr)
+    else:
+        print(
+            "\nWARNING: feed content changed but was NOT re-signed.\n"
+            "         `warden audit` will report a signature mismatch until a\n"
+            "         freshly signed feed is pulled (set PRISMOR_SIGNING_PRIVATE_KEY\n"
+            "         and re-run, or restore the original feed with `git checkout`).",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

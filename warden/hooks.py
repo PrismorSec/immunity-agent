@@ -72,6 +72,20 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
             if internal_hook.exists():
                 shutil.rmtree(internal_hook, ignore_errors=True)
                 removed = True
+        # Claude Code also installs separate cloaking hooks (decloak.sh,
+        # recloak-mcp.sh, userprompt-guard.sh). The detection-hook strip
+        # above only removes entries that reference cli.py, so cloaking
+        # stays behind unless we explicitly uninstall it too.
+        if current_agent == "claude":
+            try:
+                from warden.cloaking import uninstall as cloak_uninstall
+                cloak_result = cloak_uninstall(workspace=workspace, scope=scope)
+                if cloak_result.get("removed"):
+                    removed = True
+            except Exception:
+                # Cloaking is optional — swallow any error so detection-hook
+                # removal still reports cleanly.
+                pass
         results.append({"agent": current_agent, "configPath": str(config_path), "removed": removed})
     return results
 
@@ -102,6 +116,29 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
     return {"sessionId": session_id, "event": event}
 
 
+def _default_block_categories() -> set:
+    """Return block categories from the bundled default_policy.yaml.
+
+    Cached on first call. Falls back to a hardcoded safe default if the
+    policy cannot be loaded (e.g. PyYAML missing in a minimal environment).
+    """
+    cached = getattr(_default_block_categories, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        from warden.policy_engine import PolicyEngine
+        cats = set(PolicyEngine().block_categories)
+    except Exception:
+        cats = {
+            "destructive_command", "secret_exfiltration", "secret_access",
+            "remote_execution", "prompt_injection", "dos_resource_exhaustion",
+            "rce_canary", "db_modification", "privilege_escalation",
+            "skill_risk", "persistence", "security_bypass", "dependency_risk",
+        }
+    _default_block_categories._cache = cats  # type: ignore[attr-defined]
+    return cats
+
+
 def should_block(
     findings: List[Dict[str, Any]],
     event: Dict[str, Any],
@@ -110,7 +147,7 @@ def should_block(
     if not _is_pre_action(str(event.get("agent_event", ""))):
         return None
 
-    categories = block_categories if block_categories is not None else set()
+    categories = block_categories if block_categories is not None else _default_block_categories()
     for finding in findings:
         if finding.get("category") in categories:
             if event.get("type") == "file_read" and finding.get("category") != "secret_access":

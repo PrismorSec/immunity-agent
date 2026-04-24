@@ -118,7 +118,7 @@ class TestPolicyEngineDefaults(unittest.TestCase):
         self.assertEqual(self.engine.evaluate({}, 0), [])
 
     def test_session_id_prefix(self):
-        event = {"type": "shell", "command": "sudo rm file"}
+        event = {"type": "shell", "command": "rm -rf /"}
         findings = self.engine.evaluate(event, 0, session_id="sess-1")
         self.assertTrue(findings[0]["id"].startswith("sess-1:"))
 

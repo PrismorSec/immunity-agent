@@ -92,7 +92,10 @@ class TestCliAnalyze(unittest.TestCase):
         self.assertEqual(data["summary"]["riskScore"], 100)
 
     def test_analyze_missing_input(self):
-        r = run_cli("analyze")
+        # Use an empty workspace so no stored session is available.
+        import tempfile
+        with tempfile.TemporaryDirectory() as empty_ws:
+            r = run_cli("analyze", "--workspace", empty_ws)
         self.assertNotEqual(r.returncode, 0)
 
 

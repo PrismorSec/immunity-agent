@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -112,7 +113,25 @@ def main() -> None:
         return
 
     repo_root = Path(__file__).resolve().parent.parent
-    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else infer_default_workspace(Path.cwd())
+
+    # Resolve workspace: explicit --workspace flag (at any position) wins,
+    # then PRISMOR_WARDEN_WORKSPACE env var, then inferred from cwd.
+    # argparse subparsers that also declare --workspace clobber the top-level
+    # value with None when the flag isn't repeated on the subcommand — so we
+    # fall back to a manual scan of argv to recover the original value.
+    ws_value = getattr(args, "workspace", None)
+    if not ws_value:
+        argv = sys.argv[1:]
+        for i, tok in enumerate(argv):
+            if tok == "--workspace" and i + 1 < len(argv):
+                ws_value = argv[i + 1]
+                break
+            if tok.startswith("--workspace="):
+                ws_value = tok.split("=", 1)[1]
+                break
+    if not ws_value:
+        ws_value = os.environ.get("PRISMOR_WARDEN_WORKSPACE")
+    workspace = Path(ws_value).resolve() if ws_value else infer_default_workspace(Path.cwd())
 
     # ── dashboard: global overview ───────────────────────────────────────
     if args.command == "dashboard":
@@ -144,7 +163,11 @@ def main() -> None:
             color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM
             action_label = f.get("action", "warn").upper()
             print(_color(f"[{sev}]", color) + f" {f['title']}  " + _color(f"({action_label})", color))
-            print(f"  rule: {f.get('ruleId', '?')}  evidence: {f['evidence']}")
+            # _resolve_path returns "{original}\n{resolved}" for symlink-aware
+            # matching — keep only the user-supplied value in CLI output so
+            # the extra line doesn't break downstream parsers.
+            evidence = str(f.get("evidence", "")).split("\n", 1)[0]
+            print(f"  rule: {f.get('ruleId', '?')}  evidence: {evidence}")
 
         # Exit 2 if any finding has action=block, 1 for warn-only, 0 for log-only.
         if any(f.get("action") == "block" for f in findings):
@@ -406,6 +429,9 @@ def main() -> None:
 
     # ── analyze ────────────────────────────────────────────────────────
     if args.command == "analyze":
+        # Accept `analyze <file>` as shorthand for `analyze --input <file>`.
+        if not args.input and getattr(args, "file", None):
+            args.input = args.file
         # If no input specified, use most recent session
         if args.input:
             events = parse_jsonl(read_text(args.input))
@@ -424,7 +450,7 @@ def main() -> None:
 
         result = analyze_events(events, repo_root=repo_root, workspace=workspace)
         if getattr(args, "sarif", False):
-            print(json.dumps(format_sarif(result), indent=2))
+            print(json.dumps(format_sarif(result, workspace=workspace), indent=2))
         else:
             emit(result, as_json=args.json, formatter=format_analysis)
         return
@@ -470,9 +496,13 @@ def main() -> None:
         return
 
     if args.command == "session":
-        session = get_session(workspace, args.session_id)
+        # Accept `session <id>` as shorthand for `session --session-id <id>`.
+        session_id = args.session_id or getattr(args, "session_id_pos", None)
+        if not session_id:
+            raise SystemExit("session: --session-id or a positional session id is required")
+        session = get_session(workspace, session_id)
         if session is None:
-            raise SystemExit(f"Session not found: {args.session_id}")
+            raise SystemExit(f"Session not found: {session_id}")
         emit(session, as_json=args.json, formatter=format_session)
         return
 
@@ -556,15 +586,30 @@ def main() -> None:
             ok as sweep_ok, warn as sweep_warn, err as sweep_err,
         )
 
+        def _need_passphrase(confirm: bool = False) -> str:
+            """Wrap _prompt_passphrase with a clean error when no TTY is
+            available. Prevents an unhandled RuntimeError traceback in
+            CI / hook contexts."""
+            try:
+                return _prompt_passphrase(confirm=confirm)
+            except RuntimeError as exc:
+                sys.stderr.write(
+                    _color("[sweep] ", _RED)
+                    + f"{exc}\n"
+                    + "        Set the PRISMOR_SWEEP_PASS environment variable\n"
+                    + "        (non-interactive) or re-run from a terminal.\n"
+                )
+                raise SystemExit(1)
+
         # Show vault contents
         if getattr(args, "show_vault", False):
-            passphrase = _prompt_passphrase()
+            passphrase = _need_passphrase()
             show_vault(passphrase)
             return
 
         # Restore mode
         if getattr(args, "restore", False):
-            passphrase = _prompt_passphrase()
+            passphrase = _need_passphrase()
             restore(passphrase, target_file=getattr(args, "file", None), all_entries=getattr(args, "all", False))
             return
 
@@ -581,9 +626,9 @@ def main() -> None:
         if getattr(args, "clean", False):
             sweep_info("Passphrase required to authorize deletion and update vault.")
             if _vault_exists():
-                passphrase = _prompt_passphrase()
+                passphrase = _need_passphrase()
             else:
-                passphrase = _prompt_passphrase(confirm=True)
+                passphrase = _need_passphrase(confirm=True)
             clean(findings, passphrase)
             return
 
@@ -599,12 +644,12 @@ def main() -> None:
                 report_findings(findings)
                 print()
                 sweep_info("Passphrase required to update the vault.")
-                passphrase = _prompt_passphrase()
+                passphrase = _need_passphrase()
             else:
                 report_findings(findings)
                 print()
                 sweep_info("First-time vault setup — creating encrypted vault for secret recovery.")
-                passphrase = _prompt_passphrase(confirm=True)
+                passphrase = _need_passphrase(confirm=True)
 
             count = redact(findings, passphrase, purge=purge)
             if count:
@@ -789,6 +834,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── analyze ────────────────────────────────────────────────────────
     analyze = subparsers.add_parser("analyze", help="Analyze a session (or current session if no --input)")
+    analyze.add_argument("file", nargs="?", help="Path to JSONL session file (same as --input). If omitted, analyzes most recent session")
     analyze.add_argument("--input", help="Path to JSONL session file (or - for stdin). If omitted, analyzes most recent session")
     analyze.add_argument("--workspace", help="Workspace path")
     analyze.add_argument("--json", action="store_true", help="Output raw JSON")
@@ -811,8 +857,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── session ────────────────────────────────────────────────────────
     session_parser = subparsers.add_parser("session", help="Show a specific session")
+    session_parser.add_argument("session_id_pos", nargs="?", help="Session ID to view (same as --session-id)")
     session_parser.add_argument("--workspace", help="Workspace path")
-    session_parser.add_argument("--session-id", required=True, help="Session ID to view")
+    session_parser.add_argument("--session-id", help="Session ID to view")
     session_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── install-hooks ──────────────────────────────────────────────────
@@ -1348,28 +1395,61 @@ def _policy_edit(workspace: Path) -> None:
 
 # ── SARIF output ────────────────────────────────────────────────────────
 
-def format_sarif(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Format analysis results as SARIF 2.1.0 for GitHub Code Scanning."""
-    rules_seen: Dict[str, int] = {}
-    sarif_rules: List[Dict[str, Any]] = []
-    sarif_results: List[Dict[str, Any]] = []
+def format_sarif(
+    result: Dict[str, Any],
+    workspace: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Format analysis results as SARIF 2.1.0 for GitHub Code Scanning.
 
-    for finding in result.get("findings", []):
-        category = finding.get("category", "unknown")
-        if category not in rules_seen:
-            rules_seen[category] = len(sarif_rules)
+    Populates rules[] from the full policy (not just triggered rules) so
+    GitHub Code Scanning, VS Code SARIF viewer, and other consumers have
+    complete rule metadata for severity, title, and category.
+    """
+    # Build rules[] from the loaded policy — gives consumers full context
+    # even for rules that didn't trigger during this run.
+    rule_index: Dict[str, int] = {}
+    sarif_rules: List[Dict[str, Any]] = []
+    try:
+        from warden.policy_engine import PolicyEngine
+        engine = PolicyEngine(workspace=workspace)
+        for rule in engine.rules:
+            rule_index[rule.id] = len(sarif_rules)
             sarif_rules.append({
-                "id": category,
-                "name": category.replace("_", " ").title(),
-                "shortDescription": {"text": finding.get("title", category)},
+                "id": rule.id,
+                "name": rule.id.replace("-", " ").replace("_", " ").title(),
+                "shortDescription": {"text": rule.title},
+                "fullDescription": {"text": f"{rule.title} (category: {rule.category})"},
+                "defaultConfiguration": {"level": _sarif_level(rule.severity)},
+                "properties": {
+                    "category": rule.category,
+                    "severity": rule.severity,
+                    "action": rule.action,
+                },
+                "helpUri": "https://github.com/PrismorSec/prismor/blob/main/docs/warden.md",
+            })
+    except Exception:
+        # Policy engine may be unavailable in some test environments.
+        pass
+
+    sarif_results: List[Dict[str, Any]] = []
+    for finding in result.get("findings", []):
+        rule_id = finding.get("ruleId") or finding.get("category", "unknown")
+        # Fallback: synthesize a rule descriptor if a finding references a
+        # rule that isn't in the policy (e.g. dynamic egress-allowlist rule).
+        if rule_id not in rule_index:
+            rule_index[rule_id] = len(sarif_rules)
+            sarif_rules.append({
+                "id": rule_id,
+                "name": rule_id.replace("-", " ").replace("_", " ").title(),
+                "shortDescription": {"text": finding.get("title", rule_id)},
                 "defaultConfiguration": {
                     "level": _sarif_level(finding.get("severity", "MEDIUM")),
                 },
             })
 
         sarif_results.append({
-            "ruleId": category,
-            "ruleIndex": rules_seen[category],
+            "ruleId": rule_id,
+            "ruleIndex": rule_index[rule_id],
             "level": _sarif_level(finding.get("severity", "MEDIUM")),
             "message": {
                 "text": f"{finding.get('title', '')}. Evidence: {finding.get('evidence', 'N/A')}",

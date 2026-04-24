@@ -50,6 +50,8 @@ settings:
 
 rules:
   # ── CRITICAL: Destructive commands ────────────────────────────────────
+  # Patterns target genuinely destructive rm invocations while allowing
+  # routine cleanup (rm -rf ./node_modules, rm -rf /tmp/my-cache, etc).
   - id: destructive-command
     severity: CRITICAL
     category: destructive_command
@@ -57,11 +59,22 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - 'rm\s+(?:-[a-zA-Z]*f[a-zA-Z]*\s+|(?:-[a-zA-Z]+\s+)*)(?:/\s*$|/\s+|/\S*\*)'
-      - 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f\b|rm\s+-[a-zA-Z]*f[a-zA-Z]*r\b'
-      - 'sudo\s+rm\b'
-      - 'chmod\s+777\b'
-      - 'chown\s+-R\b'
+      # Root wipe: rm -rf /, rm -rf /*
+      - 'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s+/(\s|\*|$)'
+      # System-critical paths — block at any depth
+      - 'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s+/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|\s|$)'
+      # Top-level user/system dirs — block only when target IS the dir (not a subpath)
+      - 'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s+/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(\s|$|&|;|\|)'
+      # HOME wipe
+      - 'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s+(\$\{?HOME\}?|~)(/\*?)?(\s|$|&|;|\|)'
+      # Cwd wildcard wipe: rm -rf *
+      - 'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s+\*(\s|$)'
+      # Parent-dir escape: rm -rf ../..
+      - 'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s+\.\.(/|\s|$)'
+      # sudo elevates blast radius — always block sudo rm -rf
+      - 'sudo\s+rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\b'
+      - 'chmod\s+777\s+(/|\$\{?HOME\}?|~|/etc|/bin|/usr|/var)'
+      - 'chown\s+-R\s+[^\n]*\s(/|\$\{?HOME\}?|~)(\s|$|/)'
       - 'mkfs\b'
       - 'dd\s+if=.*of=/dev/'
       - 'shutdown\b'
@@ -412,6 +425,40 @@ rules:
     patterns:
       - '\bsystemctl\b[^\n]*(enable|start|daemon-reload)'
       - '(^|/)\.config/systemd/user/'
+      - '(^|\n)/etc/systemd/system/'
+      - '(^|\n)/lib/systemd/system/'
+      - '(^|\n)/usr/lib/systemd/system/'
+    action: warn
+
+  # ── HIGH: Persistence — cron jobs via filesystem ──────────────────
+  # Paths anchored on `(^|\n)` because _resolve_path may prepend the
+  # original path and append the resolved one on a new line.
+  - id: persistence-cron
+    severity: HIGH
+    category: persistence
+    title: Detects writes to cron directories or /etc/crontab
+    event_types: [shell, file_write]
+    fields: [command, path]
+    patterns:
+      - '(^|\n)/etc/cron\.(d|daily|hourly|monthly|weekly)(/|\s|$)'
+      - '(^|\n)/etc/crontab(\s|$)'
+      - '(^|\n)/var/spool/cron/'
+      - '>>\s*/etc/cron'
+      - '>\s*/etc/cron'
+    action: warn
+
+  # ── HIGH: Persistence — init/rc scripts ───────────────────────────
+  - id: persistence-init
+    severity: HIGH
+    category: persistence
+    title: Detects writes to init.d, rc.local, and related boot scripts
+    event_types: [shell, file_write]
+    fields: [command, path]
+    patterns:
+      - '(^|\n)/etc/init\.d/'
+      - '(^|\n)/etc/rc\.(local|common)(\s|$)'
+      - '(^|\n)/etc/rc[0-9S]\.d/'
+      - '(^|\n)/etc/profile\.d/'
     action: warn
 
   # ── HIGH: Persistence — shell profile injection ───────────────────
@@ -463,6 +510,43 @@ rules:
       - '(^|/)\.claude/settings(\.local)?\.json$'
       - '(^|/)\.prismor-warden/policy\.yaml$'
     action: block
+
+  # ── CRITICAL: Shell obfuscation (decode-and-execute chains) ──────
+  - id: shell-obfuscation
+    severity: CRITICAL
+    category: rce_canary
+    title: Detects base64/hex/xxd decode-and-execute chains in shell
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bbase64\s+(-d|--decode|-D)\b[^\n]*\|\s*(bash|sh|zsh|ksh|dash)\b'
+      - '\|\s*base64\s+(-d|--decode|-D)\b[^\n]*\|\s*(bash|sh|zsh|ksh|dash)\b'
+      - '\bprintf\s+[''"][^''"\n]*\\x[0-9a-fA-F]{2}[^''"\n]*[''"][^\n]*\|\s*(bash|sh|zsh|ksh|dash)\b'
+      - '\bxxd\s+-r\b[^\n]*\|\s*(bash|sh|zsh|ksh|dash)\b'
+      - '\becho\s+[^|\n]*\|\s*base64\s+(-d|--decode|-D)\b[^\n]*\|\s*(bash|sh|zsh)\b'
+      - '\beval\s+[\$"''][^\n]*base64\s+(-d|--decode|-D)'
+      - '\bperl\s+-e\b[^\n]*pack\s*\([''"]H\*[''"]\s*,'
+    action: block
+
+  # ── HIGH: TLS/SSL certificate verification disabled ──────────────
+  - id: tls-verification-disabled
+    severity: HIGH
+    category: security_bypass
+    title: Detects disabling of TLS/SSL certificate verification (MITM enabler)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bgit\s+config\b[^\n]*\bhttp\.sslVerify\s+false'
+      - '\bGIT_SSL_NO_VERIFY\s*=\s*(1|true|yes)'
+      - '\bStrictHostKeyChecking\s*=\s*no\b'
+      - '\bUserKnownHostsFile\s*=\s*/dev/null\b'
+      - '\bcurl\b[^\n]*\s(--insecure|-k)\b'
+      - '\bwget\b[^\n]*\s--no-check-certificate\b'
+      - '\bnpm\s+config\s+set\s+strict-ssl\s+false\b'
+      - '\bNODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0\b'
+      - '\bPYTHONHTTPSVERIFY\s*=\s*0\b'
+      - '\bpip3?\s+install\b[^\n]*\s--trusted-host\b'
+    action: warn
 
   # ── CRITICAL: Claude Code credential access ───────────────────────
   - id: claude-credential-access
@@ -667,8 +751,24 @@ rules:
     fields: [command]
     patterns:
       - '\bnpm\s+publish\b[^\n]*--registry\s+https?://'
+      - '\bnpm\s+install\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
+      - '\byarn\s+(add|install)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
+      - '\bpnpm\s+(add|install)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
       - '\bpip3?\s+install\b[^\n]*\s-i\s+https?://(?!pypi\.org)'
       - '\btwine\s+upload\b[^\n]*--repository-url\b'
+    action: warn
+
+  # ── HIGH: npm/yarn install from git+https (supply chain) ─────────
+  - id: npm-git-install
+    severity: HIGH
+    category: dependency_risk
+    title: npm/yarn/pnpm install from git URL bypasses registry auditing
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bnpm\s+install\b[^\n]*\s(git\+https?://|git\+ssh://|git://)'
+      - '\byarn\s+add\b[^\n]*\s(git\+https?://|git\+ssh://|git://)'
+      - '\bpnpm\s+add\b[^\n]*\s(git\+https?://|git\+ssh://|git://)'
     action: warn
 
   # ── HIGH: Skill makes outbound POST/PUT requests ─────────────────

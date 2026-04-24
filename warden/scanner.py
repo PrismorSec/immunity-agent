@@ -34,55 +34,76 @@ _SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4
 
 # ── Config discovery ────────────────────────────────────────────────────────
 
-def _claude_configs() -> List[Path]:
+def _claude_configs(workspace: Path) -> List[Path]:
     """Return Claude Code settings paths (user + project-level)."""
     home = Path.home()
     candidates = [
         home / ".claude" / "settings.json",
         home / ".claude.json",
+        workspace / ".claude" / "settings.json",
+        workspace / ".claude" / "settings.local.json",
+        # Per-project MCP config (Claude Code supports a dedicated file)
+        workspace / ".mcp.json",
     ]
-    # Also look for project-level .claude/settings.json in cwd
-    cwd_config = Path.cwd() / ".claude" / "settings.json"
-    if cwd_config.exists():
-        candidates.append(cwd_config)
-    return [p for p in candidates if p.exists()]
+    return [p for p in _dedupe(candidates) if p.exists()]
 
 
-def _cursor_configs() -> List[Path]:
+def _cursor_configs(workspace: Path) -> List[Path]:
     home = Path.home()
     candidates = [
         home / ".cursor" / "mcp.json",
-        Path.cwd() / ".cursor" / "mcp.json",
+        workspace / ".cursor" / "mcp.json",
     ]
-    return [p for p in candidates if p.exists()]
+    return [p for p in _dedupe(candidates) if p.exists()]
 
 
-def _windsurf_configs() -> List[Path]:
+def _windsurf_configs(workspace: Path) -> List[Path]:
     home = Path.home()
     candidates = [
         home / ".codeium" / "windsurf" / "mcp_config.json",
-        Path.cwd() / ".windsurf" / "mcp.json",
+        workspace / ".windsurf" / "mcp.json",
     ]
-    return [p for p in candidates if p.exists()]
+    return [p for p in _dedupe(candidates) if p.exists()]
 
 
-def _openclaw_configs() -> List[Path]:
+def _openclaw_configs(workspace: Path) -> List[Path]:
     home = Path.home()
     candidates = [
         home / ".openclaw" / "config.json",
         home / ".openclaw" / "skills.json",
+        workspace / ".openclaw" / "config.json",
+        workspace / ".openclaw" / "skills.json",
+        workspace / ".openclaw" / "plugins.json",
     ]
-    return [p for p in candidates if p.exists()]
+    return [p for p in _dedupe(candidates) if p.exists()]
 
 
-def _hermes_configs() -> List[Path]:
+def _hermes_configs(workspace: Path) -> List[Path]:
     home = Path.home()
     candidates = [
         home / ".hermes" / "config.json",
         home / ".hermes" / "skills.json",
         home / ".hermes" / "plugins.json",
+        workspace / ".hermes" / "config.json",
+        workspace / ".hermes" / "plugins.json",
     ]
-    return [p for p in candidates if p.exists()]
+    return [p for p in _dedupe(candidates) if p.exists()]
+
+
+def _dedupe(paths: List[Path]) -> List[Path]:
+    """De-duplicate paths (preserves order). Resolves each path first so
+    symlinks and workspace-that-equals-HOME don't produce duplicates."""
+    seen: set[str] = set()
+    out: List[Path] = []
+    for p in paths:
+        try:
+            key = str(p.resolve())
+        except (OSError, ValueError):
+            key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
 
 
 _AGENT_DISCOVERERS = {
@@ -94,15 +115,22 @@ _AGENT_DISCOVERERS = {
 }
 
 
-def discover_configs(agent: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Find all agent config files. Returns list of {agent, path}."""
+def discover_configs(
+    agent: Optional[str] = None,
+    workspace: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Find all agent config files. Returns list of {agent, path}.
+
+    Project-level configs are sourced from ``workspace`` (or CWD if omitted).
+    """
+    ws = workspace if workspace is not None else Path.cwd()
     agents = [agent] if agent else list(_AGENT_DISCOVERERS.keys())
     results: List[Dict[str, Any]] = []
     for a in agents:
         discoverer = _AGENT_DISCOVERERS.get(a)
         if not discoverer:
             continue
-        for p in discoverer():
+        for p in discoverer(ws):
             results.append({"agent": a, "path": p})
     return results
 
@@ -288,7 +316,7 @@ def scan_skills(
         }
     """
     engine = PolicyEngine(workspace=workspace)
-    configs = discover_configs(agent=agent)
+    configs = discover_configs(agent=agent, workspace=workspace)
 
     all_entries: List[Dict[str, Any]] = []
     for cfg in configs:
