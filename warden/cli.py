@@ -146,6 +146,50 @@ def main() -> None:
     # ── check: quick pre-check a command or path ───────────────────────
     if args.command == "check":
         engine = PolicyEngine(workspace=workspace)
+
+        # --from-log: replay a session file through the current policy
+        if getattr(args, "from_log", None):
+            log_path = Path(args.from_log)
+            if not log_path.exists():
+                sys.stderr.write(f"error: log file not found: {log_path}\n")
+                raise SystemExit(1)
+            total_findings: List[Dict[str, Any]] = []
+            total_events = 0
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                total_events += 1
+                # Accept either already-normalised events or raw hook payloads.
+                if "type" not in event and "hook_event_name" in event:
+                    # map Claude-style hook to normalised event
+                    if "tool_input" in event and isinstance(event["tool_input"], dict):
+                        cmd = event["tool_input"].get("command")
+                        path_v = event["tool_input"].get("file_path")
+                        if cmd:
+                            event = {"type": "shell", "command": cmd}
+                        elif path_v:
+                            t = "file_read" if event.get("hook_event_name") == "PreToolUse" else "file_read"
+                            event = {"type": t, "path": path_v}
+                total_findings.extend(engine.evaluate(event, total_events))
+            print(f"Replayed {total_events} event(s) from {log_path}")
+            if not total_findings:
+                print(_color("PASS", _GREEN) + "  no findings")
+                return
+            _print_findings(total_findings, engine=engine,
+                            explain=args.explain, suggest=args.suggest_allowlist)
+            if any(f.get("action") == "block" for f in total_findings):
+                raise SystemExit(2)
+            raise SystemExit(1)
+
+        if not args.value:
+            sys.stderr.write("error: either a value or --from-log is required\n")
+            raise SystemExit(2)
+
         if args.type == "command":
             findings = engine.check_command(args.value)
         elif args.type in ("read", "write"):
@@ -158,16 +202,9 @@ def main() -> None:
             print(_color("PASS", _GREEN) + f"  {args.value}")
             return
 
-        for f in findings:
-            sev = f["severity"]
-            color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM
-            action_label = f.get("action", "warn").upper()
-            print(_color(f"[{sev}]", color) + f" {f['title']}  " + _color(f"({action_label})", color))
-            # _resolve_path returns "{original}\n{resolved}" for symlink-aware
-            # matching — keep only the user-supplied value in CLI output so
-            # the extra line doesn't break downstream parsers.
-            evidence = str(f.get("evidence", "")).split("\n", 1)[0]
-            print(f"  rule: {f.get('ruleId', '?')}  evidence: {evidence}")
+        _print_findings(findings, engine=engine,
+                        explain=args.explain, suggest=args.suggest_allowlist,
+                        input_value=args.value)
 
         # Exit 2 if any finding has action=block, 1 for warn-only, 0 for log-only.
         if any(f.get("action") == "block" for f in findings):
@@ -273,8 +310,9 @@ def main() -> None:
 
         feed_matches = result["feed_matches"]
         lockfile_issues = result["lockfile_issues"]
+        integrity_issues = result.get("integrity_issues", [])
 
-        if not feed_matches and not lockfile_issues:
+        if not feed_matches and not lockfile_issues and not integrity_issues:
             print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
             print()
             return
@@ -297,13 +335,22 @@ def main() -> None:
                 print(f"    {_color(f'[{sev}]', _YELLOW)}  {issue['message']}")
             print()
 
+        if integrity_issues:
+            print(f"  {_color('Lockfile integrity issues:', _BOLD)}")
+            for issue in integrity_issues:
+                sev = issue["severity"]
+                color = _RED if sev == "HIGH" else _YELLOW
+                print(f"    {_color(f'[{sev}]', color)}  {issue['message']}")
+                print(f"             lockfile: {issue.get('lockfile','')}")
+            print()
+
         # Summary
-        total_issues = len(feed_matches) + len(lockfile_issues)
+        total_issues = len(feed_matches) + len(lockfile_issues) + len(integrity_issues)
         print(f"  {_color('─' * 50, _DIM)}")
         print(f"  {total_issues} issue(s) found")
         print()
 
-        if feed_matches:
+        if feed_matches or any(i["severity"] == "HIGH" for i in integrity_issues):
             raise SystemExit(1)
         return
 
@@ -560,6 +607,26 @@ def main() -> None:
         from warden.policy_engine import PolicyEngine as _PolicyEngine
         _current_engine = _PolicyEngine(workspace=workspace)
         current_findings = _current_engine.evaluate(event, len(events) - 1, session_id=normalized["sessionId"])
+
+        # Forward findings to configured telemetry sinks (webhook/syslog/file)
+        # BEFORE the blocking decision — so a SIEM sees every event, even
+        # the ones that get blocked. Dispatch is best-effort.
+        if _current_engine.outputs and current_findings:
+            try:
+                from warden.sinks import dispatch as _sink_dispatch
+                _sink_dispatch(
+                    current_findings,
+                    _current_engine.outputs,
+                    extra={
+                        "session_id": normalized["sessionId"],
+                        "agent": args.agent,
+                        "mode": args.mode,
+                        "workspace": str(workspace),
+                    },
+                )
+            except Exception as _sink_exc:
+                sys.stderr.write(f"[warden] sink dispatch error: {_sink_exc}\n")
+
         blocking = should_block(current_findings, event, block_categories=set(result.get("blockCategories", [])))
         if args.mode == "enforce" and blocking is not None:
             if args.agent == "copilot":
@@ -767,6 +834,65 @@ def main() -> None:
 
         raise SystemExit("Usage: warden cloak {install|uninstall|add|list|remove|status}")
 
+    # ── canary subcommands ─────────────────────────────────────────────
+    if args.command == "canary":
+        from warden import canary as canary_mod
+        sub = getattr(args, "canary_command", None)
+        if sub == "plant":
+            try:
+                entry = canary_mod.plant(
+                    Path(args.path),
+                    template=args.type,
+                    webhook=args.webhook,
+                    force=args.force,
+                )
+            except FileExistsError as exc:
+                sys.stderr.write(f"error: {exc}\n")
+                raise SystemExit(1)
+            except ValueError as exc:
+                sys.stderr.write(f"error: {exc}\n")
+                raise SystemExit(1)
+            print(_color(f"Planted {args.type} canary", _GREEN) + f" at {entry['path']}")
+            print(f"  id:     {entry['id']}")
+            print(f"  type:   {entry['type']}")
+            if entry.get("webhook"):
+                print(f"  beacon: {entry['webhook']}")
+            print(f"  marker: {entry['marker']}  " + _color("(keep private)", _DIM))
+            print()
+            print(_color("Any read of this file by any agent will raise a CRITICAL finding.", _YELLOW))
+            return
+        if sub == "list" or sub is None:
+            entries = canary_mod.list_canaries()
+            if not entries:
+                print("No canaries planted. Try:  warden canary plant ~/.aws/credentials.canary --type aws")
+                return
+            print(f"  {_color('PRISMOR WARDEN', _BOLD)}  canaries")
+            print(f"  {_color('─' * 50, _DIM)}")
+            for e in entries:
+                print(f"  {e['id']}  {e['type']:7s}  {e['path']}")
+                if e.get("webhook"):
+                    print(f"     beacon: {e['webhook']}")
+            return
+        if sub == "remove":
+            removed = canary_mod.unplant(args.identifier)
+            if removed is None:
+                sys.stderr.write(f"No canary matching '{args.identifier}'\n")
+                raise SystemExit(1)
+            print(_color("Removed canary", _GREEN) + f" {removed['id']} at {removed['path']}")
+            return
+        if sub == "status":
+            entries = canary_mod.list_canaries()
+            markers = len(canary_mod.get_markers())
+            print(f"  Canaries planted: {len(entries)}")
+            print(f"  Active markers:   {markers}")
+            if entries:
+                by_type: Dict[str, int] = {}
+                for e in entries:
+                    by_type[e["type"]] = by_type.get(e["type"], 0) + 1
+                for t, n in sorted(by_type.items()):
+                    print(f"    {t:8s}  {n}")
+            return
+
     # ── policy subcommands ─────────────────────────────────────────────
     if args.command == "policy":
         if args.policy_command == "init":
@@ -780,6 +906,9 @@ def main() -> None:
             return
         if args.policy_command == "edit":
             _policy_edit(workspace)
+            return
+        if args.policy_command == "test":
+            _policy_test(workspace, test_file=getattr(args, "file", None))
             return
 
     raise SystemExit(f"Unsupported command: {args.command}")
@@ -802,7 +931,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── check ──────────────────────────────────────────────────────────
     check_parser = subparsers.add_parser("check", help="Quick pre-check a command or file path")
-    check_parser.add_argument("value", help="The command string or file path to check")
+    check_parser.add_argument("value", nargs="?", help="The command string or file path to check (omit with --from-log)")
     check_parser.add_argument(
         "--type", "-t",
         choices=["command", "read", "write"],
@@ -810,6 +939,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="What to check: command (default), read (file read), write (file write)",
     )
     check_parser.add_argument("--workspace", help="Workspace path for project-level policy")
+    check_parser.add_argument("--explain", action="store_true",
+                              help="Show the rule patterns and matched substring for each finding")
+    check_parser.add_argument("--from-log", metavar="PATH",
+                              help="Replay a JSONL session log and check every event")
+    check_parser.add_argument("--suggest-allowlist", action="store_true",
+                              help="Print a ready-to-paste allowlist entry when a finding is produced")
 
     # ── scan ──────────────────────────────────────────────────────────
     scan_parser = subparsers.add_parser("scan", help="Scan all MCP servers and skills for security risks")
@@ -898,6 +1033,10 @@ def build_parser() -> argparse.ArgumentParser:
     policy_edit = policy_sub.add_parser("edit", help="Interactive rule toggle — select which rules to enable/disable")
     policy_edit.add_argument("--workspace", help="Workspace path")
 
+    policy_test = policy_sub.add_parser("test", help="Run declarative policy tests from policy-tests.yaml")
+    policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor-warden/policy-tests.yaml)")
+    policy_test.add_argument("--workspace", help="Workspace path")
+
     # ── sweep ──────────────────────────────────────────────────────────
     sweep_parser = subparsers.add_parser("sweep", help="Scan AI tool configs for leaked secrets, redact with encrypted vault")
     sweep_parser.add_argument("--redact", action="store_true", help="Redact found secrets and save originals to encrypted vault")
@@ -946,7 +1085,71 @@ def build_parser() -> argparse.ArgumentParser:
     t_status.add_argument("--scope", choices=["project", "user"], default="project",
                           help="Hook scope (default: project)")
 
+    # ── canary ─────────────────────────────────────────────────────────
+    canary_parser = subparsers.add_parser(
+        "canary",
+        help="Plant and manage honey-token credentials (canarytokens)",
+    )
+    canary_sub = canary_parser.add_subparsers(dest="canary_command")
+
+    c_plant = canary_sub.add_parser("plant", help="Plant a canarytoken at PATH")
+    c_plant.add_argument("path", help="Where to plant the canary")
+    c_plant.add_argument("--type", choices=["aws", "ssh", "env", "generic"],
+                         default="generic", help="Template (default: generic)")
+    c_plant.add_argument("--webhook", help="URL to POST on access (optional)")
+    c_plant.add_argument("--force", action="store_true", help="Overwrite if path exists")
+
+    canary_sub.add_parser("list", help="List registered canaries (markers redacted)")
+
+    c_remove = canary_sub.add_parser("remove", help="Remove a canary by id or path")
+    c_remove.add_argument("identifier", help="Canary id or path")
+
+    canary_sub.add_parser("status", help="Summary of registered canaries and recent hits")
+
     return parser
+
+
+def _print_findings(
+    findings: List[Dict[str, Any]],
+    *,
+    engine: Optional["PolicyEngine"] = None,
+    explain: bool = False,
+    suggest: bool = False,
+    input_value: Optional[str] = None,
+) -> None:
+    """Shared finding renderer used by ``check`` and ``check --from-log``."""
+    for f in findings:
+        sev = f["severity"]
+        color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM
+        action_label = f.get("action", "warn").upper()
+        print(_color(f"[{sev}]", color) + f" {f['title']}  " + _color(f"({action_label})", color))
+        evidence = str(f.get("evidence", "")).split("\n", 1)[0]
+        print(f"  rule: {f.get('ruleId', '?')}  evidence: {evidence}")
+
+        if explain and engine is not None:
+            rule = next((r for r in engine.rules if r.id == f.get("ruleId")), None)
+            if rule is not None:
+                print(f"  category: {f.get('category')}  action: {f.get('action')}")
+                print(f"  event_types: {sorted(rule.event_types)}")
+                print(f"  fields: {rule.fields}")
+                print(f"  pattern: {_truncate_str(rule.patterns.pattern, 160)}")
+            else:
+                print(f"  (built-in rule — no YAML pattern)")
+
+        if suggest:
+            value = input_value if input_value is not None else evidence
+            rid = f.get("ruleId", "?")
+            print()
+            print(_color("  # Paste into .prismor-warden/policy.yaml to suppress this finding:", _DIM))
+            print("  allowlists:")
+            print(f"    - id: allow-{rid}-{abs(hash(value)) % 10000:04d}")
+            print(f"      rule_ids: [{rid}]")
+            print(f"      reason: \"intentional — reviewed on {datetime.now().date().isoformat()}\"")
+            print(f"      patterns: [{json.dumps(re.escape(value))}]")
+
+
+def _truncate_str(s: str, n: int) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _print_info(workspace: Path) -> None:
@@ -1228,6 +1431,58 @@ def _policy_validate(path: Path) -> None:
     for error in errors:
         print(f"  - {error}")
     raise SystemExit(1)
+
+
+def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
+    """Run declarative policy tests from policy-tests.yaml."""
+    from warden.policy_test import run_cases, load_cases
+
+    if test_file:
+        path = Path(test_file)
+    else:
+        path = workspace / ".prismor-warden" / "policy-tests.yaml"
+
+    if not path.exists():
+        # If the user hasn't written their own, fall back to the bundled
+        # OWASP LLM Top 10 starter pack shipped with the repo.
+        bundled = Path(__file__).parent.parent / "templates" / "policy-tests-owasp.yaml"
+        if bundled.exists():
+            path = bundled
+            print(_color("[policy test]", _CYAN)
+                  + f" using bundled starter pack: {path.name}")
+        else:
+            sys.stderr.write(f"error: no policy tests found at {path}\n")
+            raise SystemExit(1)
+
+    try:
+        cases = load_cases(path)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        raise SystemExit(1)
+
+    result = run_cases(cases, workspace=workspace)
+    print()
+    print(f"  {_color('PRISMOR WARDEN', _BOLD)}  policy tests ({path.name})")
+    print(f"  {_color('─' * 50, _DIM)}")
+    print()
+
+    for r in result["results"]:
+        if r["status"] == "ok":
+            print(f"  {_color('PASS', _GREEN)}  {r['name']}")
+        else:
+            print(f"  {_color('FAIL', _RED)}  {r['name']}")
+            print(f"         input:    {r['input']!r}")
+            print(f"         expected: {r['expected']}"
+                  + (f" (rule={r['expected_rule']})" if r.get('expected_rule') else ""))
+            print(f"         got:      {r['got']}  matched_rules={r['matched_rules']}")
+
+    print()
+    color = _GREEN if result["failed"] == 0 else _RED
+    print(f"  {_color(str(result['passed']) + '/' + str(result['total']) + ' passed', color)}"
+          + (f"  ({result['failed']} failed)" if result["failed"] else ""))
+    print()
+    if result["failed"]:
+        raise SystemExit(1)
 
 
 def _policy_show(workspace: Path) -> None:

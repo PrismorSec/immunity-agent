@@ -519,6 +519,28 @@ rules:
       - '(^|/)\.prismor-warden/policy\.yaml$'
     action: block
 
+  # ── HIGH: Agent instruction-file tampering ────────────────────────
+  # Rewriting CLAUDE.md / .cursorrules / AGENTS.md silently redirects
+  # every future session. Lower severity than hook-config tampering
+  # (which disables security entirely) but still high-value target.
+  - id: agent-instruction-tampering
+    severity: HIGH
+    category: security_bypass
+    title: Detects writes to agent instruction files (CLAUDE.md, .cursorrules, etc.)
+    event_types: [shell, file_write]
+    fields: [command, path]
+    patterns:
+      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*(CLAUDE\.md|AGENTS\.md|GEMINI\.md)(\s|$)'
+      - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
+      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.cursorrules(\s|$)'
+      - '(^|/)\.cursorrules$'
+      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.windsurfrules(\s|$)'
+      - '(^|/)\.windsurfrules$'
+      - '(^|/)\.github/copilot-instructions\.md$'
+      - '(^|/)\.github/chatmodes/'
+      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.github/copilot-instructions\.md'
+    action: warn
+
   # ── CRITICAL: Shell obfuscation (decode-and-execute chains) ──────
   - id: shell-obfuscation
     severity: CRITICAL
