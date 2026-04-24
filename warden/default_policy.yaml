@@ -533,7 +533,7 @@ rules:
       - '\bxxd\s+-r\b[^\n]*\|\s*(bash|sh|zsh|ksh|dash)\b'
       - '\becho\s+[^|\n]*\|\s*base64\s+(-d|--decode|-D)\b[^\n]*\|\s*(bash|sh|zsh)\b'
       - '\beval\s+[\$"''][^\n]*base64\s+(-d|--decode|-D)'
-      - '\bperl\s+-e\b[^\n]*pack\s*\([''"]H\*[''"]\s*,'
+      - '\bperl\s+-e\b[^\n]*pack\s*\(\s*(?:[''"]H\*[''"]|q\{H\*\}|qq\{H\*\})\s*,'
     action: block
 
   # ── HIGH: TLS/SSL certificate verification disabled ──────────────
