@@ -63,7 +63,7 @@ rules:
     fields: [command]
     patterns:
       # Root wipe: rm -rf /, rm -rf /*
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+/(\s|\*|$)'
+      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/["'']?(\s|\*|$)'
       # System-critical paths — block at any depth
       - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|\s|$)'
       # Top-level user/system dirs — block only when target IS the dir
@@ -122,7 +122,7 @@ rules:
     fields: [command]
     patterns:
       - 'bash\s+-i\s+>&\s*/dev/tcp/'
-      - '/dev/tcp/\d'
+      - '/dev/tcp/[^\s/]+'
       # nc listener with -e/-c/--exec (explicit reverse shell)
       - '\bnc\b[^\n]*\s-[a-z]*l[a-z]*[^\n]*\s(-e|-c|--exec|--sh-exec)\b'
       # nc with combined -lvp/-lp/-pl flags (local-port + listen, typical reverse-shell setup)
@@ -545,10 +545,12 @@ rules:
     fields: [command]
     patterns:
       - '\bgit\s+config\b[^\n]*\bhttp\.sslVerify\s+false'
+      - '\bgit\b[^\n]*\s-c\s+http\.sslVerify\s*=\s*false'
       - '\bGIT_SSL_NO_VERIFY\s*=\s*(1|true|yes)'
       - '\bStrictHostKeyChecking\s*=\s*no\b'
       - '\bUserKnownHostsFile\s*=\s*/dev/null\b'
-      - '\bcurl\b[^\n]*\s(--insecure|-k)\b'
+      - '\bcurl\b[^\n]*\s--insecure\b'
+      - '\bcurl\b[^\n]*\s-[a-zA-Z]*k[a-zA-Z]*\b'
       - '\bwget\b[^\n]*\s--no-check-certificate\b'
       - '\bnpm\s+config\s+set\s+strict-ssl\s+false\b'
       - '\bNODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0\b'
@@ -759,9 +761,16 @@ rules:
     fields: [command]
     patterns:
       - '\bnpm\s+publish\b[^\n]*--registry\s+https?://'
-      - '\bnpm\s+install\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
-      - '\byarn\s+(add|install)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
-      - '\bpnpm\s+(add|install)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
+      # npm/yarn/pnpm with --registry anywhere in the command (flag position
+      # flexible: before or after install/i/add). Matches `npm i --registry X`,
+      # `npm --registry X install foo`, etc. Negative lookahead excludes the
+      # official registry.
+      - '\bnpm\s+(?:install|i|add)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
+      - '\bnpm\s+--registry\s+https?://(?!registry\.npmjs\.org)[^\n]*\b(install|i|add)\b'
+      - '\byarn\s+(?:add|install)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
+      - '\byarn\s+--registry\s+https?://(?!registry\.npmjs\.org)[^\n]*\b(add|install)\b'
+      - '\bpnpm\s+(?:add|install|i)\b[^\n]*--registry\s+https?://(?!registry\.npmjs\.org)'
+      - '\bpnpm\s+--registry\s+https?://(?!registry\.npmjs\.org)[^\n]*\b(add|install|i)\b'
       - '\bpip3?\s+install\b[^\n]*\s-i\s+https?://(?!pypi\.org)'
       - '\btwine\s+upload\b[^\n]*--repository-url\b'
     action: warn
