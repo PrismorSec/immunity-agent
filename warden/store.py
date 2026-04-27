@@ -68,8 +68,6 @@ def get_sessions_dir(workspace: Path) -> Path:
     return get_data_dir(workspace) / "sessions"
 
 
-def get_scoped_dir(workspace: Path) -> Path:
-    return get_data_dir(workspace) / "scoped"
 
 
 def ensure_data_dirs(workspace: Path) -> None:
