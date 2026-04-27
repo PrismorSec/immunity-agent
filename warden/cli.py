@@ -589,6 +589,30 @@ def main() -> None:
         normalized = normalize_payload(agent=args.agent, payload=payload, workspace=workspace)
         event = normalized["event"]
         append_session_event(workspace, normalized["sessionId"], event)
+
+        # ── Scoped agent: synthesize rules on first prompt ────────────
+        if event.get("agent_event") == "UserPromptSubmit":
+            try:
+                from warden.scoped_agent import (
+                    load_scoped_rules as _load_scoped,
+                    synthesize_scoped_rules as _synthesize_scoped,
+                    save_scoped_rules as _save_scoped,
+                    format_scoped_rules_box as _format_scoped_box,
+                )
+                _existing_scoped = _load_scoped(workspace, normalized["sessionId"])
+                if _existing_scoped is None and event.get("prompt"):
+                    _available_tools = ["Bash", "Read", "Edit", "MultiEdit", "Write", "WebFetch", "WebSearch"]
+                    _scoped_rules = _synthesize_scoped(
+                        goal=event["prompt"],
+                        available_tools=_available_tools,
+                        workspace=workspace,
+                    )
+                    if _scoped_rules:
+                        _save_scoped(workspace, normalized["sessionId"], _scoped_rules)
+                        sys.stderr.write(_format_scoped_box(_scoped_rules) + "\n")
+            except Exception as _scoped_exc:
+                sys.stderr.write(f"[warden] scoped agent error: {_scoped_exc}\n")
+
         events = read_session_events(workspace, normalized["sessionId"])
         result = analyze_events(events, repo_root=repo_root, workspace=workspace, session_id=normalized["sessionId"])
         save_session_snapshot(
@@ -607,6 +631,27 @@ def main() -> None:
         from warden.policy_engine import PolicyEngine as _PolicyEngine
         _current_engine = _PolicyEngine(workspace=workspace)
         current_findings = _current_engine.evaluate(event, len(events) - 1, session_id=normalized["sessionId"])
+
+        # ── Scoped agent: enforce session-scoped rules ────────────────
+        try:
+            from warden.scoped_agent import load_scoped_rules as _load_sr, check_scoped_rules as _check_sr
+            _sr = _load_sr(workspace, normalized["sessionId"])
+            if _sr is not None:
+                _sr_finding = _check_sr(_sr, event, session_id=normalized["sessionId"])
+                if _sr_finding:
+                    current_findings.append(_sr_finding)
+        except Exception as _sr_exc:
+            sys.stderr.write(f"[warden] scoped enforcement error: {_sr_exc}\n")
+
+        # ── Learning: evasion detection on passing shell events ───────
+        if not current_findings and event.get("type") == "shell":
+            try:
+                from warden.learning import detect_evasion as _detect_evasion
+                _evasion_findings = _detect_evasion(workspace, normalized["sessionId"], event, current_findings)
+                if _evasion_findings:
+                    current_findings.extend(_evasion_findings)
+            except Exception as _ev_exc:
+                sys.stderr.write(f"[warden] evasion detection error: {_ev_exc}\n")
 
         # Forward findings to configured telemetry sinks (webhook/syslog/file)
         # BEFORE the blocking decision — so a SIEM sees every event, even
@@ -643,6 +688,17 @@ def main() -> None:
         elif args.mode == "observe" and blocking is not None:
             # Show warnings in observe mode so humans/agents see feedback.
             sys.stderr.write(_color(f"[warden] ", _YELLOW) + f"[{blocking['severity']}] {blocking['title']}\n")
+            # Record as dismissal for learning (observe mode = user saw but continued)
+            try:
+                from warden.learning import record_dismissal as _record_dismissal
+                _record_dismissal(
+                    workspace, normalized["sessionId"],
+                    blocking.get("ruleId", "unknown"),
+                    blocking.get("evidence", ""),
+                    "user_skip",
+                )
+            except Exception:
+                pass  # best-effort, don't break the hook
         return
 
     # ── sweep ──────────────────────────────────────────────────────────
@@ -911,6 +967,146 @@ def main() -> None:
             _policy_test(workspace, test_file=getattr(args, "file", None))
             return
 
+    # ── scope subcommands ───────────────────────────────────────────────
+    if args.command == "scope":
+        from warden.scoped_agent import (
+            load_scoped_rules, clear_scoped_rules,
+            list_scoped_sessions, format_scoped_rules_box,
+        )
+        sub = getattr(args, "scope_command", None)
+        if sub == "show":
+            sid = getattr(args, "session_id", None)
+            if sid:
+                rules = load_scoped_rules(workspace, sid)
+                if rules is None:
+                    print(f"No scoped rules for session '{sid}'")
+                    return
+                print(format_scoped_rules_box(rules))
+            else:
+                sessions = list_scoped_sessions(workspace)
+                if not sessions:
+                    print("No active scoped sessions.")
+                    return
+                for s in sessions:
+                    print(f"\n  Session: {s['session_id']}")
+                    print(format_scoped_rules_box(s["rules"]))
+            return
+        if sub == "list":
+            sessions = list_scoped_sessions(workspace)
+            if not sessions:
+                print("No active scoped sessions.")
+                return
+            print(f"  {_color('PRISMOR WARDEN', _BOLD)}  scoped sessions")
+            print(f"  {_color('─' * 50, _DIM)}")
+            for s in sessions:
+                tools = ", ".join(s["rules"].get("allowed_tools", []))
+                print(f"  {s['session_id']}  tools: [{tools}]")
+            return
+        if sub == "edit":
+            sid = args.session_id
+            from warden.scoped_agent import _scoped_path
+            path = _scoped_path(workspace, sid)
+            if not path.exists():
+                sys.stderr.write(f"No scoped rules for session '{sid}'\n")
+                raise SystemExit(1)
+            editor = os.environ.get("EDITOR", "vi")
+            os.system(f'{editor} "{path}"')
+            return
+        if sub == "clear":
+            sid = args.session_id
+            if clear_scoped_rules(workspace, sid):
+                print(_color("Cleared", _GREEN) + f" scoped rules for session '{sid}'")
+            else:
+                print(f"No scoped rules for session '{sid}'")
+            return
+        # Default: show all
+        sessions = list_scoped_sessions(workspace)
+        if not sessions:
+            print("No active scoped sessions. Scoped rules are created automatically on session start.")
+            return
+        for s in sessions:
+            print(f"\n  Session: {s['session_id']}")
+            print(format_scoped_rules_box(s["rules"]))
+        return
+
+    # ── learn subcommand ──────────────────────────────────────────────
+    if args.command == "learn":
+        from warden.learning import (
+            mine_patterns, track_false_positives, propose_rule_refinements,
+            save_candidate_rules, list_candidate_rules,
+            accept_candidate_rule, reject_candidate_rule,
+            format_learning_report,
+        )
+
+        # Accept a candidate
+        if getattr(args, "apply", None) is not None:
+            rule = accept_candidate_rule(workspace, args.apply)
+            if rule is None:
+                sys.stderr.write(f"No pending candidate with id {args.apply}\n")
+                raise SystemExit(1)
+            # Append to project policy
+            import yaml
+            policy_path = workspace / ".prismor-warden" / "policy.yaml"
+            policy: Dict[str, Any] = {}
+            if policy_path.exists():
+                policy = yaml.safe_load(policy_path.read_text()) or {}
+            rules_list = policy.setdefault("rules", [])
+            rules_list.append(rule)
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(yaml.dump(policy, default_flow_style=False, sort_keys=False))
+            print(_color("Accepted", _GREEN) + f" candidate rule '{rule['id']}' → .prismor-warden/policy.yaml")
+            return
+
+        # Reject a candidate
+        if getattr(args, "reject", None) is not None:
+            if reject_candidate_rule(workspace, args.reject):
+                print(_color("Rejected", _YELLOW) + f" candidate #{args.reject}")
+            else:
+                sys.stderr.write(f"No pending candidate with id {args.reject}\n")
+                raise SystemExit(1)
+            return
+
+        # List candidates
+        if getattr(args, "candidates", False):
+            pending = list_candidate_rules(workspace, status="pending")
+            if not pending:
+                print("No pending candidate rules.")
+                return
+            print(f"  {_color('PRISMOR WARDEN', _BOLD)}  candidate rules")
+            print(f"  {_color('─' * 50, _DIM)}")
+            for c in pending:
+                rule = c["rule"]
+                print(f"  [{c['id']}] {rule.get('title', rule.get('id', '?'))}")
+                print(f"       Confidence: {c['confidence']:.0%}  |  Support: {c['support_count']}  |  Source: {c['source']}")
+                if c.get("sample_evidence"):
+                    print(f"       Sample: {c['sample_evidence'][:100]}")
+                print()
+            print(f"Use {_color('warden learn --apply ID', _BOLD)} to accept a rule.")
+            return
+
+        # Run full learning analysis
+        candidates = mine_patterns(workspace, min_support=args.min_support)
+        false_pos = track_false_positives(workspace, threshold=args.fp_threshold)
+        refinements = propose_rule_refinements(workspace)
+
+        # Save mined candidates
+        if candidates:
+            saved = save_candidate_rules(workspace, candidates)
+            if saved:
+                sys.stderr.write(f"[warden] saved {saved} candidate rule(s) to database\n")
+
+        if getattr(args, "json_output", False):
+            print(json.dumps({
+                "candidates": [{"id": c.get("id"), "rule": c["rule"], "confidence": c["confidence"],
+                                "support_count": c["support_count"], "source": c["source"]}
+                               for c in candidates],
+                "false_positives": false_pos,
+                "refinements": refinements,
+            }, indent=2))
+        else:
+            print(format_learning_report(candidates, false_pos, refinements))
+        return
+
     raise SystemExit(f"Unsupported command: {args.command}")
 
 
@@ -1105,6 +1301,42 @@ def build_parser() -> argparse.ArgumentParser:
     c_remove.add_argument("identifier", help="Canary id or path")
 
     canary_sub.add_parser("status", help="Summary of registered canaries and recent hits")
+
+    # ── scope ─────────────────────────────────────────────────────────
+    scope_parser = subparsers.add_parser(
+        "scope",
+        help="Manage session-scoped agent rules",
+    )
+    scope_sub = scope_parser.add_subparsers(dest="scope_command")
+
+    scope_show = scope_sub.add_parser("show", help="Show active scoped rules for a session")
+    scope_show.add_argument("--session-id", help="Session ID (default: list all active)")
+
+    scope_edit = scope_sub.add_parser("edit", help="Edit scoped rules in $EDITOR")
+    scope_edit.add_argument("session_id", help="Session ID to edit")
+
+    scope_clear = scope_sub.add_parser("clear", help="Remove scoped rules for a session")
+    scope_clear.add_argument("session_id", help="Session ID to clear")
+
+    scope_sub.add_parser("list", help="List all sessions with active scoped rules")
+
+    # ── learn ─────────────────────────────────────────────────────────
+    learn_parser = subparsers.add_parser(
+        "learn",
+        help="Analyze session history and propose new rules or improvements",
+    )
+    learn_parser.add_argument("--min-support", type=int, default=3,
+                              help="Minimum occurrences for pattern mining (default: 3)")
+    learn_parser.add_argument("--fp-threshold", type=int, default=5,
+                              help="Dismissal count to flag false positives (default: 5)")
+    learn_parser.add_argument("--json", action="store_true", dest="json_output",
+                              help="Output raw JSON instead of formatted report")
+    learn_parser.add_argument("--apply", metavar="RULE_ID", type=int,
+                              help="Accept a candidate rule and append to project policy")
+    learn_parser.add_argument("--reject", metavar="RULE_ID", type=int,
+                              help="Reject a candidate rule")
+    learn_parser.add_argument("--candidates", action="store_true",
+                              help="List pending candidate rules")
 
     return parser
 

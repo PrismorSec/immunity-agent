@@ -68,6 +68,10 @@ def get_sessions_dir(workspace: Path) -> Path:
     return get_data_dir(workspace) / "sessions"
 
 
+def get_scoped_dir(workspace: Path) -> Path:
+    return get_data_dir(workspace) / "scoped"
+
+
 def ensure_data_dirs(workspace: Path) -> None:
     get_sessions_dir(workspace).mkdir(parents=True, exist_ok=True)
 
@@ -137,6 +141,10 @@ def initialize_database(workspace: Path) -> Path:
             CREATE INDEX IF NOT EXISTS idx_findings_session_id ON findings(session_id);
             """
         )
+        # Add learning tables (Tier 3: Session-Based Learning)
+        from warden.learning import initialize_learning_tables
+        initialize_learning_tables(connection)
+
         connection.commit()
     finally:
         connection.close()
