@@ -596,7 +596,7 @@ def format_learning_report(
         for c in candidates:
             rule = c["rule"]
             lines.append(
-                f"  [{c['id']}] {rule['title']}"
+                f"  [{c.get('id', c['rule'].get('id', '?'))}] {rule['title']}"
             )
             lines.append(
                 f"       Confidence: {c['confidence']:.0%}  |  "

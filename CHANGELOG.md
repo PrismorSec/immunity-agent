@@ -4,6 +4,55 @@ All notable changes to Immunity Agent (Prismor Warden) are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-04-27
+
+Tier 3 — Scoped Agent and Session-Based Learning. Adds per-session rule
+synthesis via the Anthropic API, a session-based learning engine that mines
+uncovered command patterns and detects evasion attempts, and five security
+and correctness fixes from code review.
+
+### Added
+
+- **Scoped Agent** (`warden/scoped_agent.py`). On `UserPromptSubmit`, Warden
+  calls the Anthropic API (Haiku) to synthesise a minimal, task-specific rule
+  set from the user's goal — restricting tools, file paths, and network access
+  to only what the task genuinely requires. Falls back to keyword-based static
+  heuristics when no API key is present. Scoped rules are stored as JSON
+  sidecar files in `.prismor-warden/scoped/` and enforced alongside
+  `policy.yaml` for the duration of that session only.
+- **Session-Based Learning** (`warden/learning.py`). Mines historical session
+  data for recurring uncovered command patterns, tracks false positives from
+  dismissed findings, and detects evasion attempts where structurally similar
+  commands (e.g. backtick vs `$()` substitution) bypass existing rules.
+  Candidate rules can be reviewed and promoted to `policy.yaml`.
+- **`warden scope` subcommands** — `show`, `list`, `edit`, `clear` for
+  inspecting and managing active scoped sessions.
+- **`warden learn` subcommands** — `--json`, `--apply`, `--reject`,
+  `--candidates` for reviewing and acting on mined rule proposals.
+- **Evasion detection** — shell commands that pass policy but are structurally
+  similar (Jaccard ≥ 0.6 after substitution normalisation) to a recently
+  blocked command in the same session are flagged as `HIGH` findings.
+- **Dismissal tracking** — in observe mode, dismissed findings are recorded
+  in the database and surfaced via `warden learn` as false-positive candidates.
+
+### Fixed
+
+- **Prompt-injection mitigation in scoped rule synthesis**: LLM-returned
+  `allowed_tools` and `deny_tools` are now clamped to the known-good
+  `available_tools` list, preventing a crafted task prompt from expanding the
+  scoped policy beyond what the agent actually has access to.
+- **Command injection in `warden scope edit`**: replaced
+  `os.system(f'{editor} "{path}"')` with `subprocess.run([editor, path])`
+  to prevent shell metacharacter exploitation via the `$EDITOR` env var.
+- **`KeyError: 'id'` in `warden learn` output**: `format_learning_report`
+  now uses `c.get('id', c['rule'].get('id', '?'))` so freshly-mined
+  candidates (not yet persisted to the DB) display correctly.
+- **Misleading scoped-rules display text**: the rules box now correctly states
+  that rules persist in `.prismor-warden/scoped/` rather than claiming they
+  are not saved.
+- **Removed dead `get_scoped_dir()` from `warden/store.py`**: the function
+  was unreachable and pointed to a different path than `scoped_agent._scoped_dir`.
+
 ## [1.1.0] — 2026-04-24
 
 Tier 1 coverage expansion from `IMPROVEMENT_PLAN.md` — focused on closing

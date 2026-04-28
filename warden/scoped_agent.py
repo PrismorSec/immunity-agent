@@ -106,6 +106,12 @@ def synthesize_scoped_rules(
         if "deny_network" not in rules:
             rules["deny_network"] = True
 
+        # Clamp to the known-good available_tools list to prevent prompt injection
+        # from expanding the allowed set beyond what the agent actually has.
+        available_set = set(available_tools)
+        rules["allowed_tools"] = [t for t in rules["allowed_tools"] if t in available_set]
+        rules["deny_tools"] = [t for t in rules["deny_tools"] if t in available_set]
+
         return rules
 
     except Exception as exc:
@@ -298,7 +304,7 @@ def format_scoped_rules_box(rules: Dict[str, Any]) -> str:
         f"  deny_tools:     [{denied}]",
         f"  deny_network:   {network}",
         "",
-        "  These rules apply this session only and are not saved.",
+        "  These rules apply this session only and persist in .prismor-warden/scoped/",
     ]
 
     max_width = max(len(line) for line in content_lines) + 4

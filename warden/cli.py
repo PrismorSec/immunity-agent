@@ -35,6 +35,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1010,7 +1011,7 @@ def main() -> None:
                 sys.stderr.write(f"No scoped rules for session '{sid}'\n")
                 raise SystemExit(1)
             editor = os.environ.get("EDITOR", "vi")
-            os.system(f'{editor} "{path}"')
+            subprocess.run([editor, str(path)])
             return
         if sub == "clear":
             sid = args.session_id
