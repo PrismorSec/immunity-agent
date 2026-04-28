@@ -23,6 +23,12 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 
 ---
 
+## Warden in Action
+
+![Warden Runtime Monitor](assets/warden-runtime-monitor.gif)
+
+---
+
 ## Quick Start
 
 Ensure PyYAML is installed (required for the policy engine), then clone and install:
