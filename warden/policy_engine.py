@@ -115,6 +115,7 @@ class PolicyEngine:
         self._manifest_re: Optional[re.Pattern[str]] = None
         self.egress_allowlist: List[str] = []
         self.outputs: List[Dict[str, Any]] = []
+        self.audit_settings: Dict[str, Any] = {}
         self._load(workspace, policy_path)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -178,6 +179,10 @@ class PolicyEngine:
             self._manifest_re = re.compile(joined, re.IGNORECASE)
 
         self.egress_allowlist = list(settings.get("egress_allowlist", []) or [])
+
+        audit_settings = settings.get("audit") or {}
+        if isinstance(audit_settings, dict):
+            self.audit_settings = audit_settings
 
         # Compile rules.
         for rule_data in rules_by_id.values():

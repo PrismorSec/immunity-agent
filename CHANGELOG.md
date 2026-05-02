@@ -4,6 +4,59 @@ All notable changes to Immunity Agent (Prismor Warden) are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-05-03
+
+Signed audit log. Every Warden decision (allow / observe / block) is now
+recorded as a hash-chained, optionally Ed25519-signed record so that a third
+party with the public key can verify what the agent attempted, what was
+blocked, and why — and prove the log has not been tampered with.
+
+### Added
+
+- **`warden/audit_log.py`** — append-only NDJSON decision log at
+  `.prismor-warden/audit/<session>.ndjson`. Each record carries `seq`,
+  `prev_hash`, `record_hash` (SHA-256 of canonical bytes), the redacted event,
+  the decision, the matching findings, and pinned `policy_hash` and
+  `feed_hash` so a verifier can reconstruct the policy that was in effect at
+  decision time. Pinned policy and feed snapshots are written once per hash
+  under `audit/policies/<hash>/` and `audit/feed/<hash>.json`.
+- **`warden/signing.py`** — Ed25519 keygen, sign, verify, and key fingerprint
+  helpers. Uses the `cryptography` library when present; falls back to
+  `openssl pkeyutl` (the same approach as `pipeline/sign_feed.sh`) so the
+  package keeps working in minimal environments.
+- **`warden audit-log` CLI** — `keygen`, `pubkey`, `list`, `show`, `verify`,
+  `seal`, `register-pubkey`, `replay`. `verify` walks the chain, recomputes
+  hashes, and validates signatures, exiting non-zero on tampering. `seal`
+  writes a signed manifest of the head hash on session close.
+- **Per-decision sink-friendly record** — the audit log is written for every
+  decision (not just blocks), so an external verifier or SIEM consumer can
+  audit the full agent trajectory rather than only the denied actions.
+
+### Security properties
+
+- **Hash-chained**. Modifying any record breaks `record_hash` for that record
+  and `prev_hash` for the next; `warden audit-log verify` flags both.
+- **Signed (opt-in)**. Generate a keypair with `warden audit-log keygen`; from
+  then on every record carries an Ed25519 signature over its canonical bytes,
+  and tampering invalidates the signature even if an attacker recomputes the
+  hash chain.
+- **Privacy-preserving by default**. Sensitive event fields (`command`,
+  `path`, `url`, `prompt`, `content`, `response`) are stored as SHA-256
+  digests plus length, not plaintext. Set `audit.include_raw: true` under
+  `settings` in `policy.yaml` to retain raw text for orgs that need it.
+- **Replay-ready**. Pinned `policy_hash` and `feed_hash` make decisions
+  reproducible: `warden audit-log replay` checks that all referenced policy
+  snapshots are present on disk.
+
+### Changed
+
+- `PolicyEngine` exposes `audit_settings` parsed from `settings.audit` in
+  `policy.yaml`, used by the dispatcher to decide whether to retain raw
+  evidence in audit records.
+- `warden hook-dispatch` now writes one audit record per decision after
+  running the policy engine and before applying the block. Failures are
+  logged to stderr and never block the user's tool call.
+
 ## [1.2.0] — 2026-04-27
 
 Tier 3 — Scoped Agent and Session-Based Learning. Adds per-session rule

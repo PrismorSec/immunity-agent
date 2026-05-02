@@ -355,6 +355,10 @@ def main() -> None:
             raise SystemExit(1)
         return
 
+    # ── audit-log: tamper-evident decision log ──────────────────────
+    if args.command == "audit-log":
+        return _cmd_audit_log(args, workspace=workspace, repo_root=repo_root)
+
     # ── audit: full security posture check ──────────────────────────
     if args.command == "audit":
         from warden.audit import run_audit, apply_fixes, AuditFinding
@@ -674,6 +678,39 @@ def main() -> None:
                 sys.stderr.write(f"[warden] sink dispatch error: {_sink_exc}\n")
 
         blocking = should_block(current_findings, event, block_categories=set(result.get("blockCategories", [])))
+
+        # Derive a single decision label (allow/observe/block) for the audit log.
+        if blocking is not None and args.mode == "enforce":
+            _decision = "block"
+        elif blocking is not None and args.mode == "observe":
+            _decision = "observe"
+        else:
+            _decision = "allow"
+
+        # ── Tamper-evident audit log ──────────────────────────────────
+        # Append one chained, optionally-signed record per decision.
+        # Best-effort: never block the hook on audit failures.
+        try:
+            from warden.audit_log import write_record as _audit_write, detect_signing as _detect_signing
+            _signing = _detect_signing()
+            _audit_cfg = getattr(_current_engine, "audit_settings", {}) or {}
+            _include_raw = bool(_audit_cfg.get("include_raw", False))
+            _audit_write(
+                workspace=workspace,
+                session_id=normalized["sessionId"],
+                agent=args.agent,
+                mode=args.mode,
+                event=event,
+                decision=_decision,
+                findings=current_findings,
+                repo_root=repo_root,
+                agent_version=f"warden {__version__}",
+                include_raw=_include_raw,
+                signing=_signing,
+            )
+        except Exception as _audit_exc:
+            sys.stderr.write(f"[warden] audit-log error: {_audit_exc}\n")
+
         if args.mode == "enforce" and blocking is not None:
             if args.agent == "copilot":
                 # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
@@ -1111,6 +1148,194 @@ def main() -> None:
     raise SystemExit(f"Unsupported command: {args.command}")
 
 
+# ── audit-log command handlers ─────────────────────────────────────────────
+
+def _cmd_audit_log(args, *, workspace: Path, repo_root: Path) -> None:
+    from warden import audit_log as al
+    from warden.signing import keygen, key_id
+
+    sub = getattr(args, "audit_log_command", None)
+
+    if sub == "keygen":
+        out_dir = Path(args.out_dir).expanduser() if args.out_dir else (Path.home() / ".prismor" / "keys")
+        priv = out_dir / "audit-signer.key"
+        pub = out_dir / "audit-signer.pub"
+        if priv.exists() and not args.force:
+            sys.stderr.write(f"Refusing to overwrite existing key {priv} — use --force to replace.\n")
+            raise SystemExit(1)
+        keygen(priv, pub)
+        kid = key_id(pub)
+        print(f"  {_color('Wrote private key', _GREEN)}  {priv}  (mode 0600)")
+        print(f"  {_color('Wrote public key', _GREEN)}   {pub}")
+        print(f"  {_color('key_id', _BOLD)}  {kid}")
+        print()
+        print("  Audit records will now be Ed25519-signed automatically.")
+        print(f"  Distribute the public key so verifiers can validate signatures:")
+        print(f"    cat {pub}")
+        return
+
+    if sub == "pubkey":
+        path = Path(args.key).expanduser() if args.key else al.default_signing_pubkey_path()
+        if not path.exists():
+            sys.stderr.write(f"No public key found at {path}\n")
+            sys.stderr.write(f"Run `warden audit-log keygen` to create one.\n")
+            raise SystemExit(1)
+        sys.stdout.write(path.read_text())
+        sys.stderr.write(f"\nkey_id: {key_id(path)}\n")
+        return
+
+    if sub == "list":
+        files = al.list_session_files(workspace)
+        if not files:
+            print("  No audit logs in this workspace.")
+            return
+        for f in files:
+            session_id = f.stem
+            n = sum(1 for _ in al.read_records(f))
+            sealed = al.seal_path(workspace, session_id).exists()
+            seal_marker = _color("sealed", _GREEN) if sealed else _color("open", _DIM)
+            print(f"  {session_id}  {n} records  [{seal_marker}]")
+        return
+
+    if sub == "show":
+        path = al.session_path(workspace, args.session_id)
+        if not path.exists():
+            sys.stderr.write(f"No audit log for session {args.session_id} at {path}\n")
+            raise SystemExit(1)
+        records = list(al.read_records(path))
+        if args.limit:
+            records = records[-args.limit:]
+        if args.json:
+            for r in records:
+                print(json.dumps(r))
+            return
+        print()
+        print(f"  {_color('AUDIT LOG', _BOLD)}  session={args.session_id}  ({len(records)} of {sum(1 for _ in al.read_records(path))} records)")
+        print(f"  {_color('─' * 58, _DIM)}")
+        for r in records:
+            decision = r.get("decision", "?")
+            color = _GREEN if decision == "allow" else (_YELLOW if decision == "observe" else _RED)
+            sig_marker = _color("✓ signed", _DIM) if "sig" in r else _color("unsigned", _DIM)
+            ev = r.get("event", {})
+            ev_summary = ev.get("agent_event") or ev.get("type") or "?"
+            print(f"  seq={r.get('seq'):>3}  {_color(decision.upper(), color):<14}  {ev_summary:<20}  {sig_marker}  {r.get('record_hash','')[:12]}")
+            if r.get("findings"):
+                for f in r["findings"]:
+                    print(f"           {_color(f.get('severity','?'), _RED)}  {f.get('rule_id')}: {f.get('title')}")
+        print()
+        return
+
+    if sub == "verify":
+        sessions: List[Path] = []
+        if args.session_id:
+            p = al.session_path(workspace, args.session_id)
+            if not p.exists():
+                sys.stderr.write(f"No audit log for session {args.session_id}\n")
+                raise SystemExit(1)
+            sessions.append(p)
+        else:
+            sessions = al.list_session_files(workspace)
+        if not sessions:
+            print("  No audit logs to verify.")
+            return
+
+        results: List[Dict[str, Any]] = []
+        all_ok = True
+        for path in sessions:
+            r = al.verify_chain(path, workspace=workspace)
+            all_ok = all_ok and r.ok
+            results.append({
+                "session_id": path.stem,
+                "ok": r.ok,
+                "records": r.records,
+                "signed": r.signed,
+                "unsigned": r.unsigned,
+                "chain_breaks": r.chain_breaks,
+                "bad_signatures": r.bad_signatures,
+                "missing_pubkeys": r.missing_pubkeys,
+            })
+
+        if args.json:
+            print(json.dumps({"ok": all_ok, "sessions": results}, indent=2))
+            return
+
+        print()
+        print(f"  {_color('AUDIT VERIFY', _BOLD)}")
+        print(f"  {_color('─' * 58, _DIM)}")
+        for entry in results:
+            status = _color("PASS", _GREEN) if entry["ok"] else _color("FAIL", _RED)
+            print(f"  [{status}] {entry['session_id']}  — {entry['records']} record(s), {entry['signed']} signed, {entry['unsigned']} unsigned")
+            for seq, reason in entry["chain_breaks"]:
+                print(f"           {_color('chain', _RED)}  seq={seq}: {reason}")
+            for seq, reason in entry["bad_signatures"]:
+                print(f"           {_color('sig', _RED)}    seq={seq}: {reason}")
+            for kid in entry["missing_pubkeys"]:
+                print(f"           {_color('pubkey', _YELLOW)} key_id={kid} not registered")
+        print()
+        if not all_ok:
+            raise SystemExit(2)
+        return
+
+    if sub == "seal":
+        signing = al.detect_signing()
+        manifest = al.seal_session(workspace=workspace, session_id=args.session_id, signing=signing)
+        if manifest is None:
+            sys.stderr.write(f"No audit log to seal for session {args.session_id}\n")
+            raise SystemExit(1)
+        print(f"  {_color('Sealed', _GREEN)} {args.session_id}")
+        print(f"  records:    {manifest['records']}")
+        print(f"  head_hash:  {manifest['head_hash']}")
+        if "sig" in manifest:
+            print(f"  signed:     {_color('yes', _GREEN)}  key_id={manifest['sig']['key_id']}")
+        else:
+            print(f"  signed:     {_color('no', _DIM)}")
+        return
+
+    if sub == "register-pubkey":
+        kid = al.register_pubkey(workspace, Path(args.pubkey))
+        print(f"  Registered key_id={kid} in {al.pubkeys_dir(workspace)}")
+        return
+
+    if sub == "replay":
+        path = al.session_path(workspace, args.session_id)
+        if not path.exists():
+            sys.stderr.write(f"No audit log for session {args.session_id}\n")
+            raise SystemExit(1)
+        records = list(al.read_records(path))
+        if not records:
+            print("  Empty session.")
+            return
+        # Group by policy_hash; warn if drift detected
+        hashes = sorted({r.get("policy_hash") for r in records if r.get("policy_hash")})
+        if args.json:
+            print(json.dumps({
+                "session_id": args.session_id,
+                "records": len(records),
+                "policy_hashes": hashes,
+                "decisions": [{"seq": r.get("seq"), "decision": r.get("decision"),
+                               "rule_ids": [f.get("rule_id") for f in r.get("findings", [])]}
+                              for r in records],
+            }, indent=2))
+            return
+        print()
+        print(f"  {_color('REPLAY', _BOLD)}  session={args.session_id}")
+        print(f"  records: {len(records)}")
+        print(f"  policy_hashes encountered: {len(hashes)}")
+        for h in hashes:
+            snap = al.policies_dir(workspace) / h
+            mark = _color("pinned", _GREEN) if snap.exists() else _color("missing", _RED)
+            print(f"    {h[:16]}…  [{mark}]")
+        n_block = sum(1 for r in records if r.get("decision") == "block")
+        n_obs = sum(1 for r in records if r.get("decision") == "observe")
+        n_allow = sum(1 for r in records if r.get("decision") == "allow")
+        print(f"  decisions: {_color(str(n_block)+' block', _RED)}, {_color(str(n_obs)+' observe', _YELLOW)}, {_color(str(n_allow)+' allow', _GREEN)}")
+        print()
+        return
+
+    sys.stderr.write("Usage: warden audit-log {keygen,pubkey,list,show,verify,seal,register-pubkey,replay}\n")
+    raise SystemExit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Prismor Warden — local session-security utility for AI coding agents.",
@@ -1338,6 +1563,49 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Reject a candidate rule")
     learn_parser.add_argument("--candidates", action="store_true",
                               help="List pending candidate rules")
+
+    # ── audit-log ─────────────────────────────────────────────────────
+    audit_log_parser = subparsers.add_parser(
+        "audit-log",
+        help="Tamper-evident, signed audit log of decisions (allow/observe/block)",
+    )
+    audit_log_sub = audit_log_parser.add_subparsers(dest="audit_log_command")
+
+    al_keygen = audit_log_sub.add_parser("keygen", help="Generate an Ed25519 signing keypair")
+    al_keygen.add_argument("--out-dir", help="Where to write keys (default: ~/.prismor/keys)")
+    al_keygen.add_argument("--force", action="store_true", help="Overwrite existing keys")
+
+    al_pubkey = audit_log_sub.add_parser("pubkey", help="Print the audit-signer public key")
+    al_pubkey.add_argument("--key", help="Path to public key file")
+
+    al_list = audit_log_sub.add_parser("list", help="List sessions with audit logs")
+    al_list.add_argument("--workspace", help="Workspace path")
+
+    al_show = audit_log_sub.add_parser("show", help="Show the audit log for a session")
+    al_show.add_argument("session_id", help="Session ID")
+    al_show.add_argument("--workspace", help="Workspace path")
+    al_show.add_argument("--json", action="store_true", help="Output raw JSON lines")
+    al_show.add_argument("--limit", type=int, default=20, help="Max records (default: 20)")
+
+    al_verify = audit_log_sub.add_parser("verify", help="Verify chain integrity & signatures")
+    al_verify.add_argument("--session-id", help="Specific session (default: all sessions)")
+    al_verify.add_argument("--workspace", help="Workspace path")
+    al_verify.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    al_seal = audit_log_sub.add_parser("seal", help="Seal a session: write a signed manifest of the head hash")
+    al_seal.add_argument("session_id", help="Session ID")
+    al_seal.add_argument("--workspace", help="Workspace path")
+
+    al_register = audit_log_sub.add_parser("register-pubkey",
+        help="Register a verifier public key in this workspace")
+    al_register.add_argument("pubkey", help="Path to a public key PEM file")
+    al_register.add_argument("--workspace", help="Workspace path")
+
+    al_replay = audit_log_sub.add_parser("replay",
+        help="Re-evaluate session events against the pinned policy and assert decisions match")
+    al_replay.add_argument("session_id", help="Session ID")
+    al_replay.add_argument("--workspace", help="Workspace path")
+    al_replay.add_argument("--json", action="store_true", help="Output raw JSON")
 
     return parser
 

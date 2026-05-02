@@ -85,6 +85,7 @@ flowchart TD
 - 🛜 [Network Isolation](docs/network-isolation.md) covers egress allowlists, raw IP detection, and tunnel blocking
 - 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
 - 🔐 [Sweep and Cloak](docs/sweep-and-cloak.md) covers secret prevention at tool boundaries and cleanup for leaked secrets
+- 📜 [Audit Log](docs/audit-log.md) covers the hash-chained, Ed25519-signed decision log for governance and replay
 - 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
 
 ---
