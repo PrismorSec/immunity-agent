@@ -70,32 +70,42 @@
   .sev-card.high     .sev-count { color: #db2777; }
   .sev-card.medium   .sev-count { color: #d97706; }
   .sev-card.low      .sev-count { color: #0284c7; }
-  .sev-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--gray-400); margin-bottom: 6px; }
+  .sev-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+               color: var(--gray-400); margin-bottom: 6px; }
 
   /* Tables */
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; font-size: 11px; color: var(--gray-400); font-weight: 400;
-       padding-bottom: 8px; border-bottom: 1px solid var(--gray-100); cursor: pointer; user-select: none; }
+  th {
+    text-align: left; font-size: 11px; color: var(--gray-400); font-weight: 400;
+    padding-bottom: 8px; border-bottom: 1px solid var(--gray-100);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
   th:hover { color: var(--gray-700); }
   th.right { text-align: right; }
-  td { padding: 6px 0; font-size: 11px; color: var(--gray-700);
-       border-bottom: 1px solid var(--gray-50); vertical-align: middle; }
+  th .sort-ind { font-size: 9px; margin-left: 3px; opacity: 0.4; }
+  th.active-sort { color: var(--gray-700); }
+  th.active-sort .sort-ind { opacity: 1; }
+  td {
+    padding: 6px 0; font-size: 11px; color: var(--gray-700);
+    border-bottom: 1px solid var(--gray-50); vertical-align: middle;
+  }
   td.right { text-align: right; }
-  td.mono { font-family: inherit; color: var(--gray-500); }
+  td.mono { color: var(--gray-500); }
 
+  /* Severity badges */
   .sev-badge {
     display: inline-block; padding: 1px 6px; border-radius: 4px;
     font-size: 10px; font-weight: 500;
   }
   .sev-critical { background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd; }
-  .sev-high { background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4; }
-  .sev-medium { background: #fef9c3; color: #92400e; border: 1px solid #fde68a; }
-  .sev-low { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
+  .sev-high     { background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4; }
+  .sev-medium   { background: #fef9c3; color: #92400e; border: 1px solid #fde68a; }
+  .sev-low      { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
 
   /* Risk bar */
-  .risk-bar-wrap { display: flex; align-items: center; gap: 6px; }
-  .risk-bar { height: 4px; flex: 1; background: var(--gray-100); border-radius: 2px; min-width: 40px; }
-  .risk-bar-fill { height: 100%; border-radius: 2px; }
+  .risk-wrap { display: flex; align-items: center; gap: 6px; }
+  .risk-bar  { height: 4px; flex: 1; background: var(--gray-100); border-radius: 2px; min-width: 40px; }
+  .risk-fill { height: 100%; border-radius: 2px; }
   .risk-0  { background: #4ade80; }
   .risk-30 { background: #facc15; }
   .risk-60 { background: #f97316; }
@@ -104,34 +114,63 @@
 
   /* Agent pill */
   .agent-pill {
-    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    display: inline-block; padding: 1px 7px; border-radius: 4px;
     font-size: 10px; background: var(--gray-100); color: var(--gray-600);
   }
 
-  /* Filter bar */
-  .filter-bar {
+  /* Filter + pager bar */
+  .bar {
     display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
   }
-  .filter-bar label { font-size: 10px; color: var(--gray-400); }
-  .filter-select {
+  .bar label { font-size: 10px; color: var(--gray-400); }
+  .bar-sep { width: 1px; height: 16px; background: var(--gray-200); margin: 0 4px; }
+  .fsel {
     font-family: inherit; font-size: 11px; color: var(--gray-700);
     background: var(--gray-50); border: 1px solid var(--gray-200);
     border-radius: 4px; padding: 3px 6px; outline: none; cursor: pointer;
   }
-  .filter-select:focus { border-color: var(--purple); }
-  .filter-input {
+  .fsel:focus { border-color: var(--purple); }
+  .finput {
     font-family: inherit; font-size: 11px; color: var(--gray-700);
     background: var(--gray-50); border: 1px solid var(--gray-200);
     border-radius: 4px; padding: 3px 8px; outline: none; width: 180px;
   }
-  .filter-input:focus { border-color: var(--purple); }
-  .filter-btn {
+  .finput:focus { border-color: var(--purple); }
+  .fbtn {
     font-family: inherit; font-size: 10px; padding: 3px 10px;
     border: 1px solid var(--gray-200); border-radius: 4px;
     background: var(--gray-50); color: var(--gray-500); cursor: pointer;
   }
-  .filter-btn.active { background: var(--gray-800); color: #fff; border-color: var(--gray-800); }
-  .filter-count { font-size: 10px; color: var(--gray-400); margin-left: auto; }
+  .fbtn.active { background: var(--gray-800); color: #fff; border-color: var(--gray-800); }
+  .bar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .result-count { font-size: 10px; color: var(--gray-400); }
+
+  /* Pagination */
+  .pager {
+    display: flex; align-items: center; gap: 6px; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--gray-100);
+  }
+  .pg-btn {
+    font-family: inherit; font-size: 11px; padding: 3px 10px;
+    border: 1px solid var(--gray-200); border-radius: 4px;
+    background: #fff; color: var(--gray-700); cursor: pointer;
+  }
+  .pg-btn:disabled { opacity: 0.35; cursor: default; }
+  .pg-btn:not(:disabled):hover { background: var(--gray-50); }
+  .pg-nums { display: flex; gap: 4px; }
+  .pg-num {
+    font-family: inherit; font-size: 11px; min-width: 28px; padding: 3px 6px;
+    border: 1px solid transparent; border-radius: 4px;
+    background: none; color: var(--gray-500); cursor: pointer; text-align: center;
+  }
+  .pg-num.cur { background: var(--gray-800); color: #fff; border-color: var(--gray-800); cursor: default; }
+  .pg-num:not(.cur):hover { background: var(--gray-50); border-color: var(--gray-200); }
+  .pg-num.ellipsis { cursor: default; pointer-events: none; }
+  .pg-info { font-size: 10px; color: var(--gray-400); margin-left: 4px; }
+  .pg-limit { font-family: inherit; font-size: 11px; padding: 3px 6px;
+              border: 1px solid var(--gray-200); border-radius: 4px;
+              background: var(--gray-50); color: var(--gray-700); cursor: pointer;
+              margin-left: auto; }
 
   /* Live events */
   .event-row {
@@ -168,22 +207,22 @@
   /* Findings drilldown */
   .finding-row { cursor: pointer; }
   .finding-row:hover td { background: var(--gray-50); }
-  .finding-evidence-row { display: none; }
-  .finding-evidence-row.open { display: table-row; }
-  .finding-evidence-cell {
+  .finding-ev-row { display: none; }
+  .finding-ev-row.open { display: table-row; }
+  .finding-ev-cell {
     padding: 8px 12px 12px; background: var(--gray-50);
     font-size: 11px; color: var(--gray-600); line-height: 1.6;
   }
-  .finding-command {
+  .finding-cmd {
     margin-top: 6px; padding: 6px 8px;
     background: var(--gray-900); color: #e5e7eb;
     border-radius: 4px; font-size: 10px; word-break: break-all;
   }
-  .finding-command:empty { display: none; }
-  .sort-indicator { font-size: 9px; margin-left: 2px; opacity: 0.5; }
+  .finding-cmd:empty { display: none; }
+  .expand-arrow { font-size: 9px; color: var(--gray-300); }
 
   /* Empty state */
-  .empty-state { padding: 24px; text-align: center; font-size: 11px; color: var(--gray-400); }
+  .empty { padding: 24px; text-align: center; font-size: 11px; color: var(--gray-400); }
 
   @media (max-width: 768px) {
     .grid-4, .grid-3, .grid-2, .grid-1-2 { grid-template-columns: 1fr; }
@@ -221,38 +260,22 @@
 
 <!-- Severity Strip -->
 <div class="grid grid-4">
-  <div class="card sev-card critical">
-    <div class="sev-label">Critical</div>
-    <div id="sevCritical" class="sev-count">-</div>
-  </div>
-  <div class="card sev-card high">
-    <div class="sev-label">High</div>
-    <div id="sevHigh" class="sev-count">-</div>
-  </div>
-  <div class="card sev-card medium">
-    <div class="sev-label">Medium</div>
-    <div id="sevMedium" class="sev-count">-</div>
-  </div>
-  <div class="card sev-card low">
-    <div class="sev-label">Low</div>
-    <div id="sevLow" class="sev-count">-</div>
-  </div>
+  <div class="card sev-card critical"><div class="sev-label">Critical</div><div id="sevCritical" class="sev-count">-</div></div>
+  <div class="card sev-card high">    <div class="sev-label">High</div>    <div id="sevHigh"     class="sev-count">-</div></div>
+  <div class="card sev-card medium">  <div class="sev-label">Medium</div>  <div id="sevMedium"   class="sev-count">-</div></div>
+  <div class="card sev-card low">     <div class="sev-label">Low</div>     <div id="sevLow"      class="sev-count">-</div></div>
 </div>
 
 <!-- Row 1: Threats Donut + Block Rate Line -->
 <div class="grid grid-1-2">
   <div class="card">
     <div class="card-title">Threats by Category</div>
-    <div class="chart-container" style="height:190px">
-      <canvas id="donutChart"></canvas>
-    </div>
+    <div class="chart-container" style="height:190px"><canvas id="donutChart"></canvas></div>
     <div id="donutLegend" class="legend-grid"></div>
   </div>
   <div class="card">
     <div class="card-title">Block Rate &mdash; 30 days</div>
-    <div class="chart-container" style="height:240px">
-      <canvas id="lineChart"></canvas>
-    </div>
+    <div class="chart-container" style="height:240px"><canvas id="lineChart"></canvas></div>
   </div>
 </div>
 
@@ -260,15 +283,11 @@
 <div class="grid grid-2">
   <div class="card">
     <div class="card-title">Blocked Commands by Agent</div>
-    <div class="chart-container" style="height:200px">
-      <canvas id="agentBar"></canvas>
-    </div>
+    <div class="chart-container" style="height:200px"><canvas id="agentBar"></canvas></div>
   </div>
   <div class="card">
     <div class="card-title">Tool Call Breakdown</div>
-    <div class="chart-container" style="height:200px">
-      <canvas id="toolBar"></canvas>
-    </div>
+    <div class="chart-container" style="height:200px"><canvas id="toolBar"></canvas></div>
   </div>
 </div>
 
@@ -276,29 +295,42 @@
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
     <div class="card-title">Top MCP Servers &amp; Skills</div>
-    <div class="chart-container" style="height:220px">
-      <canvas id="mcpBar"></canvas>
-    </div>
+    <div class="chart-container" style="height:220px"><canvas id="mcpBar"></canvas></div>
   </div>
 </div>
 
-<!-- Row 4: Recent Sessions -->
+<!-- Row 4: Sessions (paginated) -->
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
-    <div class="card-title">Recent Sessions</div>
+    <div class="card-title">Sessions</div>
+    <div class="bar">
+      <span id="sessCount" class="result-count"></span>
+      <div class="bar-right">
+        <label>Per page</label>
+        <select id="sessLimit" class="fsel">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+    </div>
     <div style="overflow-x:auto">
-      <table id="sessionsTable">
-        <thead><tr>
-          <th data-col="sessionId">Session<span class="sort-indicator">↕</span></th>
-          <th data-col="agent">Agent<span class="sort-indicator">↕</span></th>
-          <th data-col="workspace">Workspace<span class="sort-indicator">↕</span></th>
-          <th data-col="riskScore">Risk Score<span class="sort-indicator">↕</span></th>
-          <th data-col="findingsCount" class="right">Findings<span class="sort-indicator">↕</span></th>
-          <th data-col="updatedAt">Last Active<span class="sort-indicator">↕</span></th>
-        </tr></thead>
-        <tbody id="sessionsBody"></tbody>
+      <table>
+        <thead id="sessThead">
+          <tr>
+            <th data-col="sessionId">Session<span class="sort-ind">↕</span></th>
+            <th data-col="agent">Agent<span class="sort-ind">↕</span></th>
+            <th data-col="workspace">Workspace<span class="sort-ind">↕</span></th>
+            <th data-col="riskScore">Risk Score<span class="sort-ind">↕</span></th>
+            <th data-col="findingsCount" class="right">Findings<span class="sort-ind">↕</span></th>
+            <th data-col="updatedAt">Last Active<span class="sort-ind">↕</span></th>
+          </tr>
+        </thead>
+        <tbody id="sessBody"></tbody>
       </table>
     </div>
+    <div id="sessPager" class="pager"></div>
   </div>
 </div>
 
@@ -321,15 +353,15 @@
   </div>
 </div>
 
-<!-- Row 6: Findings Drilldown -->
+<!-- Row 6: Findings Drilldown (paginated) -->
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
     <div class="card-title">Findings Drilldown</div>
-    <div class="filter-bar">
+    <div class="bar">
       <label>Agent</label>
-      <select id="fAgent" class="filter-select"><option value="">All</option></select>
+      <select id="fAgent" class="fsel"><option value="">All</option></select>
       <label>Severity</label>
-      <select id="fSeverity" class="filter-select">
+      <select id="fSev" class="fsel">
         <option value="">All</option>
         <option value="critical">Critical</option>
         <option value="high">High</option>
@@ -337,34 +369,55 @@
         <option value="low">Low</option>
       </select>
       <label>Category</label>
-      <select id="fCategory" class="filter-select"><option value="">All</option></select>
-      <input id="fSearch" class="filter-input" type="text" placeholder="search title or command…" />
-      <span id="findingsCount" class="filter-count"></span>
+      <select id="fCat" class="fsel"><option value="">All</option></select>
+      <input id="fSearch" class="finput" type="text" placeholder="search title or evidence…" />
+      <div class="bar-right">
+        <span id="findCount" class="result-count"></span>
+        <label>Per page</label>
+        <select id="findLimit" class="fsel">
+          <option value="10">10</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
     </div>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
           <th>Finding</th><th>Agent</th><th>Category</th><th>Severity</th><th>When</th><th style="width:16px"></th>
         </tr></thead>
-        <tbody id="findingsBody"></tbody>
+        <tbody id="findBody"></tbody>
       </table>
     </div>
+    <div id="findPager" class="pager"></div>
   </div>
 </div>
 
-<!-- Row 7: Live Event Feed -->
+<!-- Row 7: Events Feed (paginated) -->
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
-    <div class="card-title">Live Event Feed</div>
-    <div class="filter-bar">
-      <button class="filter-btn active" data-verdict="">All</button>
-      <button class="filter-btn" data-verdict="blocked">Blocked</button>
-      <button class="filter-btn" data-verdict="allowed">Allowed</button>
-      <label style="margin-left:8px">Agent</label>
-      <select id="eAgent" class="filter-select"><option value="">All</option></select>
-      <span id="eventsCount" class="filter-count"></span>
+    <div class="card-title">Event Feed</div>
+    <div class="bar">
+      <button class="fbtn active" data-verdict="">All</button>
+      <button class="fbtn" data-verdict="blocked">Blocked</button>
+      <button class="fbtn" data-verdict="allowed">Allowed</button>
+      <div class="bar-sep"></div>
+      <label>Agent</label>
+      <select id="evtAgent" class="fsel"><option value="">All</option></select>
+      <div class="bar-right">
+        <span id="evtCount" class="result-count"></span>
+        <label>Per page</label>
+        <select id="evtLimit" class="fsel">
+          <option value="20">20</option>
+          <option value="30" selected>30</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
     </div>
-    <div id="eventsContainer"></div>
+    <div id="evtContainer"></div>
+    <div id="evtPager" class="pager"></div>
   </div>
 </div>
 
@@ -376,10 +429,11 @@ const CAT_LABELS = {
   malicious_mcp: 'Malicious MCP', dangerous_command: 'Dangerous Cmd',
 };
 
+// XSS-safe text injection
 function safe(s) {
-  const d = document.createElement('span');
-  d.textContent = String(s || '');
-  return d.outerHTML;
+  const el = document.createElement('span');
+  el.textContent = String(s || '');
+  return el.outerHTML;
 }
 
 function fmtNum(n) {
@@ -396,13 +450,46 @@ function riskClass(n) {
   return 'risk-0';
 }
 
-// ── State ────────────────────────────────────────────────────────────────────
-let _allFindings = [];
-let _allEvents = [];
-let _sessionsData = [];
-let _sessionsSort = { col: 'updatedAt', dir: -1 };
-let _evtVerdict = '';
-let _evtAgent = '';
+// ── Pager builder ────────────────────────────────────────────────────────────
+function buildPager(containerId, state, loadFn) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  if (state.pages <= 1 && state.total === 0) { container.innerHTML = ''; return; }
+
+  const { page, pages, total, limit } = state;
+  const from = total === 0 ? 0 : (page - 1) * limit + 1;
+  const to   = Math.min(page * limit, total);
+
+  // Build page number list with ellipsis
+  const nums = [];
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || (i >= page - 2 && i <= page + 2)) {
+      nums.push(i);
+    } else if (nums[nums.length - 1] !== '…') {
+      nums.push('…');
+    }
+  }
+
+  container.innerHTML =
+    '<button class="pg-btn" id="' + containerId + 'Prev"' + (page <= 1 ? ' disabled' : '') + '>← Prev</button>' +
+    '<div class="pg-nums">' + nums.map(n =>
+      n === '…'
+        ? '<span class="pg-num ellipsis">…</span>'
+        : '<button class="pg-num' + (n === page ? ' cur' : '') + '" data-p="' + n + '">' + n + '</button>'
+    ).join('') + '</div>' +
+    '<button class="pg-btn" id="' + containerId + 'Next"' + (page >= pages ? ' disabled' : '') + '>Next →</button>' +
+    '<span class="pg-info">' + from + '–' + to + ' of ' + fmtNum(total) + '</span>';
+
+  container.querySelector('#' + containerId + 'Prev')
+    ?.addEventListener('click', () => { state.page--; loadFn(); });
+  container.querySelector('#' + containerId + 'Next')
+    ?.addEventListener('click', () => { state.page++; loadFn(); });
+  container.querySelectorAll('.pg-num:not(.cur):not(.ellipsis)')
+    .forEach(btn => btn.addEventListener('click', () => {
+      state.page = parseInt(btn.dataset.p, 10);
+      loadFn();
+    }));
+}
 
 // ── Chart instances ──────────────────────────────────────────────────────────
 let donutChart, lineChart, agentBarChart, toolBarChart, mcpBarChart;
@@ -415,17 +502,14 @@ function initCharts() {
   donutChart = new Chart(document.getElementById('donutChart'), {
     type: 'doughnut',
     data: { labels: [], datasets: [{ data: [], backgroundColor: COLORS, borderWidth: 0 }] },
-    options: {
-      cutout: '60%', responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-    },
+    options: { cutout: '60%', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
   });
 
   lineChart = new Chart(document.getElementById('lineChart'), {
     type: 'line',
     data: { labels: [], datasets: [
-      { label: 'Passed', data: [], borderColor: '#CBD5E1', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
-      { label: 'Intercepted', data: [], borderColor: '#E8BAEE', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+      { label: 'Passed',      data: [], borderColor: '#CBD5E1', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+      { label: 'Intercepted', data: [], borderColor: '#E8BAEE', borderWidth: 2,   pointRadius: 0, tension: 0.3 },
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -461,7 +545,7 @@ function initCharts() {
     type: 'bar',
     data: { labels: [], datasets: [
       { label: 'Total Calls', data: [], backgroundColor: '#A8D5F7', borderRadius: 4, barThickness: 18 },
-      { label: 'Blocked', data: [], backgroundColor: '#E8BAEE', borderRadius: 4, barThickness: 18 },
+      { label: 'Blocked',     data: [], backgroundColor: '#E8BAEE', borderRadius: 4, barThickness: 18 },
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -471,93 +555,115 @@ function initCharts() {
   });
 }
 
-// ── Sessions table ───────────────────────────────────────────────────────────
-function renderSessions() {
-  const rows = [..._sessionsData].sort((a, b) => {
-    let av = a[_sessionsSort.col], bv = b[_sessionsSort.col];
-    if (typeof av === 'number') return _sessionsSort.dir * (av - bv);
-    return _sessionsSort.dir * String(av || '').localeCompare(String(bv || ''));
-  });
+// ── Sessions ─────────────────────────────────────────────────────────────────
+const sessState = { page: 1, limit: 20, sort: 'updatedAt', dir: 'desc', total: 0, pages: 1 };
 
-  const tbody = document.getElementById('sessionsBody');
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No sessions yet</td></tr>';
-    return;
-  }
+async function loadSessions() {
+  const { page, limit, sort, dir } = sessState;
+  try {
+    const res = await fetch(`/api/sessions?page=${page}&limit=${limit}&sort=${sort}&dir=${dir}`);
+    const data = await res.json();
+    sessState.page = data.page; sessState.pages = data.pages; sessState.total = data.total;
+    renderSessions(data.items);
+    buildPager('sessPager', sessState, loadSessions);
+    document.getElementById('sessCount').textContent = fmtNum(data.total) + ' sessions';
+    updateSessHeaders();
+  } catch (e) { console.error('[warden] sessions fetch failed:', e); }
+}
+
+function renderSessions(rows) {
+  const tbody = document.getElementById('sessBody');
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No sessions yet</td></tr>'; return; }
   tbody.innerHTML = rows.map(s => {
     const rc = riskClass(s.riskScore);
-    const hasFi = s.findingsCount > 0;
     return '<tr>' +
       '<td class="mono">' + safe(s.sessionId) + '</td>' +
       '<td><span class="agent-pill">' + safe(s.agent) + '</span></td>' +
       '<td style="color:var(--gray-500)">' + safe(s.workspace) + '</td>' +
-      '<td><div class="risk-bar-wrap"><div class="risk-bar"><div class="risk-bar-fill ' + rc + '" style="width:' + s.riskScore + '%"></div></div><span class="risk-num">' + s.riskScore + '</span></div></td>' +
-      '<td class="right" style="' + (hasFi ? 'color:var(--pink-600);font-weight:600' : '') + '">' + s.findingsCount + '</td>' +
+      '<td><div class="risk-wrap"><div class="risk-bar"><div class="risk-fill ' + rc + '" style="width:' + s.riskScore + '%"></div></div><span class="risk-num">' + s.riskScore + '</span></div></td>' +
+      '<td class="right"' + (s.findingsCount > 0 ? ' style="color:var(--pink-600);font-weight:600"' : '') + '>' + s.findingsCount + '</td>' +
       '<td style="color:var(--gray-400)">' + safe(s.updatedAt) + '</td>' +
     '</tr>';
   }).join('');
 }
 
-document.getElementById('sessionsTable').querySelector('thead').addEventListener('click', e => {
+function updateSessHeaders() {
+  document.querySelectorAll('#sessThead th[data-col]').forEach(th => {
+    th.classList.toggle('active-sort', th.dataset.col === sessState.sort);
+    const ind = th.querySelector('.sort-ind');
+    if (ind) ind.textContent = th.dataset.col === sessState.sort ? (sessState.dir === 'asc' ? '↑' : '↓') : '↕';
+  });
+}
+
+document.getElementById('sessThead').addEventListener('click', e => {
   const th = e.target.closest('th[data-col]');
   if (!th) return;
   const col = th.dataset.col;
-  _sessionsSort.dir = (_sessionsSort.col === col) ? -_sessionsSort.dir : -1;
-  _sessionsSort.col = col;
-  renderSessions();
+  sessState.dir = (sessState.sort === col && sessState.dir === 'desc') ? 'asc' : 'desc';
+  sessState.sort = col;
+  sessState.page = 1;
+  loadSessions();
 });
 
-// ── Findings drilldown ───────────────────────────────────────────────────────
-function populateFindingFilters(findings) {
-  const agents = [...new Set(findings.map(f => f.agent))].sort();
-  const cats = [...new Set(findings.map(f => f.category))].sort();
+document.getElementById('sessLimit').addEventListener('change', e => {
+  sessState.limit = parseInt(e.target.value, 10);
+  sessState.page = 1;
+  loadSessions();
+});
 
-  const fAgent = document.getElementById('fAgent');
-  const cur = fAgent.value;
-  fAgent.innerHTML = '<option value="">All</option>' +
-    agents.map(a => '<option value="' + a + '"' + (a === cur ? ' selected' : '') + '>' + a + '</option>').join('');
+// ── Findings ─────────────────────────────────────────────────────────────────
+const findState = { page: 1, limit: 25, agent: '', severity: '', category: '', q: '', total: 0, pages: 1 };
+let _findAgents = [], _findCats = [];
 
-  const fCat = document.getElementById('fCategory');
-  const curC = fCat.value;
-  fCat.innerHTML = '<option value="">All</option>' +
-    cats.map(c => '<option value="' + c + '"' + (c === curC ? ' selected' : '') + '>' + (CAT_LABELS[c] || c) + '</option>').join('');
+async function loadFindings() {
+  const { page, limit, agent, severity, category, q } = findState;
+  const params = new URLSearchParams({ page, limit, agent, severity, category, q });
+  try {
+    const res = await fetch('/api/findings?' + params);
+    const data = await res.json();
+    findState.page = data.page; findState.pages = data.pages; findState.total = data.total;
+
+    // Populate filter dropdowns (preserve selections)
+    if (data.agents) {
+      _findAgents = data.agents;
+      const sel = document.getElementById('fAgent');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">All</option>' + data.agents.map(a =>
+        '<option value="' + a + '"' + (a === cur ? ' selected' : '') + '>' + a + '</option>'
+      ).join('');
+    }
+    if (data.categories) {
+      _findCats = data.categories;
+      const sel = document.getElementById('fCat');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">All</option>' + data.categories.map(c =>
+        '<option value="' + c + '"' + (c === cur ? ' selected' : '') + '>' + (CAT_LABELS[c] || c) + '</option>'
+      ).join('');
+    }
+
+    renderFindings(data.items);
+    buildPager('findPager', findState, loadFindings);
+    document.getElementById('findCount').textContent = fmtNum(data.total) + ' findings';
+  } catch (e) { console.error('[warden] findings fetch failed:', e); }
 }
 
-function renderFindings() {
-  const agent = document.getElementById('fAgent').value;
-  const severity = document.getElementById('fSeverity').value;
-  const category = document.getElementById('fCategory').value;
-  const search = document.getElementById('fSearch').value.toLowerCase();
-
-  const filtered = _allFindings.filter(f =>
-    (!agent || f.agent === agent) &&
-    (!severity || f.severity === severity) &&
-    (!category || f.category === category) &&
-    (!search || f.title.toLowerCase().includes(search) || (f.command || '').toLowerCase().includes(search))
-  );
-
-  document.getElementById('findingsCount').textContent = filtered.length + ' of ' + _allFindings.length;
-
-  const tbody = document.getElementById('findingsBody');
-  if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No findings match the current filters</td></tr>';
-    return;
-  }
-
-  tbody.innerHTML = filtered.map((f, i) => {
-    const eid = 'fe-' + i;
+function renderFindings(rows) {
+  const tbody = document.getElementById('findBody');
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No findings match the current filters</td></tr>'; return; }
+  tbody.innerHTML = rows.map((f, i) => {
+    const eid = 'fev-' + i;
     return '<tr class="finding-row" onclick="toggleEvidence(\'' + eid + '\')">' +
       '<td>' + safe(f.title) + '</td>' +
       '<td><span class="agent-pill">' + safe(f.agent) + '</span></td>' +
       '<td style="color:var(--gray-500)">' + safe(CAT_LABELS[f.category] || f.category) + '</td>' +
       '<td><span class="sev-badge ' + sevClass(f.severity) + '">' + safe(f.severity) + '</span></td>' +
       '<td style="color:var(--gray-400)">' + safe(f.ts) + '</td>' +
-      '<td style="color:var(--gray-300);font-size:9px">▸</td>' +
+      '<td class="expand-arrow">▸</td>' +
     '</tr>' +
-    '<tr id="' + eid + '" class="finding-evidence-row">' +
-      '<td class="finding-evidence-cell" colspan="6">' +
+    '<tr id="' + eid + '" class="finding-ev-row">' +
+      '<td class="finding-ev-cell" colspan="6">' +
         '<div>' + safe(f.evidence || 'No evidence recorded.') + '</div>' +
-        '<div class="finding-command">' + safe(f.command) + '</div>' +
+        '<div class="finding-cmd">' + safe(f.command) + '</div>' +
         '<div style="margin-top:6px;font-size:10px;color:var(--gray-400)">session: ' + safe(f.sessionId) + '</div>' +
       '</td>' +
     '</tr>';
@@ -568,39 +674,60 @@ function toggleEvidence(id) {
   const row = document.getElementById(id);
   if (!row) return;
   row.classList.toggle('open');
-  const arrow = row.previousElementSibling.querySelector('td:last-child');
-  if (arrow) arrow.textContent = row.classList.contains('open') ? '▾' : '▸';
-}
-
-['fAgent','fSeverity','fCategory'].forEach(id =>
-  document.getElementById(id).addEventListener('change', renderFindings)
-);
-document.getElementById('fSearch').addEventListener('input', renderFindings);
-
-// ── Live event feed ──────────────────────────────────────────────────────────
-function populateEventAgents(events) {
-  const agents = [...new Set(events.map(e => e.agent))].sort();
-  const sel = document.getElementById('eAgent');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">All</option>' +
-    agents.map(a => '<option value="' + a + '"' + (a === cur ? ' selected' : '') + '>' + a + '</option>').join('');
-}
-
-function renderEvents() {
-  const filtered = _allEvents.filter(ev =>
-    (!_evtVerdict || ev.verdict === _evtVerdict) &&
-    (!_evtAgent || ev.agent === _evtAgent)
-  );
-
-  document.getElementById('eventsCount').textContent = filtered.length + ' events';
-
-  const container = document.getElementById('eventsContainer');
-  if (!filtered.length) {
-    container.innerHTML = '<div class="empty-state">No events match the current filters</div>';
-    return;
+  const prev = row.previousElementSibling;
+  if (prev) {
+    const arrow = prev.querySelector('.expand-arrow');
+    if (arrow) arrow.textContent = row.classList.contains('open') ? '▾' : '▸';
   }
+}
 
-  container.innerHTML = filtered.slice(0, 30).map(ev =>
+['fAgent','fSev','fCat'].forEach(id => document.getElementById(id).addEventListener('change', e => {
+  findState[id === 'fAgent' ? 'agent' : id === 'fSev' ? 'severity' : 'category'] = e.target.value;
+  findState.page = 1;
+  loadFindings();
+}));
+
+let _findSearchTimer;
+document.getElementById('fSearch').addEventListener('input', e => {
+  clearTimeout(_findSearchTimer);
+  _findSearchTimer = setTimeout(() => { findState.q = e.target.value; findState.page = 1; loadFindings(); }, 300);
+});
+
+document.getElementById('findLimit').addEventListener('change', e => {
+  findState.limit = parseInt(e.target.value, 10);
+  findState.page = 1;
+  loadFindings();
+});
+
+// ── Events ───────────────────────────────────────────────────────────────────
+const evtState = { page: 1, limit: 30, verdict: '', agent: '', total: 0, pages: 1 };
+
+async function loadEvents() {
+  const { page, limit, verdict, agent } = evtState;
+  const params = new URLSearchParams({ page, limit, verdict, agent });
+  try {
+    const res = await fetch('/api/events?' + params);
+    const data = await res.json();
+    evtState.page = data.page; evtState.pages = data.pages; evtState.total = data.total;
+
+    if (data.agents) {
+      const sel = document.getElementById('evtAgent');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">All</option>' + data.agents.map(a =>
+        '<option value="' + a + '"' + (a === cur ? ' selected' : '') + '>' + a + '</option>'
+      ).join('');
+    }
+
+    renderEvents(data.items);
+    buildPager('evtPager', evtState, loadEvents);
+    document.getElementById('evtCount').textContent = fmtNum(data.total) + ' events';
+  } catch (e) { console.error('[warden] events fetch failed:', e); }
+}
+
+function renderEvents(rows) {
+  const container = document.getElementById('evtContainer');
+  if (!rows.length) { container.innerHTML = '<div class="empty">No events match the current filters</div>'; return; }
+  container.innerHTML = rows.map(ev =>
     '<div class="event-row">' +
       '<span class="event-dot ' + (ev.verdict || 'allowed') + '"></span>' +
       '<div style="flex:1;min-width:0">' +
@@ -612,148 +739,147 @@ function renderEvents() {
   ).join('');
 }
 
-document.querySelectorAll('.filter-btn[data-verdict]').forEach(btn => {
+document.querySelectorAll('.fbtn[data-verdict]').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.filter-btn[data-verdict]').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.fbtn[data-verdict]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    _evtVerdict = btn.dataset.verdict;
-    renderEvents();
+    evtState.verdict = btn.dataset.verdict;
+    evtState.page = 1;
+    loadEvents();
   });
 });
 
-document.getElementById('eAgent').addEventListener('change', e => {
-  _evtAgent = e.target.value;
-  renderEvents();
+document.getElementById('evtAgent').addEventListener('change', e => {
+  evtState.agent = e.target.value;
+  evtState.page = 1;
+  loadEvents();
 });
 
-// ── Main update ──────────────────────────────────────────────────────────────
-function updateDashboard(data) {
-  // Badge + timestamp
-  const badge = document.getElementById('statusBadge');
-  const hasData = data.kpis && data.kpis.toolCallsInspected24h > 0;
-  badge.className = 'badge ' + (hasData ? 'badge-live' : 'badge-demo');
-  badge.innerHTML = '<span class="badge-dot"></span> ' + (hasData ? 'live' : 'no data');
-  document.getElementById('lastUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
+document.getElementById('evtLimit').addEventListener('change', e => {
+  evtState.limit = parseInt(e.target.value, 10);
+  evtState.page = 1;
+  loadEvents();
+});
 
-  // KPIs
-  const k = data.kpis || {};
-  document.getElementById('kpiSessions').textContent = fmtNum(k.activeSessions || 0);
-  document.getElementById('kpiToolCalls').textContent = fmtNum(k.toolCallsInspected24h || 0);
-  document.getElementById('kpiDangerous').textContent = fmtNum(k.dangerousCommandsPrevented24h || 0);
-
-  const d = k.deltas || {};
-  const toolsDelta = document.getElementById('kpiToolsDelta');
-  if (d.tools !== undefined) {
-    const cls = d.tools > 0 ? 'up' : 'down';
-    toolsDelta.innerHTML = '<span class="' + cls + '">' + (d.tools > 0 ? '+' : '') + d.tools + '%</span> vs yesterday';
-  }
-  const dangDelta = document.getElementById('kpiDangerousDelta');
-  if (d.dangerous !== undefined) {
-    const cls = d.dangerous > 0 ? 'up' : 'down';
-    dangDelta.innerHTML = '<span class="' + cls + '">' + (d.dangerous > 0 ? '+' : '') + d.dangerous + '%</span> vs yesterday';
-  }
-
-  // Severity strip
-  const sv = data.severityBreakdown || {};
-  document.getElementById('sevCritical').textContent = fmtNum(sv.critical || 0);
-  document.getElementById('sevHigh').textContent = fmtNum(sv.high || 0);
-  document.getElementById('sevMedium').textContent = fmtNum(sv.medium || 0);
-  document.getElementById('sevLow').textContent = fmtNum(sv.low || 0);
-
-  // Donut
-  const threats = data.threatsByCategory || {};
-  const catKeys = Object.keys(CAT_LABELS);
-  donutChart.data.labels = catKeys.map(k => CAT_LABELS[k]);
-  donutChart.data.datasets[0].data = catKeys.map(k => threats[k] || 0);
-  donutChart.update();
-
-  const legendEl = document.getElementById('donutLegend');
-  legendEl.innerHTML = catKeys.map((k, i) =>
-    '<div class="legend-item"><span class="legend-dot" style="background:' + COLORS[i] + '"></span>' + CAT_LABELS[k] + '</div>'
-  ).join('');
-
-  // Line chart
-  const ts = data.blockRateTimeseries || [];
-  lineChart.data.labels = ts.map(t => t.date);
-  lineChart.data.datasets[0].data = ts.map(t => t.passed);
-  lineChart.data.datasets[1].data = ts.map(t => t.intercepted);
-  lineChart.update();
-
-  // Agent bar
-  const ab = data.agentBlockedCommands || [];
-  agentBarChart.data.labels = ab.map(a => a.agent);
-  agentBarChart.data.datasets[0].data = ab.map(a => a.blocked);
-  agentBarChart.update();
-
-  // Tool bar
-  const tb = data.toolCallBreakdown || [];
-  toolBarChart.data.labels = tb.map(t => t.tool);
-  toolBarChart.data.datasets[0].data = tb.map(t => t.count);
-  toolBarChart.update();
-
-  // MCP bar
-  const mcp = data.topMcpAndSkills || [];
-  mcpBarChart.data.labels = mcp.map(m => m.name);
-  mcpBarChart.data.datasets[0].data = mcp.map(m => m.calls);
-  mcpBarChart.data.datasets[1].data = mcp.map(m => m.blocked);
-  mcpBarChart.update();
-
-  // Sessions
-  _sessionsData = data.recentSessions || [];
-  renderSessions();
-
-  // Top users
-  const users = data.topUsersByBlocks || [];
-  const maxBlocked = users.length > 0 ? users[0].blocked : 1;
-  document.getElementById('usersContainer').innerHTML = users.map((u, i) =>
-    '<div class="user-row">' +
-      '<span class="user-rank">' + (i + 1) + '</span>' +
-      '<div class="user-info">' +
-        '<div class="user-top"><span class="user-id">' + safe(u.userId) + '</span>' +
-        '<span class="user-count">' + u.blocked + '</span></div>' +
-        '<div class="user-bar"><div class="user-bar-fill" style="width:' + (u.blocked / maxBlocked * 100) + '%"></div></div>' +
-      '</div>' +
-      '<span class="user-seen">' + safe(u.lastSeen || '') + '</span>' +
-    '</div>'
-  ).join('');
-
-  // Threat patterns
-  const patterns = data.topPatterns || [];
-  document.getElementById('patternsBody').innerHTML = patterns.map(p =>
-    '<tr>' +
-      '<td>' + safe(p.pattern || '') + '</td>' +
-      '<td style="color:#9ca3af">' + safe(CAT_LABELS[p.category] || p.category) + '</td>' +
-      '<td class="right" style="font-weight:500">' + (p.count || 0) + '</td>' +
-      '<td style="color:#9ca3af">' + safe(p.lastSeen || '') + '</td>' +
-      '<td><span class="sev-badge ' + sevClass(p.severity) + '">' + safe(p.severity || 'low') + '</span></td>' +
-    '</tr>'
-  ).join('');
-
-  // Findings drilldown
-  _allFindings = data.recentFindings || [];
-  populateFindingFilters(_allFindings);
-  renderFindings();
-
-  // Live events
-  _allEvents = data.liveEvents || [];
-  populateEventAgents(_allEvents);
-  renderEvents();
-}
-
-async function fetchStats() {
+// ── Stats (charts + KPIs) ────────────────────────────────────────────────────
+async function loadStats() {
   try {
     const res = await fetch('/api/stats');
     if (!res.ok) return;
     const data = await res.json();
-    updateDashboard(data);
-  } catch (e) {
-    console.error('[warden] fetch failed:', e);
-  }
+
+    // Badge
+    const badge = document.getElementById('statusBadge');
+    const hasData = data.kpis && data.kpis.toolCallsInspected24h > 0;
+    badge.className = 'badge ' + (hasData ? 'badge-live' : 'badge-demo');
+    badge.innerHTML = '<span class="badge-dot"></span> ' + (hasData ? 'live' : 'no data');
+    document.getElementById('lastUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
+
+    // KPIs
+    const k = data.kpis || {};
+    document.getElementById('kpiSessions').textContent = fmtNum(k.activeSessions || 0);
+    document.getElementById('kpiToolCalls').textContent = fmtNum(k.toolCallsInspected24h || 0);
+    document.getElementById('kpiDangerous').textContent = fmtNum(k.dangerousCommandsPrevented24h || 0);
+
+    const d = k.deltas || {};
+    if (d.tools !== undefined) {
+      const cls = d.tools > 0 ? 'up' : 'down';
+      document.getElementById('kpiToolsDelta').innerHTML =
+        '<span class="' + cls + '">' + (d.tools > 0 ? '+' : '') + d.tools + '%</span> vs yesterday';
+    }
+    if (d.dangerous !== undefined) {
+      const cls = d.dangerous > 0 ? 'up' : 'down';
+      document.getElementById('kpiDangerousDelta').innerHTML =
+        '<span class="' + cls + '">' + (d.dangerous > 0 ? '+' : '') + d.dangerous + '%</span> vs yesterday';
+    }
+
+    // Severity strip
+    const sv = data.severityBreakdown || {};
+    document.getElementById('sevCritical').textContent = fmtNum(sv.critical || 0);
+    document.getElementById('sevHigh').textContent     = fmtNum(sv.high     || 0);
+    document.getElementById('sevMedium').textContent   = fmtNum(sv.medium   || 0);
+    document.getElementById('sevLow').textContent      = fmtNum(sv.low      || 0);
+
+    // Donut
+    const threats = data.threatsByCategory || {};
+    const catKeys = Object.keys(CAT_LABELS);
+    donutChart.data.labels = catKeys.map(k => CAT_LABELS[k]);
+    donutChart.data.datasets[0].data = catKeys.map(k => threats[k] || 0);
+    donutChart.update();
+    document.getElementById('donutLegend').innerHTML = catKeys.map((k, i) =>
+      '<div class="legend-item"><span class="legend-dot" style="background:' + COLORS[i] + '"></span>' + CAT_LABELS[k] + '</div>'
+    ).join('');
+
+    // Line
+    const ts = data.blockRateTimeseries || [];
+    lineChart.data.labels = ts.map(t => t.date);
+    lineChart.data.datasets[0].data = ts.map(t => t.passed);
+    lineChart.data.datasets[1].data = ts.map(t => t.intercepted);
+    lineChart.update();
+
+    // Agent bar
+    const ab = data.agentBlockedCommands || [];
+    agentBarChart.data.labels = ab.map(a => a.agent);
+    agentBarChart.data.datasets[0].data = ab.map(a => a.blocked);
+    agentBarChart.update();
+
+    // Tool bar
+    const tb = data.toolCallBreakdown || [];
+    toolBarChart.data.labels = tb.map(t => t.tool);
+    toolBarChart.data.datasets[0].data = tb.map(t => t.count);
+    toolBarChart.update();
+
+    // MCP bar
+    const mcp = data.topMcpAndSkills || [];
+    mcpBarChart.data.labels = mcp.map(m => m.name);
+    mcpBarChart.data.datasets[0].data = mcp.map(m => m.calls);
+    mcpBarChart.data.datasets[1].data = mcp.map(m => m.blocked);
+    mcpBarChart.update();
+
+    // Top users
+    const users = data.topUsersByBlocks || [];
+    const maxBlocked = users.length > 0 ? users[0].blocked : 1;
+    document.getElementById('usersContainer').innerHTML = users.map((u, i) =>
+      '<div class="user-row">' +
+        '<span class="user-rank">' + (i + 1) + '</span>' +
+        '<div class="user-info">' +
+          '<div class="user-top"><span class="user-id">' + safe(u.userId) + '</span>' +
+          '<span class="user-count">' + u.blocked + '</span></div>' +
+          '<div class="user-bar"><div class="user-bar-fill" style="width:' + (u.blocked / maxBlocked * 100) + '%"></div></div>' +
+        '</div>' +
+        '<span class="user-seen">' + safe(u.lastSeen || '') + '</span>' +
+      '</div>'
+    ).join('');
+
+    // Threat patterns
+    const patterns = data.topPatterns || [];
+    document.getElementById('patternsBody').innerHTML = patterns.map(p =>
+      '<tr>' +
+        '<td>' + safe(p.pattern || '') + '</td>' +
+        '<td style="color:#9ca3af">' + safe(CAT_LABELS[p.category] || p.category) + '</td>' +
+        '<td class="right" style="font-weight:500">' + (p.count || 0) + '</td>' +
+        '<td style="color:#9ca3af">' + safe(p.lastSeen || '') + '</td>' +
+        '<td><span class="sev-badge ' + sevClass(p.severity) + '">' + safe(p.severity || 'low') + '</span></td>' +
+      '</tr>'
+    ).join('');
+  } catch (e) { console.error('[warden] stats fetch failed:', e); }
 }
 
+// ── Boot + poll ──────────────────────────────────────────────────────────────
 initCharts();
-fetchStats();
-setInterval(fetchStats, 30000);
+Promise.all([loadStats(), loadSessions(), loadFindings(), loadEvents()]);
+
+setInterval(() => {
+  loadStats();
+  loadSessions();
+  // Reload findings/events only if on page 1 with no active filters (avoid disrupting investigation)
+  if (findState.page === 1 && !findState.agent && !findState.severity && !findState.category && !findState.q) {
+    loadFindings();
+  }
+  if (evtState.page === 1 && !evtState.verdict && !evtState.agent) {
+    loadEvents();
+  }
+}, 30000);
 </script>
 </body>
 </html>

@@ -457,8 +457,6 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     top_users_acc: Dict[str, Dict[str, Any]] = {}
     top_mcp_acc: Dict[str, Dict[str, Any]] = {}
     severity_breakdown: Counter = Counter()
-    recent_sessions_raw: List[Dict[str, Any]] = []
-    recent_findings_raw: List[Dict[str, Any]] = []
 
     for ws in workspaces:
         db_path = get_db_path(ws)
@@ -661,54 +659,6 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 sev = (row["severity"] or "low").lower()
                 severity_breakdown[sev] += row["cnt"]
 
-            # ── Recent sessions ───────────────────────────────────────────
-            for row in conn.execute(
-                """
-                SELECT session_id, agent, risk_score, findings_count,
-                       started_at, updated_at, workspace_path
-                FROM sessions
-                ORDER BY updated_at DESC LIMIT 30
-                """
-            ):
-                recent_sessions_raw.append({
-                    "sessionId": (row["session_id"] or "")[:16],
-                    "agent": row["agent"] or "unknown",
-                    "riskScore": row["risk_score"] or 0,
-                    "findingsCount": row["findings_count"] or 0,
-                    "updatedAt": _relative_time_store(row["updated_at"]) if row["updated_at"] else "",
-                    "updatedAtTs": row["updated_at"] or "",
-                    "workspace": Path(row["workspace_path"] or "").name if row["workspace_path"] else "",
-                })
-
-            # ── Recent findings with evidence ─────────────────────────────
-            for row in conn.execute(
-                """
-                SELECT f.finding_id, f.session_id, f.title, f.category,
-                       f.severity, f.evidence, s.agent,
-                       MAX(e.ts) as ts,
-                       MAX(e.command_text) as command_text,
-                       MAX(e.path_text) as path_text,
-                       MAX(e.url_text) as url_text
-                FROM findings f
-                JOIN sessions s ON s.session_id = f.session_id
-                LEFT JOIN events e ON e.session_id = f.session_id
-                GROUP BY f.finding_id
-                ORDER BY ts DESC LIMIT 100
-                """
-            ):
-                recent_findings_raw.append({
-                    "id": (row["finding_id"] or "")[:16],
-                    "sessionId": (row["session_id"] or "")[:16],
-                    "title": row["title"] or "Unknown",
-                    "category": _CATEGORY_MAP.get(row["category"] or "", "dangerous_command"),
-                    "severity": (row["severity"] or "low").lower(),
-                    "evidence": (row["evidence"] or "")[:300],
-                    "agent": row["agent"] or "unknown",
-                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
-                    "tsRaw": row["ts"] or "",
-                    "command": (row["command_text"] or row["path_text"] or row["url_text"] or "")[:120],
-                })
-
         except Exception:
             pass
         finally:
@@ -744,14 +694,6 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     top_users = sorted(top_users_acc.values(), key=lambda x: x["blocked"], reverse=True)[:10]
     for u in top_users:
         u.pop("lastSeenTs", None)
-
-    recent_sessions_out = sorted(recent_sessions_raw, key=lambda x: x["updatedAtTs"], reverse=True)[:20]
-    for s in recent_sessions_out:
-        s.pop("updatedAtTs", None)
-
-    recent_findings_out = sorted(recent_findings_raw, key=lambda x: x["tsRaw"], reverse=True)[:60]
-    for f in recent_findings_out:
-        f.pop("tsRaw", None)
 
     # Deduplicate live events (same ts+agent+action), keep 50
     seen = set()
@@ -795,6 +737,244 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
             "medium": severity_breakdown.get("medium", 0),
             "low": severity_breakdown.get("low", 0),
         },
-        "recentSessions": recent_sessions_out,
-        "recentFindings": recent_findings_out,
+    }
+
+
+# ── Reverse category map (dashboard cat → list of raw DB cats) ────────────────
+_REVERSE_CATEGORY_MAP: Dict[str, List[str]] = {}
+for _raw_cat, _dash_cat in _CATEGORY_MAP.items():
+    _REVERSE_CATEGORY_MAP.setdefault(_dash_cat, []).append(_raw_cat)
+
+_VALID_SESSION_SORTS: Dict[str, str] = {
+    "sessionId": "session_id",
+    "agent": "agent",
+    "workspace": "workspace_path",
+    "riskScore": "risk_score",
+    "findingsCount": "findings_count",
+    "startedAt": "started_at",
+    "updatedAt": "updated_at",
+}
+
+
+def get_sessions_page(
+    page: int = 1,
+    limit: int = 20,
+    sort: str = "updatedAt",
+    direction: str = "desc",
+) -> Dict[str, Any]:
+    """Return a paginated list of sessions across all registered workspaces."""
+    sort_col = _VALID_SESSION_SORTS.get(sort, "updated_at")
+    reverse = direction.lower() != "asc"
+    workspaces = list_registered_workspaces()
+    rows: List[Dict[str, Any]] = []
+
+    for ws in workspaces:
+        db_path = get_db_path(ws)
+        conn = _connect_ro(db_path)
+        if conn is None:
+            continue
+        try:
+            for row in conn.execute(
+                "SELECT session_id, agent, risk_score, findings_count, "
+                "started_at, updated_at, workspace_path FROM sessions LIMIT 5000"
+            ):
+                rows.append({
+                    "sessionId": (row["session_id"] or "")[:20],
+                    "agent": row["agent"] or "unknown",
+                    "riskScore": row["risk_score"] or 0,
+                    "findingsCount": row["findings_count"] or 0,
+                    "startedAt": _relative_time_store(row["started_at"]) if row["started_at"] else "",
+                    "updatedAt": _relative_time_store(row["updated_at"]) if row["updated_at"] else "",
+                    "_sortRaw": row[sort_col] or "",
+                    "workspace": Path(row["workspace_path"] or "").name if row["workspace_path"] else "",
+                })
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    rows.sort(key=lambda x: x["_sortRaw"] or "", reverse=reverse)
+    total = len(rows)
+    limit = max(1, min(limit, 200))
+    pages = max(1, (total + limit - 1) // limit)
+    page = max(1, min(page, pages))
+    offset = (page - 1) * limit
+    items = rows[offset: offset + limit]
+    for r in items:
+        r.pop("_sortRaw", None)
+
+    return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit}
+
+
+def get_findings_page(
+    page: int = 1,
+    limit: int = 25,
+    agent: str = "",
+    severity: str = "",
+    category: str = "",
+    search: str = "",
+) -> Dict[str, Any]:
+    """Return a paginated, filtered list of findings across all registered workspaces."""
+    severity_filter = severity.lower() if severity else ""
+    raw_cats = _REVERSE_CATEGORY_MAP.get(category, []) if category else []
+    workspaces = list_registered_workspaces()
+    rows: List[Dict[str, Any]] = []
+
+    for ws in workspaces:
+        db_path = get_db_path(ws)
+        conn = _connect_ro(db_path)
+        if conn is None:
+            continue
+        try:
+            where_clauses: List[str] = []
+            params: List[Any] = []
+            if severity_filter:
+                where_clauses.append("LOWER(f.severity) = ?")
+                params.append(severity_filter)
+            if raw_cats:
+                placeholders = ",".join("?" * len(raw_cats))
+                where_clauses.append(f"f.category IN ({placeholders})")
+                params.extend(raw_cats)
+            if agent:
+                where_clauses.append("s.agent = ?")
+                params.append(agent)
+            if search:
+                where_clauses.append("(LOWER(f.title) LIKE ? OR LOWER(COALESCE(f.evidence,'')) LIKE ?)")
+                params.extend([f"%{search.lower()}%"] * 2)
+            where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+            for row in conn.execute(
+                f"""
+                SELECT f.finding_id, f.session_id, f.title, f.category,
+                       f.severity, f.evidence, s.agent,
+                       MAX(e.ts) as ts,
+                       MAX(e.command_text) as command_text,
+                       MAX(e.path_text) as path_text,
+                       MAX(e.url_text) as url_text
+                FROM findings f
+                JOIN sessions s ON s.session_id = f.session_id
+                LEFT JOIN events e ON e.session_id = f.session_id
+                {where}
+                GROUP BY f.finding_id
+                ORDER BY ts DESC LIMIT 5000
+                """,
+                params,
+            ):
+                rows.append({
+                    "id": (row["finding_id"] or "")[:20],
+                    "sessionId": (row["session_id"] or "")[:20],
+                    "title": row["title"] or "Unknown",
+                    "category": _CATEGORY_MAP.get(row["category"] or "", "dangerous_command"),
+                    "severity": (row["severity"] or "low").lower(),
+                    "evidence": (row["evidence"] or "")[:500],
+                    "agent": row["agent"] or "unknown",
+                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
+                    "_tsRaw": row["ts"] or "",
+                    "command": (row["command_text"] or row["path_text"] or row["url_text"] or "")[:160],
+                })
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    rows.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
+    all_agents = sorted({r["agent"] for r in rows})
+    all_cats = sorted({r["category"] for r in rows})
+    total = len(rows)
+    limit = max(1, min(limit, 200))
+    pages = max(1, (total + limit - 1) // limit)
+    page = max(1, min(page, pages))
+    offset = (page - 1) * limit
+    items = rows[offset: offset + limit]
+    for r in items:
+        r.pop("_tsRaw", None)
+
+    return {
+        "items": items, "total": total, "page": page, "pages": pages, "limit": limit,
+        "agents": all_agents, "categories": all_cats,
+    }
+
+
+def get_events_page(
+    page: int = 1,
+    limit: int = 30,
+    verdict: str = "",
+    agent: str = "",
+) -> Dict[str, Any]:
+    """Return a paginated, filtered list of events across all registered workspaces."""
+    workspaces = list_registered_workspaces()
+    rows: List[Dict[str, Any]] = []
+
+    for ws in workspaces:
+        db_path = get_db_path(ws)
+        conn = _connect_ro(db_path)
+        if conn is None:
+            continue
+        try:
+            where_clauses: List[str] = []
+            params: List[Any] = []
+            if agent:
+                where_clauses.append("s.agent = ?")
+                params.append(agent)
+            if verdict == "blocked":
+                where_clauses.append("s.findings_count > 0")
+            elif verdict == "allowed":
+                where_clauses.append("s.findings_count = 0")
+            where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+            for row in conn.execute(
+                f"""
+                SELECT e.ts, s.agent, e.type as action_type,
+                       e.command_text, e.path_text, e.url_text,
+                       f.severity,
+                       CASE WHEN s.findings_count > 0 THEN 'blocked' ELSE 'allowed' END as verdict
+                FROM events e
+                JOIN sessions s ON s.session_id = e.session_id
+                LEFT JOIN findings f ON f.session_id = e.session_id
+                {where}
+                GROUP BY e.id
+                ORDER BY e.ts DESC LIMIT 5000
+                """,
+                params,
+            ):
+                action_parts = []
+                if row["action_type"]:
+                    action_parts.append(row["action_type"])
+                detail = row["command_text"] or row["path_text"] or row["url_text"] or ""
+                if detail:
+                    action_parts.append(detail[:80])
+                rows.append({
+                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
+                    "_tsRaw": row["ts"] or "",
+                    "agent": row["agent"] or "unknown",
+                    "action": ": ".join(action_parts) if action_parts else "event",
+                    "verdict": row["verdict"] or "allowed",
+                    "severity": (row["severity"] or "low").lower(),
+                })
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    # Deduplicate then sort
+    seen: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for ev in rows:
+        key = (ev["_tsRaw"], ev["agent"], ev["action"][:40])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(ev)
+    deduped.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
+
+    all_agents = sorted({ev["agent"] for ev in deduped})
+    total = len(deduped)
+    limit = max(1, min(limit, 200))
+    pages = max(1, (total + limit - 1) // limit)
+    page = max(1, min(page, pages))
+    offset = (page - 1) * limit
+    items = deduped[offset: offset + limit]
+    for r in items:
+        r.pop("_tsRaw", None)
+
+    return {
+        "items": items, "total": total, "page": page, "pages": pages, "limit": limit,
+        "agents": all_agents,
     }

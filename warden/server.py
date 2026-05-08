@@ -8,10 +8,13 @@ Usage (via CLI):
     python3 warden/cli.py serve [--port 7070] [--host 127.0.0.1]
 
 Endpoints:
-    GET /            → self-hosted HTML dashboard (Chart.js + polling)
-    GET /health      → {"status": "ok", "ts": "<iso>"}
-    GET /api/stats   → full aggregate stats JSON (all registered workspaces)
-    OPTIONS *        → 204 CORS preflight
+    GET /                  → self-hosted HTML dashboard
+    GET /health            → {"status": "ok", "ts": "<iso>"}
+    GET /api/stats         → aggregate stats for charts/KPIs
+    GET /api/sessions      → paginated sessions  (?page&limit&sort&dir)
+    GET /api/findings      → paginated findings  (?page&limit&agent&severity&category&q)
+    GET /api/events        → paginated events    (?page&limit&verdict&agent)
+    OPTIONS *              → 204 CORS preflight
 """
 from __future__ import annotations
 
@@ -20,8 +23,14 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict
+from urllib.parse import urlparse, parse_qs
 
-from warden.store import get_aggregate_stats
+from warden.store import (
+    get_aggregate_stats,
+    get_sessions_page,
+    get_findings_page,
+    get_events_page,
+)
 
 _DASHBOARD_HTML = Path(__file__).with_name("dashboard.html")
 
@@ -71,7 +80,18 @@ class WardenRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
-        path = self.path.split("?")[0].rstrip("/")
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        qs = parse_qs(parsed.query, keep_blank_values=False)
+
+        def qstr(key: str, default: str = "") -> str:
+            return qs.get(key, [default])[0]
+
+        def qint(key: str, default: int = 1) -> int:
+            try:
+                return int(qs.get(key, [default])[0])
+            except (ValueError, TypeError):
+                return default
 
         if path in ("", "/dashboard"):
             self._send_html(_DASHBOARD_HTML)
@@ -88,6 +108,50 @@ class WardenRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
                 return
             self._send_json(stats)
+            return
+
+        if path == "/api/sessions":
+            try:
+                data = get_sessions_page(
+                    page=qint("page", 1),
+                    limit=qint("limit", 20),
+                    sort=qstr("sort", "updatedAt"),
+                    direction=qstr("dir", "desc"),
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self._send_json(data)
+            return
+
+        if path == "/api/findings":
+            try:
+                data = get_findings_page(
+                    page=qint("page", 1),
+                    limit=qint("limit", 25),
+                    agent=qstr("agent"),
+                    severity=qstr("severity"),
+                    category=qstr("category"),
+                    search=qstr("q"),
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self._send_json(data)
+            return
+
+        if path == "/api/events":
+            try:
+                data = get_events_page(
+                    page=qint("page", 1),
+                    limit=qint("limit", 30),
+                    verdict=qstr("verdict"),
+                    agent=qstr("agent"),
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self._send_json(data)
             return
 
         self._send_json({"error": "not found"}, status=404)
