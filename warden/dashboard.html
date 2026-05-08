@@ -25,6 +25,8 @@
     margin-bottom: 24px;
   }
   .header h1 { font-size: 18px; font-weight: 600; color: var(--gray-900); }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .last-updated { font-size: 10px; color: var(--gray-400); }
   .badge {
     font-size: 10px; padding: 2px 8px; border-radius: 9999px;
     display: inline-flex; align-items: center; gap: 4px;
@@ -36,6 +38,7 @@
   .badge-demo .badge-dot { background: var(--gray-300); }
 
   .grid { display: grid; gap: 16px; margin-bottom: 16px; }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); }
   .grid-3 { grid-template-columns: repeat(3, 1fr); }
   .grid-2 { grid-template-columns: repeat(2, 1fr); }
   .grid-1-2 { grid-template-columns: 1fr 2fr; }
@@ -56,14 +59,29 @@
   .kpi-delta .up { color: #ef4444; }
   .kpi-delta .down { color: var(--green-500); }
 
+  /* Severity strip */
+  .sev-card { border-left: 3px solid transparent; }
+  .sev-card.critical { border-left-color: #7c3aed; }
+  .sev-card.high     { border-left-color: #db2777; }
+  .sev-card.medium   { border-left-color: #d97706; }
+  .sev-card.low      { border-left-color: #0284c7; }
+  .sev-count { font-size: 22px; font-weight: 600; }
+  .sev-card.critical .sev-count { color: #7c3aed; }
+  .sev-card.high     .sev-count { color: #db2777; }
+  .sev-card.medium   .sev-count { color: #d97706; }
+  .sev-card.low      .sev-count { color: #0284c7; }
+  .sev-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--gray-400); margin-bottom: 6px; }
+
   /* Tables */
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font-size: 11px; color: var(--gray-400); font-weight: 400;
-       padding-bottom: 8px; border-bottom: 1px solid var(--gray-100); }
+       padding-bottom: 8px; border-bottom: 1px solid var(--gray-100); cursor: pointer; user-select: none; }
+  th:hover { color: var(--gray-700); }
   th.right { text-align: right; }
   td { padding: 6px 0; font-size: 11px; color: var(--gray-700);
-       border-bottom: 1px solid var(--gray-50); }
+       border-bottom: 1px solid var(--gray-50); vertical-align: middle; }
   td.right { text-align: right; }
+  td.mono { font-family: inherit; color: var(--gray-500); }
 
   .sev-badge {
     display: inline-block; padding: 1px 6px; border-radius: 4px;
@@ -73,6 +91,47 @@
   .sev-high { background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4; }
   .sev-medium { background: #fef9c3; color: #92400e; border: 1px solid #fde68a; }
   .sev-low { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
+
+  /* Risk bar */
+  .risk-bar-wrap { display: flex; align-items: center; gap: 6px; }
+  .risk-bar { height: 4px; flex: 1; background: var(--gray-100); border-radius: 2px; min-width: 40px; }
+  .risk-bar-fill { height: 100%; border-radius: 2px; }
+  .risk-0  { background: #4ade80; }
+  .risk-30 { background: #facc15; }
+  .risk-60 { background: #f97316; }
+  .risk-80 { background: #ef4444; }
+  .risk-num { font-size: 10px; color: var(--gray-500); min-width: 22px; text-align: right; }
+
+  /* Agent pill */
+  .agent-pill {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    font-size: 10px; background: var(--gray-100); color: var(--gray-600);
+  }
+
+  /* Filter bar */
+  .filter-bar {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .filter-bar label { font-size: 10px; color: var(--gray-400); }
+  .filter-select {
+    font-family: inherit; font-size: 11px; color: var(--gray-700);
+    background: var(--gray-50); border: 1px solid var(--gray-200);
+    border-radius: 4px; padding: 3px 6px; outline: none; cursor: pointer;
+  }
+  .filter-select:focus { border-color: var(--purple); }
+  .filter-input {
+    font-family: inherit; font-size: 11px; color: var(--gray-700);
+    background: var(--gray-50); border: 1px solid var(--gray-200);
+    border-radius: 4px; padding: 3px 8px; outline: none; width: 180px;
+  }
+  .filter-input:focus { border-color: var(--purple); }
+  .filter-btn {
+    font-family: inherit; font-size: 10px; padding: 3px 10px;
+    border: 1px solid var(--gray-200); border-radius: 4px;
+    background: var(--gray-50); color: var(--gray-500); cursor: pointer;
+  }
+  .filter-btn.active { background: var(--gray-800); color: #fff; border-color: var(--gray-800); }
+  .filter-count { font-size: 10px; color: var(--gray-400); margin-left: auto; }
 
   /* Live events */
   .event-row {
@@ -106,8 +165,28 @@
 
   .chart-container { position: relative; }
 
+  /* Findings drilldown */
+  .finding-row { cursor: pointer; }
+  .finding-row:hover td { background: var(--gray-50); }
+  .finding-evidence-row { display: none; }
+  .finding-evidence-row.open { display: table-row; }
+  .finding-evidence-cell {
+    padding: 8px 12px 12px; background: var(--gray-50);
+    font-size: 11px; color: var(--gray-600); line-height: 1.6;
+  }
+  .finding-command {
+    margin-top: 6px; padding: 6px 8px;
+    background: var(--gray-900); color: #e5e7eb;
+    border-radius: 4px; font-size: 10px; word-break: break-all;
+  }
+  .finding-command:empty { display: none; }
+  .sort-indicator { font-size: 9px; margin-left: 2px; opacity: 0.5; }
+
+  /* Empty state */
+  .empty-state { padding: 24px; text-align: center; font-size: 11px; color: var(--gray-400); }
+
   @media (max-width: 768px) {
-    .grid-3, .grid-2, .grid-1-2 { grid-template-columns: 1fr; }
+    .grid-4, .grid-3, .grid-2, .grid-1-2 { grid-template-columns: 1fr; }
     body { padding: 12px; }
   }
 </style>
@@ -116,13 +195,16 @@
 
 <div class="header">
   <h1>Warden Dashboard</h1>
-  <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
+  <div class="header-right">
+    <span id="lastUpdated" class="last-updated"></span>
+    <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
+  </div>
 </div>
 
 <!-- KPI Strip -->
 <div class="grid grid-3">
   <div class="card">
-    <div class="card-title">Active Sessions</div>
+    <div class="card-title">Active Sessions (24h)</div>
     <div id="kpiSessions" class="kpi-value">-</div>
   </div>
   <div class="card">
@@ -131,9 +213,29 @@
     <div id="kpiToolsDelta" class="kpi-delta"></div>
   </div>
   <div class="card">
-    <div class="card-title">Dangerous Cmds Prevented</div>
+    <div class="card-title">Dangerous Cmds Prevented (24h)</div>
     <div id="kpiDangerous" class="kpi-value accent">-</div>
     <div id="kpiDangerousDelta" class="kpi-delta"></div>
+  </div>
+</div>
+
+<!-- Severity Strip -->
+<div class="grid grid-4">
+  <div class="card sev-card critical">
+    <div class="sev-label">Critical</div>
+    <div id="sevCritical" class="sev-count">-</div>
+  </div>
+  <div class="card sev-card high">
+    <div class="sev-label">High</div>
+    <div id="sevHigh" class="sev-count">-</div>
+  </div>
+  <div class="card sev-card medium">
+    <div class="sev-label">Medium</div>
+    <div id="sevMedium" class="sev-count">-</div>
+  </div>
+  <div class="card sev-card low">
+    <div class="sev-label">Low</div>
+    <div id="sevLow" class="sev-count">-</div>
   </div>
 </div>
 
@@ -180,10 +282,30 @@
   </div>
 </div>
 
-<!-- Row 4: Top Users + Threat Patterns -->
+<!-- Row 4: Recent Sessions -->
+<div class="grid" style="grid-template-columns:1fr">
+  <div class="card">
+    <div class="card-title">Recent Sessions</div>
+    <div style="overflow-x:auto">
+      <table id="sessionsTable">
+        <thead><tr>
+          <th data-col="sessionId">Session<span class="sort-indicator">↕</span></th>
+          <th data-col="agent">Agent<span class="sort-indicator">↕</span></th>
+          <th data-col="workspace">Workspace<span class="sort-indicator">↕</span></th>
+          <th data-col="riskScore">Risk Score<span class="sort-indicator">↕</span></th>
+          <th data-col="findingsCount" class="right">Findings<span class="sort-indicator">↕</span></th>
+          <th data-col="updatedAt">Last Active<span class="sort-indicator">↕</span></th>
+        </tr></thead>
+        <tbody id="sessionsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Row 5: Top Users + Threat Patterns -->
 <div class="grid grid-1-2">
   <div class="card">
-    <div class="card-title">Top Users by Blocks</div>
+    <div class="card-title">Top Sessions by Blocks</div>
     <div id="usersContainer"></div>
   </div>
   <div class="card">
@@ -199,10 +321,49 @@
   </div>
 </div>
 
-<!-- Live Event Feed -->
+<!-- Row 6: Findings Drilldown -->
+<div class="grid" style="grid-template-columns:1fr">
+  <div class="card">
+    <div class="card-title">Findings Drilldown</div>
+    <div class="filter-bar">
+      <label>Agent</label>
+      <select id="fAgent" class="filter-select"><option value="">All</option></select>
+      <label>Severity</label>
+      <select id="fSeverity" class="filter-select">
+        <option value="">All</option>
+        <option value="critical">Critical</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+      <label>Category</label>
+      <select id="fCategory" class="filter-select"><option value="">All</option></select>
+      <input id="fSearch" class="filter-input" type="text" placeholder="search title or command…" />
+      <span id="findingsCount" class="filter-count"></span>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Finding</th><th>Agent</th><th>Category</th><th>Severity</th><th>When</th><th style="width:16px"></th>
+        </tr></thead>
+        <tbody id="findingsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Row 7: Live Event Feed -->
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
     <div class="card-title">Live Event Feed</div>
+    <div class="filter-bar">
+      <button class="filter-btn active" data-verdict="">All</button>
+      <button class="filter-btn" data-verdict="blocked">Blocked</button>
+      <button class="filter-btn" data-verdict="allowed">Allowed</button>
+      <label style="margin-left:8px">Agent</label>
+      <select id="eAgent" class="filter-select"><option value="">All</option></select>
+      <span id="eventsCount" class="filter-count"></span>
+    </div>
     <div id="eventsContainer"></div>
   </div>
 </div>
@@ -215,14 +376,35 @@ const CAT_LABELS = {
   malicious_mcp: 'Malicious MCP', dangerous_command: 'Dangerous Cmd',
 };
 
+function safe(s) {
+  const d = document.createElement('span');
+  d.textContent = String(s || '');
+  return d.outerHTML;
+}
+
 function fmtNum(n) {
-  if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/,'') + 'k';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return n.toLocaleString();
 }
 
 function sevClass(s) { return 'sev-' + (s || 'low'); }
 
-// ── Chart instances (reused on refresh) ─────────────────────────────────────
+function riskClass(n) {
+  if (n >= 80) return 'risk-80';
+  if (n >= 60) return 'risk-60';
+  if (n >= 30) return 'risk-30';
+  return 'risk-0';
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+let _allFindings = [];
+let _allEvents = [];
+let _sessionsData = [];
+let _sessionsSort = { col: 'updatedAt', dir: -1 };
+let _evtVerdict = '';
+let _evtAgent = '';
+
+// ── Chart instances ──────────────────────────────────────────────────────────
 let donutChart, lineChart, agentBarChart, toolBarChart, mcpBarChart;
 
 function initCharts() {
@@ -247,7 +429,10 @@ function initCharts() {
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
-      scales: { x: { grid: { display: false }, ticks: { callback: v => v.slice(5) } }, y: { grid: { color: '#f3f4f6' } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { callback: v => String(v).slice(5) } },
+        y: { grid: { color: '#f3f4f6' } },
+      },
       plugins: { legend: { position: 'top', align: 'end', labels: { boxWidth: 10, padding: 8 } } },
     },
   });
@@ -286,12 +471,169 @@ function initCharts() {
   });
 }
 
+// ── Sessions table ───────────────────────────────────────────────────────────
+function renderSessions() {
+  const rows = [..._sessionsData].sort((a, b) => {
+    let av = a[_sessionsSort.col], bv = b[_sessionsSort.col];
+    if (typeof av === 'number') return _sessionsSort.dir * (av - bv);
+    return _sessionsSort.dir * String(av || '').localeCompare(String(bv || ''));
+  });
+
+  const tbody = document.getElementById('sessionsBody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No sessions yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(s => {
+    const rc = riskClass(s.riskScore);
+    const hasFi = s.findingsCount > 0;
+    return '<tr>' +
+      '<td class="mono">' + safe(s.sessionId) + '</td>' +
+      '<td><span class="agent-pill">' + safe(s.agent) + '</span></td>' +
+      '<td style="color:var(--gray-500)">' + safe(s.workspace) + '</td>' +
+      '<td><div class="risk-bar-wrap"><div class="risk-bar"><div class="risk-bar-fill ' + rc + '" style="width:' + s.riskScore + '%"></div></div><span class="risk-num">' + s.riskScore + '</span></div></td>' +
+      '<td class="right" style="' + (hasFi ? 'color:var(--pink-600);font-weight:600' : '') + '">' + s.findingsCount + '</td>' +
+      '<td style="color:var(--gray-400)">' + safe(s.updatedAt) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+document.getElementById('sessionsTable').querySelector('thead').addEventListener('click', e => {
+  const th = e.target.closest('th[data-col]');
+  if (!th) return;
+  const col = th.dataset.col;
+  _sessionsSort.dir = (_sessionsSort.col === col) ? -_sessionsSort.dir : -1;
+  _sessionsSort.col = col;
+  renderSessions();
+});
+
+// ── Findings drilldown ───────────────────────────────────────────────────────
+function populateFindingFilters(findings) {
+  const agents = [...new Set(findings.map(f => f.agent))].sort();
+  const cats = [...new Set(findings.map(f => f.category))].sort();
+
+  const fAgent = document.getElementById('fAgent');
+  const cur = fAgent.value;
+  fAgent.innerHTML = '<option value="">All</option>' +
+    agents.map(a => '<option value="' + a + '"' + (a === cur ? ' selected' : '') + '>' + a + '</option>').join('');
+
+  const fCat = document.getElementById('fCategory');
+  const curC = fCat.value;
+  fCat.innerHTML = '<option value="">All</option>' +
+    cats.map(c => '<option value="' + c + '"' + (c === curC ? ' selected' : '') + '>' + (CAT_LABELS[c] || c) + '</option>').join('');
+}
+
+function renderFindings() {
+  const agent = document.getElementById('fAgent').value;
+  const severity = document.getElementById('fSeverity').value;
+  const category = document.getElementById('fCategory').value;
+  const search = document.getElementById('fSearch').value.toLowerCase();
+
+  const filtered = _allFindings.filter(f =>
+    (!agent || f.agent === agent) &&
+    (!severity || f.severity === severity) &&
+    (!category || f.category === category) &&
+    (!search || f.title.toLowerCase().includes(search) || (f.command || '').toLowerCase().includes(search))
+  );
+
+  document.getElementById('findingsCount').textContent = filtered.length + ' of ' + _allFindings.length;
+
+  const tbody = document.getElementById('findingsBody');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No findings match the current filters</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((f, i) => {
+    const eid = 'fe-' + i;
+    return '<tr class="finding-row" onclick="toggleEvidence(\'' + eid + '\')">' +
+      '<td>' + safe(f.title) + '</td>' +
+      '<td><span class="agent-pill">' + safe(f.agent) + '</span></td>' +
+      '<td style="color:var(--gray-500)">' + safe(CAT_LABELS[f.category] || f.category) + '</td>' +
+      '<td><span class="sev-badge ' + sevClass(f.severity) + '">' + safe(f.severity) + '</span></td>' +
+      '<td style="color:var(--gray-400)">' + safe(f.ts) + '</td>' +
+      '<td style="color:var(--gray-300);font-size:9px">▸</td>' +
+    '</tr>' +
+    '<tr id="' + eid + '" class="finding-evidence-row">' +
+      '<td class="finding-evidence-cell" colspan="6">' +
+        '<div>' + safe(f.evidence || 'No evidence recorded.') + '</div>' +
+        '<div class="finding-command">' + safe(f.command) + '</div>' +
+        '<div style="margin-top:6px;font-size:10px;color:var(--gray-400)">session: ' + safe(f.sessionId) + '</div>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function toggleEvidence(id) {
+  const row = document.getElementById(id);
+  if (!row) return;
+  row.classList.toggle('open');
+  const arrow = row.previousElementSibling.querySelector('td:last-child');
+  if (arrow) arrow.textContent = row.classList.contains('open') ? '▾' : '▸';
+}
+
+['fAgent','fSeverity','fCategory'].forEach(id =>
+  document.getElementById(id).addEventListener('change', renderFindings)
+);
+document.getElementById('fSearch').addEventListener('input', renderFindings);
+
+// ── Live event feed ──────────────────────────────────────────────────────────
+function populateEventAgents(events) {
+  const agents = [...new Set(events.map(e => e.agent))].sort();
+  const sel = document.getElementById('eAgent');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All</option>' +
+    agents.map(a => '<option value="' + a + '"' + (a === cur ? ' selected' : '') + '>' + a + '</option>').join('');
+}
+
+function renderEvents() {
+  const filtered = _allEvents.filter(ev =>
+    (!_evtVerdict || ev.verdict === _evtVerdict) &&
+    (!_evtAgent || ev.agent === _evtAgent)
+  );
+
+  document.getElementById('eventsCount').textContent = filtered.length + ' events';
+
+  const container = document.getElementById('eventsContainer');
+  if (!filtered.length) {
+    container.innerHTML = '<div class="empty-state">No events match the current filters</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.slice(0, 30).map(ev =>
+    '<div class="event-row">' +
+      '<span class="event-dot ' + (ev.verdict || 'allowed') + '"></span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div class="event-meta">' + safe(ev.ts) + ' &middot; ' + safe(ev.agent) + '</div>' +
+        '<div class="event-action">' + safe(ev.action) + '</div>' +
+      '</div>' +
+      '<span class="sev-badge ' + sevClass(ev.severity) + '">' + safe(ev.severity) + '</span>' +
+    '</div>'
+  ).join('');
+}
+
+document.querySelectorAll('.filter-btn[data-verdict]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn[data-verdict]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _evtVerdict = btn.dataset.verdict;
+    renderEvents();
+  });
+});
+
+document.getElementById('eAgent').addEventListener('change', e => {
+  _evtAgent = e.target.value;
+  renderEvents();
+});
+
+// ── Main update ──────────────────────────────────────────────────────────────
 function updateDashboard(data) {
-  // Badge
+  // Badge + timestamp
   const badge = document.getElementById('statusBadge');
   const hasData = data.kpis && data.kpis.toolCallsInspected24h > 0;
   badge.className = 'badge ' + (hasData ? 'badge-live' : 'badge-demo');
   badge.innerHTML = '<span class="badge-dot"></span> ' + (hasData ? 'live' : 'no data');
+  document.getElementById('lastUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
 
   // KPIs
   const k = data.kpis || {};
@@ -310,6 +652,13 @@ function updateDashboard(data) {
     const cls = d.dangerous > 0 ? 'up' : 'down';
     dangDelta.innerHTML = '<span class="' + cls + '">' + (d.dangerous > 0 ? '+' : '') + d.dangerous + '%</span> vs yesterday';
   }
+
+  // Severity strip
+  const sv = data.severityBreakdown || {};
+  document.getElementById('sevCritical').textContent = fmtNum(sv.critical || 0);
+  document.getElementById('sevHigh').textContent = fmtNum(sv.high || 0);
+  document.getElementById('sevMedium').textContent = fmtNum(sv.medium || 0);
+  document.getElementById('sevLow').textContent = fmtNum(sv.low || 0);
 
   // Donut
   const threats = data.threatsByCategory || {};
@@ -349,45 +698,46 @@ function updateDashboard(data) {
   mcpBarChart.data.datasets[1].data = mcp.map(m => m.blocked);
   mcpBarChart.update();
 
+  // Sessions
+  _sessionsData = data.recentSessions || [];
+  renderSessions();
+
   // Top users
   const users = data.topUsersByBlocks || [];
   const maxBlocked = users.length > 0 ? users[0].blocked : 1;
   document.getElementById('usersContainer').innerHTML = users.map((u, i) =>
     '<div class="user-row">' +
-      '<span class="user-rank">' + (i+1) + '</span>' +
+      '<span class="user-rank">' + (i + 1) + '</span>' +
       '<div class="user-info">' +
-        '<div class="user-top"><span class="user-id">' + u.userId + '</span>' +
+        '<div class="user-top"><span class="user-id">' + safe(u.userId) + '</span>' +
         '<span class="user-count">' + u.blocked + '</span></div>' +
-        '<div class="user-bar"><div class="user-bar-fill" style="width:' + (u.blocked/maxBlocked*100) + '%"></div></div>' +
+        '<div class="user-bar"><div class="user-bar-fill" style="width:' + (u.blocked / maxBlocked * 100) + '%"></div></div>' +
       '</div>' +
-      '<span class="user-seen">' + (u.lastSeen || '') + '</span>' +
+      '<span class="user-seen">' + safe(u.lastSeen || '') + '</span>' +
     '</div>'
   ).join('');
 
-  // Top patterns
+  // Threat patterns
   const patterns = data.topPatterns || [];
   document.getElementById('patternsBody').innerHTML = patterns.map(p =>
     '<tr>' +
-      '<td>' + (p.pattern || '') + '</td>' +
-      '<td style="color:#9ca3af">' + (CAT_LABELS[p.category] || p.category) + '</td>' +
+      '<td>' + safe(p.pattern || '') + '</td>' +
+      '<td style="color:#9ca3af">' + safe(CAT_LABELS[p.category] || p.category) + '</td>' +
       '<td class="right" style="font-weight:500">' + (p.count || 0) + '</td>' +
-      '<td style="color:#9ca3af">' + (p.lastSeen || '') + '</td>' +
-      '<td><span class="sev-badge ' + sevClass(p.severity) + '">' + (p.severity || 'low') + '</span></td>' +
+      '<td style="color:#9ca3af">' + safe(p.lastSeen || '') + '</td>' +
+      '<td><span class="sev-badge ' + sevClass(p.severity) + '">' + safe(p.severity || 'low') + '</span></td>' +
     '</tr>'
   ).join('');
 
+  // Findings drilldown
+  _allFindings = data.recentFindings || [];
+  populateFindingFilters(_allFindings);
+  renderFindings();
+
   // Live events
-  const events = data.liveEvents || [];
-  document.getElementById('eventsContainer').innerHTML = events.slice(0, 20).map(ev =>
-    '<div class="event-row">' +
-      '<span class="event-dot ' + (ev.verdict || 'allowed') + '"></span>' +
-      '<div style="flex:1;min-width:0">' +
-        '<div class="event-meta">' + (ev.ts || '') + ' &middot; ' + (ev.agent || '') + '</div>' +
-        '<div class="event-action">' + (ev.action || '') + '</div>' +
-      '</div>' +
-      '<span class="sev-badge ' + sevClass(ev.severity) + '">' + (ev.severity || 'low') + '</span>' +
-    '</div>'
-  ).join('');
+  _allEvents = data.liveEvents || [];
+  populateEventAgents(_allEvents);
+  renderEvents();
 }
 
 async function fetchStats() {

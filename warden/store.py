@@ -456,6 +456,9 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     live_events_raw: List[Dict[str, Any]] = []
     top_users_acc: Dict[str, Dict[str, Any]] = {}
     top_mcp_acc: Dict[str, Dict[str, Any]] = {}
+    severity_breakdown: Counter = Counter()
+    recent_sessions_raw: List[Dict[str, Any]] = []
+    recent_findings_raw: List[Dict[str, Any]] = []
 
     for ws in workspaces:
         db_path = get_db_path(ws)
@@ -651,6 +654,61 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 top_mcp_acc[name]["calls"] += row["calls"] or 0
                 top_mcp_acc[name]["blocked"] += row["blocked"] or 0
 
+            # ── Severity breakdown ────────────────────────────────────────
+            for row in conn.execute(
+                "SELECT severity, COUNT(*) as cnt FROM findings GROUP BY severity"
+            ):
+                sev = (row["severity"] or "low").lower()
+                severity_breakdown[sev] += row["cnt"]
+
+            # ── Recent sessions ───────────────────────────────────────────
+            for row in conn.execute(
+                """
+                SELECT session_id, agent, risk_score, findings_count,
+                       started_at, updated_at, workspace_path
+                FROM sessions
+                ORDER BY updated_at DESC LIMIT 30
+                """
+            ):
+                recent_sessions_raw.append({
+                    "sessionId": (row["session_id"] or "")[:16],
+                    "agent": row["agent"] or "unknown",
+                    "riskScore": row["risk_score"] or 0,
+                    "findingsCount": row["findings_count"] or 0,
+                    "updatedAt": _relative_time_store(row["updated_at"]) if row["updated_at"] else "",
+                    "updatedAtTs": row["updated_at"] or "",
+                    "workspace": Path(row["workspace_path"] or "").name if row["workspace_path"] else "",
+                })
+
+            # ── Recent findings with evidence ─────────────────────────────
+            for row in conn.execute(
+                """
+                SELECT f.finding_id, f.session_id, f.title, f.category,
+                       f.severity, f.evidence, s.agent,
+                       MAX(e.ts) as ts,
+                       MAX(e.command_text) as command_text,
+                       MAX(e.path_text) as path_text,
+                       MAX(e.url_text) as url_text
+                FROM findings f
+                JOIN sessions s ON s.session_id = f.session_id
+                LEFT JOIN events e ON e.session_id = f.session_id
+                GROUP BY f.finding_id
+                ORDER BY ts DESC LIMIT 100
+                """
+            ):
+                recent_findings_raw.append({
+                    "id": (row["finding_id"] or "")[:16],
+                    "sessionId": (row["session_id"] or "")[:16],
+                    "title": row["title"] or "Unknown",
+                    "category": _CATEGORY_MAP.get(row["category"] or "", "dangerous_command"),
+                    "severity": (row["severity"] or "low").lower(),
+                    "evidence": (row["evidence"] or "")[:300],
+                    "agent": row["agent"] or "unknown",
+                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
+                    "tsRaw": row["ts"] or "",
+                    "command": (row["command_text"] or row["path_text"] or row["url_text"] or "")[:120],
+                })
+
         except Exception:
             pass
         finally:
@@ -686,6 +744,14 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     top_users = sorted(top_users_acc.values(), key=lambda x: x["blocked"], reverse=True)[:10]
     for u in top_users:
         u.pop("lastSeenTs", None)
+
+    recent_sessions_out = sorted(recent_sessions_raw, key=lambda x: x["updatedAtTs"], reverse=True)[:20]
+    for s in recent_sessions_out:
+        s.pop("updatedAtTs", None)
+
+    recent_findings_out = sorted(recent_findings_raw, key=lambda x: x["tsRaw"], reverse=True)[:60]
+    for f in recent_findings_out:
+        f.pop("tsRaw", None)
 
     # Deduplicate live events (same ts+agent+action), keep 50
     seen = set()
@@ -723,4 +789,12 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
         "liveEvents": live_events_deduped,
         "topUsersByBlocks": top_users,
         "topMcpAndSkills": sorted(top_mcp_acc.values(), key=lambda x: x["calls"], reverse=True)[:15],
+        "severityBreakdown": {
+            "critical": severity_breakdown.get("critical", 0),
+            "high": severity_breakdown.get("high", 0),
+            "medium": severity_breakdown.get("medium", 0),
+            "low": severity_breakdown.get("low", 0),
+        },
+        "recentSessions": recent_sessions_out,
+        "recentFindings": recent_findings_out,
     }
