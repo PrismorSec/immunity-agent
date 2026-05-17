@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +16,14 @@ except ImportError:
         _HAS_MSVCRT = True
     except ImportError:
         _HAS_MSVCRT = False
+
+# Region size for Windows msvcrt.locking. Must be larger than any single event
+# payload to provide effective mutual exclusion, since msvcrt locks are
+# byte-range based. 1 GiB comfortably covers Warden's bounded event payloads.
+_WIN_LOCK_BYTES = 1 << 30
+# Acquisition retry deadline for the Windows non-blocking lock path.
+_WIN_LOCK_DEADLINE_SECONDS = 5.0
+_WIN_LOCK_RETRY_INTERVAL = 0.001
 
 
 # ── Global workspace registry ────────────────────────────────────────────────
@@ -103,18 +112,24 @@ def append_session_event(workspace: Path, session_id: str, event: Dict[str, Any]
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         elif _HAS_MSVCRT:
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            except OSError:
-                pass
+            locked = False
+            deadline = time.monotonic() + _WIN_LOCK_DEADLINE_SECONDS
+            while time.monotonic() < deadline:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, _WIN_LOCK_BYTES)
+                    locked = True
+                    break
+                except OSError:
+                    time.sleep(_WIN_LOCK_RETRY_INTERVAL)
             try:
                 handle.write(line)
                 handle.flush()
             finally:
-                try:
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
+                if locked:
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, _WIN_LOCK_BYTES)
+                    except OSError:
+                        pass
         else:
             handle.write(line)
             handle.flush()
