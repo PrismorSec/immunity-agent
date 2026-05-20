@@ -2,8 +2,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+try:
+    import fcntl  # POSIX advisory locks
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+    try:
+        import msvcrt  # Windows file locking
+        _HAS_MSVCRT = True
+    except ImportError:
+        _HAS_MSVCRT = False
+
+# Region size for Windows msvcrt.locking. Must be larger than any single event
+# payload to provide effective mutual exclusion, since msvcrt locks are
+# byte-range based. 1 GiB comfortably covers Warden's bounded event payloads.
+_WIN_LOCK_BYTES = 1 << 30
+# Acquisition retry deadline for the Windows non-blocking lock path.
+_WIN_LOCK_DEADLINE_SECONDS = 5.0
+_WIN_LOCK_RETRY_INTERVAL = 0.001
 
 
 # ── Global workspace registry ────────────────────────────────────────────────
@@ -82,16 +102,61 @@ def session_log_path(workspace: Path, session_id: str) -> Path:
 def append_session_event(workspace: Path, session_id: str, event: Dict[str, Any]) -> Path:
     ensure_data_dirs(workspace)
     log_path = session_log_path(workspace, session_id)
+    line = json.dumps(event) + "\n"
     with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event))
-        handle.write("\n")
+        if _HAS_FCNTL:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                handle.write(line)
+                handle.flush()
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        elif _HAS_MSVCRT:
+            locked = False
+            deadline = time.monotonic() + _WIN_LOCK_DEADLINE_SECONDS
+            while time.monotonic() < deadline:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, _WIN_LOCK_BYTES)
+                    locked = True
+                    break
+                except OSError:
+                    time.sleep(_WIN_LOCK_RETRY_INTERVAL)
+            try:
+                handle.write(line)
+                handle.flush()
+            finally:
+                if locked:
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, _WIN_LOCK_BYTES)
+                    except OSError:
+                        pass
+        else:
+            handle.write(line)
+            handle.flush()
     return log_path
 
 
 def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]]:
     log_path = session_log_path(workspace, session_id)
+    events: List[Dict[str, Any]] = []
+    decoder = json.JSONDecoder()
     with log_path.open("r", encoding="utf-8") as handle:
-        return [json.loads(line) for line in handle.read().splitlines() if line.strip()]
+        for raw_line in handle:
+            text = raw_line.strip()
+            if not text:
+                continue
+            idx = 0
+            length = len(text)
+            while idx < length:
+                try:
+                    obj, end = decoder.raw_decode(text, idx)
+                except json.JSONDecodeError:
+                    break
+                events.append(obj)
+                idx = end
+                while idx < length and text[idx].isspace():
+                    idx += 1
+    return events
 
 
 def initialize_database(workspace: Path) -> Path:
