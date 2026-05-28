@@ -60,11 +60,11 @@ _sig(r"(already|previously)\s+(approved|authorized|granted|permitted)", 0.55, "f
 _sig(r"(the\s+)?(previous|prior|last)\s+(maintainer|admin|engineer|ciso|security\s+team)", 0.45, "authority_claim")
 _sig(r"(ciso|security\s+team|compliance\s+team|platform\s+team)\s+(has|have|already)", 0.55, "org_authority_claim")
 _sig(r"no\s+need\s+to\s+(check|verify|confirm|ask|validate)", 0.50, "skip_verification")
-_sig(r"(skip|bypass|disable|ignore)\s+(the\s+)?(security|validation|check|permission|warden|hook)", 0.70, "explicit_bypass")
+_sig(r"(skip|bypass|disable|ignore)\s+(\w+\s+){0,2}(security|validation|check|permission|warden|hook)", 0.70, "explicit_bypass")
 
 # Compliance / audit pretexts
 _sig(r"compliance\s+(requires|mandates|demands|needs)", 0.60, "compliance_pretext")
-_sig(r"(quarterly|annual|security)\s+audit", 0.35, "audit_pretext")
+_sig(r"\b(security|compliance|quarterly|annual)\b.{0,25}\baudit\b", 0.35, "audit_pretext")
 _sig(r"(for|during|as\s+part\s+of)\s+(the\s+)?(audit|review|inspection)", 0.30, "audit_framing")
 
 # Friction-reduction manipulation
@@ -90,11 +90,14 @@ _sig(r"SYSTEM\s*:\s*(ignore|forget|override|you\s+are)", 0.90, "system_prompt_in
 _sig(r"ATTENTION\s+AI\s+(ASSISTANT|SYSTEM)", 0.80, "in_content_injection_marker")
 
 # Credential / secret extraction
+_sig(r"(provide|share|reveal|disclose|show|give)\s+.{0,60}(system.?prompt|your\s+instructions?|your\s+guidelines?|your\s+rules)", 0.70, "system_prompt_disclosure")
 _sig(r"(export|output|include|copy|dump)\s+.{0,60}(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)", 0.75, "credential_exfil_request")
 _sig(r"(service\s+account\s+key|api\s+key|access\s+token)\s+.{0,40}(file|include|export)", 0.70, "credential_collection")
 _sig(r"(vendor|partner|support\s+team)\s+.{0,60}(credential|key|secret)", 0.60, "third_party_credential_share")
 
 # Warden / security self-bypass
+_sig(r"(attention|dear)\s+(warden|claude|ai\s+assistant|security\s+monitor)", 0.75, "warden_addressing")
+_sig(r"(pre.?approved|already\s+cleared|cleared\s+by)\s+.{0,40}(team|admin|security|warden|prismor)", 0.65, "false_prior_approval")
 _sig(r"(false\s+positive|ignore\s+security\s+warning)", 0.65, "warden_bypass_framing")
 _sig(r"(delete|remove|disable)\s+.{0,40}(policy\.yaml|settings\.json|hook)", 0.80, "policy_deletion")
 _sig(r"proceed\s+.{0,30}(ignore|without).{0,30}(warning|check|security)", 0.65, "proceed_ignoring_security")
@@ -153,7 +156,10 @@ def _heuristic_analyze(text: str) -> SemanticRisk:
         "credential_exfil_request": "credential_exfiltration",
         "credential_collection": "credential_exfiltration",
         "third_party_credential_share": "credential_exfiltration",
+        "system_prompt_disclosure": "credential_exfiltration",
         "explicit_bypass": "security_bypass",
+        "warden_addressing": "security_bypass",
+        "false_prior_approval": "social_engineering",
         "warden_bypass_framing": "security_bypass",
         "policy_deletion": "security_bypass",
         "roleplay_jailbreak": "jailbreak",

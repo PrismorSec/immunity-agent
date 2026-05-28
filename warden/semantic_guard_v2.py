@@ -39,6 +39,32 @@ LOW_THRESH  = 0.30   # below this: pass straight through as clean
 HIGH_THRESH = 0.75   # at or above this: block straight through
 # Between LOW and HIGH: uncertain zone → LLM subagent called
 
+# ── Structural escalation ───────────────────────────────────────────────────
+# Three-component structural patterns: [authority frame] + [agent directive] +
+# [sensitive target]. When all three match, force LLM escalation even if the
+# heuristic score is below LOW_THRESH (paraphrased attacks score 0 on signals
+# but are still structurally identifiable).
+_STRUCTURAL_RULES: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
+    (
+        re.compile(r"\b(compliance|audit|security\s+team|pre.?approved|administrator|authorized|ciso)\b", re.I),
+        re.compile(r"\b(you\s+must|must\s+now|you\s+need\s+to|now\s+provide|please\s+provide|you\s+are\s+required)\b", re.I),
+        re.compile(r"\b(system.?prompt|instructions?|configuration|api\s+key|credentials?|secrets?|policy|settings)\b", re.I),
+    ),
+    (
+        re.compile(r"\b(attention|dear)\s+(warden|claude|ai|assistant|security)", re.I),
+        re.compile(r"\b(pre.?approved|disable|ignore|allow|bypass|cleared)\b", re.I),
+        re.compile(r"\b(check|security|warning|hook|policy|filter|restriction)\b", re.I),
+    ),
+]
+_STRUCTURAL_FLOOR = 0.35  # effective score floor when structural escalation triggers
+
+
+def _is_structural_suspect(text: str) -> bool:
+    for auth_pat, directive_pat, target_pat in _STRUCTURAL_RULES:
+        if auth_pat.search(text) and directive_pat.search(text) and target_pat.search(text):
+            return True
+    return False
+
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", os.path.expanduser("~/.local/bin/claude"))
 
 _WARDEN_CONTEXT = """\
@@ -153,14 +179,20 @@ class SemanticGuardV2:
         # Step 1: heuristic pre-screen
         h = _heuristic_analyze(text)
 
+        # Structural check: raise effective score floor for inputs that match
+        # [authority frame] + [agent directive] + [sensitive target] even when
+        # no individual heuristic signal fires (paraphrased/novel attacks).
+        structural_suspect = _is_structural_suspect(text)
+        effective_score = max(h.risk_score, _STRUCTURAL_FLOOR) if structural_suspect else h.risk_score
+
         # Step 2/3: clear cases — no LLM call needed
-        if h.risk_score < LOW_THRESH:
+        if effective_score < LOW_THRESH:
             return HybridRisk(h, None, h, False)
-        if h.risk_score >= HIGH_THRESH or not self._cli_available:
+        if effective_score >= HIGH_THRESH or not self._cli_available:
             return HybridRisk(h, None, h, False)
 
         # Step 4: uncertain zone — escalate to local LLM
-        llm = _llm_analyze(text, h.risk_score, h.signals)
+        llm = _llm_analyze(text, effective_score, h.signals)
 
         # Step 5: merge — take higher risk_score, prefer LLM category/reason
         if llm.risk_score >= h.risk_score:
