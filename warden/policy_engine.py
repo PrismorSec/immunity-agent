@@ -208,6 +208,8 @@ class PolicyEngine:
         self._manifest_re: Optional[re.Pattern[str]] = None
         self.egress_allowlist: List[str] = []
         self.outputs: List[Dict[str, Any]] = []
+        self.semantic_guard_config: Dict[str, Any] = {}
+        self._semantic_guard = None  # lazy-instantiated on first uncertain event
         self._load(workspace, policy_path)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -277,6 +279,11 @@ class PolicyEngine:
         # headers/env). Either "warn" (default) or "block".
         _mcp_action = str(settings.get("mcp_transport_action", "warn")).lower()
         self.mcp_transport_action = _mcp_action if _mcp_action in ("warn", "block", "log") else "warn"
+
+        # Hybrid semantic prompt-injection layer (opt-in).
+        sg = settings.get("semantic_guard") or {}
+        if isinstance(sg, dict):
+            self.semantic_guard_config = sg
 
         # Compile rules.
         for rule_data in rules_by_id.values():
@@ -489,13 +496,27 @@ class PolicyEngine:
                 except Exception:
                     pass
 
+        # ── Hybrid semantic prompt-injection layer (opt-in) ────────────────
+        # Catches paraphrased, social-engineered, and in-content injection
+        # that the YAML regex rules miss. Heuristic pre-screen is <1ms; LLM
+        # subagent is only invoked on the uncertain zone [low, high). See
+        # settings.semantic_guard in default_policy.yaml for tuning.
+        if self.semantic_guard_config.get("enabled"):
+            try:
+                sem_finding = self._run_semantic_layer(event, field_values, index, session_id)
+                if sem_finding:
+                    findings.append(sem_finding)
+            except Exception as exc:
+                sys.stderr.write(f"[warden] semantic_guard error: {exc}\n")
+
         # ── Taint tracking: mark session if injection detected ─────────────
         # If this event produced any prompt_injection findings, persist that
         # fact so subsequent network events can be escalated regardless of
         # their destination.
         taint = self._get_taint(session_id)
         if taint is not None and any(
-            f.get("category") == "prompt_injection" for f in findings
+            f.get("category") in ("prompt_injection", "prompt_injection_semantic")
+            for f in findings
         ):
             taint.mark_injection(index)
 
@@ -579,6 +600,83 @@ class PolicyEngine:
                         taint.add_domain(_domain)
 
         return findings
+
+    def _get_semantic_guard(self):
+        """Lazy-instantiate the configured semantic guard. Returns None on failure."""
+        if self._semantic_guard is not None:
+            return self._semantic_guard if self._semantic_guard is not False else None
+
+        cfg = self.semantic_guard_config or {}
+        mode = str(cfg.get("mode", "hybrid")).lower()
+        try:
+            if mode == "hybrid":
+                from warden.semantic_guard_v2 import SemanticGuardV2
+                cli = cfg.get("cli_path") or None
+                self._semantic_guard = SemanticGuardV2(cli_path=cli)
+            else:
+                from warden.semantic_guard import SemanticGuard
+                self._semantic_guard = SemanticGuard(
+                    force_heuristic=(mode == "heuristic"),
+                )
+        except Exception as exc:
+            sys.stderr.write(f"[warden] semantic_guard init failed: {exc}\n")
+            self._semantic_guard = False
+            return None
+        return self._semantic_guard
+
+    def _run_semantic_layer(
+        self,
+        event: Dict[str, Any],
+        field_values: Dict[str, str],
+        index: int,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Run the opt-in semantic guard on text fields. Returns one finding or None."""
+        guard = self._get_semantic_guard()
+        if guard is None:
+            return None
+
+        cfg = self.semantic_guard_config
+        # _extract_fields joins prompt/response/content/stdout/stderr into
+        # combined_text; command is normalized separately. Configurable
+        # fields are kept in the YAML for future granularity, but the
+        # extractor exposes them merged today.
+        parts = [field_values.get("combined_text", ""), field_values.get("command", "")]
+        text = "\n".join(p for p in parts if p).strip()
+        if len(text) < 12:  # too short to be a meaningful semantic attack
+            return None
+
+        result = guard.analyze(text)
+        # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
+        risk = getattr(result, "final", result)
+        score = float(getattr(risk, "risk_score", 0.0))
+
+        warn_t = float(cfg.get("warn_threshold", 0.45))
+        block_t = float(cfg.get("block_threshold", 0.75))
+        if score < warn_t:
+            return None
+
+        action = "block" if score >= block_t else "warn"
+        severity = "CRITICAL" if action == "block" else "HIGH"
+        category = "prompt_injection_semantic"
+        rule_id = "semantic-guard-hybrid" if str(cfg.get("mode", "hybrid")).lower() == "hybrid" else "semantic-guard"
+        finding_id = f"{rule_id}-{index}"
+        prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+
+        reason = getattr(risk, "reason", "")
+        sem_cat = getattr(risk, "category", "unknown")
+        evidence = f"category={sem_cat} score={score:.2f} reason={reason}"
+
+        return {
+            "id": prefixed_id,
+            "severity": severity,
+            "category": category,
+            "title": f"Semantic prompt-injection detected ({sem_cat}, score {score:.2f})",
+            "evidence": _truncate(evidence),
+            "eventIndex": index,
+            "ruleId": rule_id,
+            "action": action,
+        }
 
     def check_command(self, command: str) -> List[Dict[str, Any]]:
         """Quick check: evaluate a shell command string. Returns findings."""

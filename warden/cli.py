@@ -235,6 +235,53 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit(1)
         return
 
+    # ── semantic-check: run the hybrid semantic injection guard ──────
+    if args.command == "semantic-check":
+        text = args.text
+        if not text:
+            text = sys.stdin.read()
+        if not text or not text.strip():
+            sys.stderr.write("error: no text provided (pass as argument or pipe via stdin)\n")
+            raise SystemExit(1)
+
+        mode = args.mode
+        cli_path = getattr(args, "cli_path", None)
+        if mode == "hybrid":
+            from warden.semantic_guard_v2 import SemanticGuardV2
+            guard = SemanticGuardV2(cli_path=cli_path)
+            result = guard.analyze(text)
+            payload = {
+                "mode": guard.mode,
+                "escalated": result.escalated,
+                "heuristic": result.heuristic.to_dict(),
+                "llm": result.llm.to_dict() if result.llm else None,
+                "final": result.final.to_dict(),
+            }
+        else:
+            from warden.semantic_guard import SemanticGuard
+            guard = SemanticGuard(force_heuristic=(mode == "heuristic"))
+            payload = {"mode": guard.mode, "final": guard.analyze(text).to_dict()}
+
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            final = payload["final"]
+            color = _RED if final["recommended_action"] == "block" else (
+                _YELLOW if final["recommended_action"] == "warn" else _GREEN
+            )
+            print(f"Mode:   {payload['mode']}")
+            if "escalated" in payload:
+                print(f"LLM escalated: {payload['escalated']}")
+            print(f"Score:  {final['risk_score']}")
+            print(f"Category: {final['category']}")
+            print(f"Reason: {final['reason']}")
+            print(_color(f"Action: {final['recommended_action']}", color))
+        if payload["final"]["recommended_action"] == "block":
+            raise SystemExit(2)
+        if payload["final"]["recommended_action"] == "warn":
+            raise SystemExit(1)
+        return
+
     # ── scan: scan MCP servers and skills ────────────────────────────
     if args.command == "scan":
         from warden.scanner import scan_skills
@@ -1361,6 +1408,21 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Replay a JSONL session log and check every event")
     check_parser.add_argument("--suggest-allowlist", action="store_true",
                               help="Print a ready-to-paste allowlist entry when a finding is produced")
+
+    # ── semantic-check ─────────────────────────────────────────────────
+    sem_parser = subparsers.add_parser(
+        "semantic-check",
+        help="Run the hybrid semantic prompt-injection guard on text or stdin",
+    )
+    sem_parser.add_argument("text", nargs="?", help="Text to analyze; omit to read stdin")
+    sem_parser.add_argument(
+        "--mode",
+        choices=["hybrid", "heuristic", "api"],
+        default="hybrid",
+        help="Analysis mode: hybrid (heuristic + local LLM), heuristic-only, or API",
+    )
+    sem_parser.add_argument("--cli-path", help="Override the path to the Claude CLI subagent")
+    sem_parser.add_argument("--json", action="store_true", help="Emit raw JSON output")
 
     # ── scan ──────────────────────────────────────────────────────────
     scan_parser = subparsers.add_parser("scan", help="Scan all MCP servers and skills for security risks")

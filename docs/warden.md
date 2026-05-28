@@ -51,6 +51,23 @@ See [`warden/default_policy.yaml`](../warden/default_policy.yaml) for the comple
 | Skill secret access       | HIGH     | Flags skills referencing `.env`, `.ssh/id_rsa`, `.aws/credentials` |
 | Skill overpermission      | MEDIUM   | Flags skills requesting wildcard filesystem or network access      |
 
+## Semantic Guard
+
+The regex rules above catch injection attempts that match known patterns. The semantic guard adds a second layer for paraphrased, social-engineered, and in-content injections.
+
+It is **opt-in and off by default.** Enable it per workspace:
+
+```yaml
+# .prismor-warden/policy.yaml
+settings:
+  semantic_guard:
+    enabled: true
+```
+
+The hybrid mode (default) uses a local Claude Code CLI subagent for intent disambiguation — no API key needed. The heuristic pre-screen runs in under a millisecond; the LLM is only called for the uncertain zone.
+
+See [docs/semantic-guard.md](semantic-guard.md) for the full setup guide, configuration reference, and agent-specific instructions.
+
 ## Session Logs
 
 Warden logs every agent tool interaction, not just findings. This gives you a full audit trail of what your agent did, not just what it was blocked from doing.

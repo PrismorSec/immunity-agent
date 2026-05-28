@@ -4,6 +4,47 @@ All notable changes to Immunity Agent (Prismor Warden) are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.6] — 2026-05-28
+
+Hybrid semantic prompt-injection defense.
+
+### Added
+
+- **`warden/semantic_guard.py`** — heuristic semantic-injection detector with
+  35+ weighted regex signals covering authority claims, compliance pretexts,
+  friction-reduction manipulation, roleplay/jailbreak framing, instruction
+  override, credential exfiltration, Warden self-bypass, nested file-injection
+  markers, and indirect privilege escalation. Optional Claude API mode (no
+  API key required for the default path).
+- **`warden/semantic_guard_v2.py`** — hybrid guard with uncertain-zone
+  escalation. Pipeline: heuristic pre-screen → if score in `[low, high)`,
+  escalate to a local Claude Code CLI subagent (no API key needed); merge
+  the stricter verdict. Falls back to heuristic-only when the CLI is absent.
+- **`PolicyEngine` integration** — opt-in `settings.semantic_guard` block in
+  `default_policy.yaml`. Emits `prompt_injection_semantic` findings alongside
+  regex findings; participates in session taint marking. Off by default;
+  zero overhead unless enabled per-project.
+- **`warden semantic-check`** CLI subcommand — ad-hoc analyzer for tuning
+  policies and debugging false positives. Supports `--mode hybrid|heuristic|api`
+  and `--json` output.
+- **`tests/test_semantic_guard.py`** — 15 unit tests covering heuristic
+  detection, threshold gating, CLI-absent graceful degrade, and PolicyEngine
+  integration.
+
+### Notes
+
+Benchmarked on 826 cases spanning OWASP LLM01–LLM10, OWASP Agentic T02–T04,
+MITRE-ATLAS, and nested-file injection: F1 improves 0.697 → 0.822; semantic
+attack recall improves 8% → 72%; the LLM subagent is invoked on 1.8% of
+events (15/826). Enable per-project with:
+
+```yaml
+# .prismor-warden/policy.yaml
+settings:
+  semantic_guard:
+    enabled: true
+```
+
 ## [1.5.0] — 2026-05-13
 
 Expanded IOC coverage and prompt injection defense.
