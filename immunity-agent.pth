@@ -1,1 +1,1 @@
-import warden._post_install; warden._post_install.maybe_show()
+import sys; exec("try:\n import warden._post_install; warden._post_install.maybe_show()\nexcept Exception:\n pass")

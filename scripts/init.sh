@@ -2,15 +2,15 @@
 set -e
 
 # Prismor Init — Add Prismor security to any project
-# Usage: curl -fsSL https://raw.githubusercontent.com/PrismorSec/prismor/main/scripts/init.sh | bash
-#    or: bash /path/to/prismor/scripts/init.sh [TARGET_DIR]
+# Usage: curl -fsSL https://raw.githubusercontent.com/PrismorSec/immunity-agent/main/scripts/init.sh | bash
+#    or: bash /path/to/immunity-agent/scripts/init.sh [TARGET_DIR]
 #
 # Environment:
 #   PRISMOR_MODE      observe | enforce   (default: observe)
 #   PRISMOR_CLOAK     1 | true | yes      (default: off — opts into the secret
 #                                          cloaking prevention layer)
 
-PRISMOR_REPO="https://github.com/PrismorSec/prismor.git"
+PRISMOR_REPO="https://github.com/PrismorSec/immunity-agent.git"
 PRISMOR_DIR="${PRISMOR_HOME:-$HOME/.prismor}"
 TARGET_DIR="${1:-.}"
 MODE="${PRISMOR_MODE:-observe}"
@@ -122,14 +122,21 @@ fi
 
 # ── Step 4: Install Warden hooks ────────────────────────────────────────
 info "Installing Warden hooks (mode: $MODE)..."
+HOOKS_OK=0
 for agent in "${AGENTS_FOUND[@]}"; do
-    python3 "$PRISMOR_DIR/immunity" install-hooks \
+    # Capture stderr so we can surface the real cause on failure instead of
+    # silently swallowing it (a failed install must never look like success).
+    if hook_err="$(python3 "$PRISMOR_DIR/immunity" install-hooks \
         --agent "$agent" \
         --workspace "$TARGET_DIR" \
         --scope project \
-        --mode "$MODE" 2>/dev/null && \
-        ok "Installed $agent hooks" || \
+        --mode "$MODE" 2>&1)"; then
+        ok "Installed $agent hooks"
+        HOOKS_OK=$((HOOKS_OK + 1))
+    else
         warn "Could not install $agent hooks"
+        printf '%s\n' "$hook_err" | tail -3 | sed 's/^/      /' >&2
+    fi
 done
 
 # ── Step 4b: Cloaking hooks (opt-in) ────────────────────────────────────
@@ -153,6 +160,32 @@ if [ "$CLOAK" = "1" ]; then
     esac
 fi
 
+# ── Step 4c: Put `immunity` on PATH ─────────────────────────────────────
+# The git-clone path (this script) otherwise leaves no `immunity` command,
+# so the cloak/status commands the README points at would be "not found".
+WRAPPER="$PRISMOR_DIR/scripts/immunity"
+if [ -f "$WRAPPER" ]; then
+    if [ -w /usr/local/bin ]; then
+        ln -sf "$WRAPPER" /usr/local/bin/immunity \
+            && ok "Linked 'immunity' to /usr/local/bin" \
+            || warn "Could not link 'immunity' to /usr/local/bin"
+    else
+        case "${SHELL:-}" in
+            *zsh)  RC="$HOME/.zshrc" ;;
+            *bash) RC="$HOME/.bashrc" ;;
+            *)     RC="$HOME/.profile" ;;
+        esac
+        if grep -qF "$PRISMOR_DIR/scripts" "$RC" 2>/dev/null; then
+            ok "'immunity' already on PATH via $(basename "$RC")"
+        else
+            printf '\n# Prismor immunity\nexport PATH="%s/scripts:$PATH"\n' "$PRISMOR_DIR" >> "$RC"
+            ok "Added 'immunity' to PATH in $(basename "$RC") — run: source $RC"
+        fi
+    fi
+else
+    warn "immunity wrapper not found at $WRAPPER — CLI not added to PATH"
+fi
+
 # ── Step 5: Verify feed ─────────────────────────────────────────────────
 if [ -f "$PRISMOR_DIR/keys/public.pub" ]; then
     if bash "$PRISMOR_DIR/scripts/verify_feed.sh" "$PRISMOR_DIR/advisories/immunity-feed.json" "$PRISMOR_DIR/keys/public.pub" >/dev/null 2>&1; then
@@ -164,26 +197,40 @@ fi
 
 # ── Done ─────────────────────────────────────────────────────────────────
 echo ""
+if [ "$HOOKS_OK" -eq 0 ]; then
+    err "Initialization FAILED — no hooks were installed for any agent."
+    err "Warden is NOT monitoring $TARGET_DIR. See the errors above for the cause."
+    err "A CLAUDE.md was written, but without hooks nothing is enforced."
+    exit 1
+fi
+
 ok "Prismor initialized for: $TARGET_DIR"
 echo ""
-echo -e "  ${GREEN}Warden:${NC}  hooks installed (mode: $MODE)"
+echo -e "  ${GREEN}Warden:${NC}  hooks installed for $HOOKS_OK agent(s) (mode: $MODE)"
 echo -e "  ${GREEN}Config:${NC}  $CLAUDE_MD"
 echo ""
-echo -e "  To switch to enforce mode:  ${YELLOW}PRISMOR_MODE=enforce bash $PRISMOR_DIR/scripts/init.sh $TARGET_DIR${NC}"
+if [ "$MODE" != "enforce" ]; then
+    echo -e "  To switch to enforce mode:  ${YELLOW}PRISMOR_MODE=enforce bash $PRISMOR_DIR/scripts/init.sh $TARGET_DIR${NC}"
+fi
 if [ "$CLOAK" != "1" ]; then
     echo -e "  To enable secret cloaking: ${YELLOW}PRISMOR_CLOAK=1 bash $PRISMOR_DIR/scripts/init.sh $TARGET_DIR${NC}"
 fi
 echo -e "  To update the feed:         ${YELLOW}git -C $PRISMOR_DIR pull${NC}"
 
 # ── Optional: Analyze current session state ────────────────────────────────
-echo ""
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-read -p "$(echo -e ${YELLOW}'Check current session for findings? (y/n):'${NC}) " -n 1 -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+# Only prompt when attached to a real terminal. In piped / non-interactive runs
+# (curl | bash, CI) `read` hits EOF and, under `set -e`, would abort the script
+# with a non-zero status *after* a fully successful install.
+if [ -t 0 ]; then
     echo ""
-    info "Analyzing your current session..."
-    python3 "$PRISMOR_DIR/immunity" analyze 2>/dev/null || \
-        warn "Session analysis failed"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "$(echo -e ${YELLOW}'Check current session for findings? (y/n):'${NC}) " -n 1 -r || true
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        info "Analyzing your current session..."
+        python3 "$PRISMOR_DIR/immunity" analyze 2>/dev/null || \
+            warn "Session analysis failed"
+    fi
+    echo ""
 fi
-echo ""
