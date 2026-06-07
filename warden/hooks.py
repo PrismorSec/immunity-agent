@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -606,7 +607,7 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str) -> Dict[str, An
     else:
         tool_args = tool_args_raw
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "agent": "copilot",
         "agent_event": hook_event,
@@ -819,7 +820,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "agent": "claude",
         "agent_event": hook_event,
@@ -857,7 +858,7 @@ def _normalize_windsurf(payload: Dict[str, Any], session_id: str, workspace: Pat
     hook_event = payload.get("agent_action_name", "unknown")
     tool_info = payload.get("tool_info", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "agent": "windsurf",
         "agent_event": hook_event,
@@ -903,7 +904,7 @@ def _normalize_cursor(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
         or "unknown"
     )
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "agent": "cursor",
         "agent_event": hook_event,
@@ -925,7 +926,7 @@ def _normalize_hermes(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
     tool_name = payload.get("toolName", "")
     tool_input = payload.get("toolInput", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "agent": "hermes",
         "agent_event": hook_event,
@@ -951,7 +952,7 @@ def _normalize_openclaw(payload: Dict[str, Any], session_id: str) -> Dict[str, A
     tool_name = payload.get("toolName", "")
     tool_input = payload.get("toolInput", {})
     base = {
-        "ts": payload.get("timestamp"),
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "agent": "openclaw",
         "agent_event": hook_event,
