@@ -481,3 +481,56 @@ class TestSafeVersionRecommender:
     def test_returns_none_for_unsupported_ecosystem(self):
         from supplychain.scoring import safe_version as sv
         assert sv.recommend_safe_version("anything", "maven") is None
+
+
+class TestExtractAdvisoryIds:
+    """_extract_advisory_ids pulls all supported ID formats from signals_json."""
+
+    def _make_sigs(self, *descriptions):
+        import json
+        return json.dumps([{"description": d} for d in descriptions])
+
+    def test_extracts_ghsa(self):
+        from warden.store import _extract_advisory_ids
+        ids = _extract_advisory_ids(self._make_sigs("GHSA-1234-abcd-5678: RCE in foo"))
+        assert ids == ["GHSA-1234-ABCD-5678"]
+
+    def test_extracts_cve(self):
+        from warden.store import _extract_advisory_ids
+        ids = _extract_advisory_ids(self._make_sigs("CVE-2024-12345: buffer overflow"))
+        assert ids == ["CVE-2024-12345"]
+
+    def test_extracts_mal(self):
+        from warden.store import _extract_advisory_ids
+        ids = _extract_advisory_ids(self._make_sigs("malicious package: MAL-2024-9999"))
+        assert ids == ["MAL-2024-9999"]
+
+    def test_extracts_pysec(self):
+        from warden.store import _extract_advisory_ids
+        ids = _extract_advisory_ids(self._make_sigs("PYSEC-2023-42: deserialization issue"))
+        assert ids == ["PYSEC-2023-42"]
+
+    def test_extracts_rustsec(self):
+        from warden.store import _extract_advisory_ids
+        ids = _extract_advisory_ids(self._make_sigs("RUSTSEC-2024-0001: use-after-free"))
+        assert ids == ["RUSTSEC-2024-0001"]
+
+    def test_deduplicates_across_signals(self):
+        from warden.store import _extract_advisory_ids
+        sigs = self._make_sigs(
+            "CVE-2024-12345: first mention",
+            "CVE-2024-12345: second mention",
+        )
+        assert _extract_advisory_ids(sigs) == ["CVE-2024-12345"]
+
+    def test_multiple_ids_in_one_signal(self):
+        from warden.store import _extract_advisory_ids
+        sigs = self._make_sigs("GHSA-aaaa-bbbb-cccc and CVE-2023-99999")
+        ids = _extract_advisory_ids(sigs)
+        assert "GHSA-AAAA-BBBB-CCCC" in ids
+        assert "CVE-2023-99999" in ids
+
+    def test_empty_input(self):
+        from warden.store import _extract_advisory_ids
+        assert _extract_advisory_ids("") == []
+        assert _extract_advisory_ids("[]") == []

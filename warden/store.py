@@ -814,7 +814,10 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                                         AND e2.id < e.id
                                     )
                 WHERE e.type != 'supply_chain'
-                """
+                  AND e.ts >= datetime('now', ?)
+                LIMIT 5000
+                """,
+                (f"-{hours} hours",),
             ):
                 info = _extract_mcp_or_tool(row["raw_json"] or "")
                 if info is None or info["kind"] == "tool":
@@ -1443,7 +1446,7 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
             # Per-session install activity in the 24h window.
             for row in conn.execute(
                 """
-                SELECT COALESCE(session_id, '') as session_id,
+                SELECT session_id,
                        ecosystem,
                        MAX(install_cmd) as install_cmd,
                        MIN(ts) as started,
@@ -1454,6 +1457,7 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                        COUNT(*) as total
                 FROM supply_chain_events
                 WHERE ts >= datetime('now', ?)
+                  AND session_id IS NOT NULL AND session_id != ''
                 GROUP BY session_id, install_cmd
                 ORDER BY last_seen DESC
                 LIMIT 25

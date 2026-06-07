@@ -92,6 +92,8 @@ class RiskScorer:
                 if meta.age_days < 2:
                     add("extreme_new_package", 50, f"published {meta.age_days}d ago — unreviewed")
                 elif meta.age_days < 7:
+                    # 35 pts: enough to WARN alone but not BLOCK; a single-maintainer
+                    # <7d package (35 + 10 = 45) still needs a second signal to cross 60.
                     add("very_new_package", 35, f"published {meta.age_days}d ago")
                 elif meta.age_days < 30:
                     add("new_package", 15, f"published {meta.age_days}d ago")
