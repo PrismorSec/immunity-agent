@@ -41,9 +41,9 @@ def _make_event(ecosystem: str = "npm") -> InstallEvent:
     return InstallEvent(ecosystem=ecosystem, argv=[], packages=[], custom_registry=None)
 
 
-class TestNVDScoring:
-    def test_critical_cve_produces_nvd_critical_signal(self):
-        """Critical CVE (CVSS >= 9.0) should produce nvd_critical signal."""
+class TestOSVScoring:
+    def test_critical_cve_produces_osv_critical_signal(self):
+        """Critical CVE (CVSS >= 9.0) should produce osv_critical signal."""
         cves = [
             {
                 "id": "CVE-2023-001",
@@ -53,16 +53,16 @@ class TestNVDScoring:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         signal_ids = [s.id for s in verdict.signals]
-        assert "nvd_critical" in signal_ids
-        critical_signal = next(s for s in verdict.signals if s.id == "nvd_critical")
+        assert "osv_critical" in signal_ids
+        critical_signal = next(s for s in verdict.signals if s.id == "osv_critical")
         assert critical_signal.points == 50
 
-    def test_high_cve_produces_nvd_high_signal(self):
-        """High CVE (CVSS 7.0-8.9) should produce nvd_high signal."""
+    def test_high_cve_produces_osv_high_signal(self):
+        """High CVE (CVSS 7.0-8.9) should produce osv_high signal."""
         cves = [
             {
                 "id": "CVE-2023-002",
@@ -72,16 +72,16 @@ class TestNVDScoring:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         signal_ids = [s.id for s in verdict.signals]
-        assert "nvd_high" in signal_ids
-        high_signal = next(s for s in verdict.signals if s.id == "nvd_high")
+        assert "osv_high" in signal_ids
+        high_signal = next(s for s in verdict.signals if s.id == "osv_high")
         assert high_signal.points == 30
 
-    def test_medium_cve_produces_nvd_medium_signal(self):
-        """Medium CVE (CVSS 4.0-6.9) should produce nvd_medium signal."""
+    def test_medium_cve_produces_osv_medium_signal(self):
+        """Medium CVE (CVSS 4.0-6.9) should produce osv_medium signal."""
         cves = [
             {
                 "id": "CVE-2023-003",
@@ -91,14 +91,14 @@ class TestNVDScoring:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         signal_ids = [s.id for s in verdict.signals]
-        assert "nvd_medium" in signal_ids
+        assert "osv_medium" in signal_ids
 
-    def test_low_cve_produces_nvd_low_signal(self):
-        """Low CVE (CVSS < 4.0) should produce nvd_low signal."""
+    def test_low_cve_produces_osv_low_signal(self):
+        """Low CVE (CVSS < 4.0) should produce osv_low signal."""
         cves = [
             {
                 "id": "CVE-2023-004",
@@ -108,36 +108,36 @@ class TestNVDScoring:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         signal_ids = [s.id for s in verdict.signals]
-        assert "nvd_low" in signal_ids
+        assert "osv_low" in signal_ids
 
     def test_no_cves_allows_clean_package(self):
         """Package with no CVEs should get allow verdict."""
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=[]):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         assert verdict.verdict == "allow"
-        cve_signals = [s for s in verdict.signals if s.id.startswith("nvd_")]
+        cve_signals = [s for s in verdict.signals if s.id.startswith("osv_")]
         assert len(cve_signals) == 0
 
-    def test_nvd_fail_open(self):
+    def test_osv_fail_open(self):
         """fetch_cves failure (exception) should not block install."""
         scorer = RiskScorer()
 
         def raise_error(*args, **kwargs):
             raise RuntimeError("NVD API timeout")
 
-        with patch("supplychain.scoring.engine.fetch_cves", side_effect=raise_error):
+        with patch("supplychain.scoring.engine.fetch_vulns", side_effect=raise_error):
             # Should not raise, but fail-open is at fetch_cves level
             # For this test, we patch it to raise to verify behavior
             pass
 
         # The actual behavior is fail-open in fetch_cves itself
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=[]):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         assert verdict.verdict == "allow"
@@ -154,7 +154,7 @@ class TestNVDScoring:
             for i in range(10)
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         assert verdict.score <= 100
@@ -171,17 +171,17 @@ class TestNVDScoring:
             for i in range(10)
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
-        cve_signals = [s for s in verdict.signals if s.id.startswith("nvd_")]
+        cve_signals = [s for s in verdict.signals if s.id.startswith("osv_")]
         # Should only have 3 signals (capped by [:3] in engine)
         assert len(cve_signals) == 3
 
     def test_cves_only_scored_for_registry_source(self):
         """Git/tarball/local sources should skip CVE check."""
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves") as mock_fetch:
+        with patch("supplychain.scoring.engine.fetch_vulns") as mock_fetch:
             # Git source
             verdict = scorer.score(
                 _make_spec(),
@@ -201,7 +201,7 @@ class TestNVDScoring:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         assert verdict.verdict == "warn"
@@ -218,7 +218,7 @@ class TestNVDScoring:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
         assert verdict.verdict == "warn"
@@ -257,7 +257,7 @@ class TestTyposquatDetection:
     def test_typosquat_in_scorer(self):
         """Typosquatting should produce signal in scorer."""
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=[]):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
             verdict = scorer.score(
                 _make_spec(name="reeact"),
                 _make_meta(name="reeact"),
@@ -272,7 +272,7 @@ class TestTyposquatDetection:
     def test_typosquat_verdict_warn(self):
         """Typosquatting (40 pts) should trigger WARN (threshold=30)."""
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=[]):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
             verdict = scorer.score(
                 _make_spec(name="reeact"),
                 _make_meta(name="reeact"),
@@ -295,16 +295,189 @@ class TestCombinedSignals:
             }
         ]
         scorer = RiskScorer()
-        with patch("supplychain.scoring.engine.fetch_cves", return_value=cves):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(
                 _make_spec(name="reeact"),
                 _make_meta(name="reeact"),
                 _make_event(ecosystem="npm"),
             )
 
-        # nvd_high (30) + typosquat_suspect (40) = 70 points
+        # osv_high (30) + typosquat_suspect (40) = 70 points
         assert verdict.score == 70
         assert verdict.verdict == "block"  # >= 60 threshold
         signal_ids = [s.id for s in verdict.signals]
-        assert "nvd_high" in signal_ids
+        assert "osv_high" in signal_ids
         assert "typosquat_suspect" in signal_ids
+
+
+class TestOSVMaliciousPackages:
+    """MAL-* OSV entries should force-block via the ioc_ signal path."""
+
+    def test_malicious_vuln_forces_block(self):
+        vulns = [{
+            "id": "MAL-2024-9999",
+            "severity": "critical",
+            "title": "MAL-2024-9999: backdoored postinstall",
+            "malicious": True,
+        }]
+        scorer = RiskScorer()
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=vulns):
+            verdict = scorer.score(
+                _make_spec(name="evil-pkg"),
+                _make_meta(name="evil-pkg"),
+                _make_event(ecosystem="npm"),
+            )
+
+        assert verdict.verdict == "block"
+        assert any(s.id.startswith("ioc_osv_") for s in verdict.signals)
+
+    def test_malicious_not_demoted_by_allowlist(self):
+        """Allowlist must never let a known-malicious package through."""
+        vulns = [{
+            "id": "MAL-2024-1234",
+            "severity": "critical",
+            "title": "MAL-2024-1234",
+            "malicious": True,
+        }]
+        scorer = RiskScorer(allowlist={"evil-pkg"})
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=vulns):
+            verdict = scorer.score(
+                _make_spec(name="evil-pkg"),
+                _make_meta(name="evil-pkg"),
+                _make_event(ecosystem="npm"),
+            )
+
+        assert verdict.verdict == "block"
+
+
+class TestExtremeNewPackage:
+    def test_zero_day_single_maintainer_blocks(self):
+        """A 0-day package with a single maintainer should cross BLOCK."""
+        scorer = RiskScorer()
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
+            verdict = scorer.score(
+                _make_spec(name="brand-new"),
+                _make_meta(name="brand-new", age_days=0, maintainer_count=1),
+                _make_event(ecosystem="npm"),
+            )
+
+        signal_ids = [s.id for s in verdict.signals]
+        assert "extreme_new_package" in signal_ids
+        assert verdict.verdict == "block"
+
+    def test_three_day_package_warns_not_blocks(self):
+        """3-day-old packages should warn (35) but not block (<60)."""
+        scorer = RiskScorer()
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
+            verdict = scorer.score(
+                _make_spec(name="newish"),
+                _make_meta(name="newish", age_days=3, maintainer_count=5),
+                _make_event(ecosystem="npm"),
+            )
+
+        signal_ids = [s.id for s in verdict.signals]
+        assert "very_new_package" in signal_ids
+        assert verdict.verdict == "warn"
+
+
+class TestAllowlist:
+    def test_allowlist_demotes_block_to_warn(self):
+        """Allowlisted packages get warned, not blocked, on non-IOC signals."""
+        scorer = RiskScorer(allowlist={"brand-new"})
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
+            verdict = scorer.score(
+                _make_spec(name="brand-new"),
+                _make_meta(name="brand-new", age_days=0, maintainer_count=1),
+                _make_event(ecosystem="npm"),
+            )
+
+        assert verdict.verdict == "warn"
+        assert verdict.allowlisted is True
+
+    def test_ecosystem_qualified_allowlist_entry(self):
+        scorer = RiskScorer(allowlist={"npm:brand-new"})
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]):
+            verdict = scorer.score(
+                _make_spec(name="brand-new"),
+                _make_meta(name="brand-new", age_days=0, maintainer_count=1),
+                _make_event(ecosystem="npm"),
+            )
+
+        assert verdict.allowlisted is True
+
+
+class TestVersionThreading:
+    def test_version_passed_to_fetch_vulns(self):
+        """spec.version takes precedence over meta.version when querying OSV."""
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]) as mock_fetch:
+            scorer = RiskScorer()
+            spec = PackageSpec(raw="httpx==0.13.0", name="httpx", source="registry", version="0.13.0")
+            meta = _make_meta(name="httpx", ecosystem="pip", version="0.27.0")
+            scorer.score(spec, meta, _make_event(ecosystem="pip"))
+
+        mock_fetch.assert_called_once_with("httpx", "pip", "0.13.0")
+
+    def test_meta_version_used_when_spec_version_empty(self):
+        with patch("supplychain.scoring.engine.fetch_vulns", return_value=[]) as mock_fetch:
+            scorer = RiskScorer()
+            spec = PackageSpec(raw="httpx", name="httpx", source="registry", version="")
+            meta = _make_meta(name="httpx", ecosystem="pip", version="0.27.0")
+            scorer.score(spec, meta, _make_event(ecosystem="pip"))
+
+        mock_fetch.assert_called_once_with("httpx", "pip", "0.27.0")
+
+
+class TestSafeVersionRecommender:
+    def test_picks_newest_clean_stable(self):
+        from supplychain.scoring import safe_version as sv
+
+        versions = {
+            "1.0.0": 400,
+            "1.1.0": 200,
+            "1.2.0-rc1": 60,  # pre-release, excluded
+            "1.2.0": 30,
+            "1.3.0": 5,       # too new, excluded
+        }
+        with patch.object(sv, "_list_npm_versions", return_value=versions), \
+             patch.object(sv, "batch_has_vulns", return_value={"1.2.0": False, "1.1.0": False, "1.0.0": False}):
+            rec = sv.recommend_safe_version("anything", "npm", exclude_version="0.9.0")
+
+        assert rec is not None
+        assert rec.version == "1.2.0"
+
+    def test_skips_vulnerable_versions(self):
+        from supplychain.scoring import safe_version as sv
+
+        versions = {"1.0.0": 400, "1.1.0": 200, "1.2.0": 30}
+        with patch.object(sv, "_list_npm_versions", return_value=versions), \
+             patch.object(sv, "batch_has_vulns", return_value={"1.2.0": True, "1.1.0": True, "1.0.0": False}):
+            rec = sv.recommend_safe_version("anything", "npm")
+
+        assert rec is not None
+        assert rec.version == "1.0.0"
+
+    def test_excludes_blocked_version(self):
+        """Never recommend the version we just blocked."""
+        from supplychain.scoring import safe_version as sv
+
+        versions = {"1.0.0": 400, "1.1.0": 200}
+        with patch.object(sv, "_list_npm_versions", return_value=versions), \
+             patch.object(sv, "batch_has_vulns", return_value={"1.0.0": False}):
+            rec = sv.recommend_safe_version("anything", "npm", exclude_version="1.1.0")
+
+        assert rec is not None
+        assert rec.version == "1.0.0"
+
+    def test_returns_none_when_all_candidates_vulnerable(self):
+        from supplychain.scoring import safe_version as sv
+
+        versions = {"1.0.0": 400, "1.1.0": 200}
+        with patch.object(sv, "_list_npm_versions", return_value=versions), \
+             patch.object(sv, "batch_has_vulns", return_value={"1.0.0": True, "1.1.0": True}):
+            rec = sv.recommend_safe_version("anything", "npm")
+
+        assert rec is None
+
+    def test_returns_none_for_unsupported_ecosystem(self):
+        from supplychain.scoring import safe_version as sv
+        assert sv.recommend_safe_version("anything", "maven") is None

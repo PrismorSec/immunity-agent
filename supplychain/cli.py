@@ -66,10 +66,56 @@ def _check_feed(packages, feed: dict) -> list:
         return []
 
 
+# ── Recommendations ───────────────────────────────────────────────────────────
+
+def _format_pinned(name: str, version: str, ecosystem: str) -> str:
+    """Render an install-ready pinned spec for the user's ecosystem."""
+    if ecosystem in ("pip", "uv"):
+        return f"{name}=={version}"
+    if ecosystem in ("npm", "pnpm", "yarn", "bun", "cargo"):
+        return f"{name}@{version}"
+    return f"{name} {version}"
+
+
+def _recommendations_for_blocks(verdicts, ecosystem):
+    """Look up safe alternative versions for every BLOCKed registry package.
+
+    Returns {spec.raw: SafeVersion}.
+    """
+    try:
+        from supplychain.scoring.safe_version import recommend_safe_version
+    except Exception:
+        return {}
+
+    out = {}
+    for v in verdicts:
+        if v.verdict != "block":
+            continue
+        if v.meta.source != "registry":
+            continue
+        # Skip recommending for known-malicious matches — the right answer
+        # is "don't install this package at all", not "install a different
+        # version of the same backdoor".
+        if any(s.id.startswith("ioc_") for s in v.signals):
+            continue
+        try:
+            rec = recommend_safe_version(
+                v.spec.name, ecosystem,
+                exclude_version=v.spec.version or v.meta.version or "",
+            )
+        except Exception:
+            rec = None
+        if rec is not None:
+            out[v.spec.raw] = rec
+    return out
+
+
 # ── Output ────────────────────────────────────────────────────────────────────
 
-def _print_report(event, verdicts, feed_hits: list) -> None:
+def _print_report(event, verdicts, feed_hits: list, recommendations=None) -> None:
     from supplychain.scoring.engine import PackageVerdict
+
+    recommendations = recommendations or {}
 
     print()
     print(f"  {_c('IMMUNITY', _BOLD)}  supply chain  {_c(f'[{event.ecosystem}]', _DIM)}")
@@ -101,7 +147,16 @@ def _print_report(event, verdicts, feed_hits: list) -> None:
 
         for sig in v.signals:
             print(f"             {_c(f'+{sig.points}', _DIM)} {sig.description}")
-        if v.signals:
+
+        rec = recommendations.get(v.spec.raw)
+        if rec is not None:
+            pinned = _format_pinned(v.spec.name, rec.version, event.ecosystem)
+            print(
+                f"             {_c('→', _GREEN)} safe alternative: "
+                f"{_c(pinned, _GREEN)}  {_c(rec.reason, _DIM)}"
+            )
+
+        if v.signals or rec is not None:
             print()
 
     if not any(v.signals for v in verdicts):
@@ -128,7 +183,13 @@ def _exec(argv: List[str]) -> None:
 
     binary = shutil.which(argv[0])
     if binary is None:
-        sys.stderr.write(f"immunity: command not found: {argv[0]}\n")
+        # Pre-flight scoring already ran and printed verdicts. Surface the
+        # missing tool clearly so users know the score is good but the
+        # install couldn't proceed (instead of a bare exit 127).
+        sys.stderr.write(
+            f"  {_ce('Install skipped:', _YELLOW)} `{argv[0]}` is not installed on this system.\n"
+            f"  Scoring above is informational — install {argv[0]} to actually run this command.\n"
+        )
         sys.exit(127)
 
     # Detect pip install on externally-managed Python (PEP 668) before exec-replacing.
@@ -207,9 +268,15 @@ def run_supply(argv: Optional[List[str]] = None) -> None:
 
     # ── Evaluate ──────────────────────────────────────────────────────────────
     from supplychain.ecosystems.metadata import fetch_metadata
-    from supplychain.scoring.engine import RiskScorer
+    from supplychain.scoring.engine import RiskScorer, load_allowlist
 
-    scorer = RiskScorer()
+    try:
+        from warden.store import infer_default_workspace
+        workspace = infer_default_workspace(Path.cwd())
+    except Exception:
+        workspace = Path.cwd()
+
+    scorer = RiskScorer(allowlist=load_allowlist(workspace))
     verdicts = []
     for spec in event.packages:
         meta = fetch_metadata(spec, event.ecosystem)
@@ -219,7 +286,11 @@ def run_supply(argv: Optional[List[str]] = None) -> None:
     feed = _load_feed()
     feed_hits = _check_feed(event.packages, feed)
 
-    _print_report(event, verdicts, feed_hits)
+    # Look up safe alternative versions for blocked packages so an agent
+    # has somewhere to go without bouncing the install.
+    recommendations = _recommendations_for_blocks(verdicts, event.ecosystem)
+
+    _print_report(event, verdicts, feed_hits, recommendations)
     sys.stdout.flush()
     _record_to_store(event, verdicts)
 
@@ -229,8 +300,17 @@ def run_supply(argv: Optional[List[str]] = None) -> None:
 
     if blocked:
         names = ", ".join(v.spec.raw for v in blocked)
+        suggested = [
+            _format_pinned(v.spec.name, recommendations[v.spec.raw].version, event.ecosystem)
+            for v in blocked if v.spec.raw in recommendations
+        ]
+        suggest_line = (
+            f"  Try instead: {_c(', '.join(suggested), _GREEN)}\n"
+            if suggested else ""
+        )
         print(
             f"  {_c('Blocked:', _RED)} {names}\n"
+            f"{suggest_line}"
             f"  To override: add to supply_chain.allowlist in "
             f".prismor-warden/policy.yaml\n"
         )

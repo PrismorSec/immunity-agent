@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Literal
+from pathlib import Path
+from typing import Iterable, List, Literal, Optional, Set
 
 from supplychain.ecosystems.detector import InstallEvent, PackageSpec
 from supplychain.ecosystems.metadata import PackageMetadata
 from supplychain import ioc as _ioc
-from supplychain.scoring.nvd_lookup import fetch_cves
+from supplychain.scoring.osv_lookup import fetch_vulns
 from supplychain.scoring.typosquat import check_typosquat
 
 
@@ -25,11 +26,39 @@ class PackageVerdict:
     score: int
     verdict: Literal["allow", "warn", "block"]
     signals: List[Signal] = field(default_factory=list)
+    allowlisted: bool = False
+
+
+def load_allowlist(workspace: Path) -> Set[str]:
+    """Read supply_chain.allowlist from .prismor-warden/policy.yaml.
+
+    Accepts entries as bare names ("lodash") or ecosystem-qualified
+    ("npm:lodash"). Both forms are returned lowercased.
+    """
+    policy_path = workspace / ".prismor-warden" / "policy.yaml"
+    if not policy_path.is_file():
+        return set()
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    entries: Iterable = ((data.get("supply_chain") or {}).get("allowlist")) or []
+    return {str(e).lower() for e in entries if e}
 
 
 class RiskScorer:
     WARN_THRESHOLD = 30
     BLOCK_THRESHOLD = 60
+
+    def __init__(self, allowlist: Optional[Set[str]] = None) -> None:
+        self.allowlist = {a.lower() for a in (allowlist or set())}
+
+    def _is_allowlisted(self, spec: PackageSpec, ecosystem: str) -> bool:
+        if not self.allowlist:
+            return False
+        name = spec.name.lower()
+        return name in self.allowlist or f"{ecosystem}:{name}" in self.allowlist
 
     def score(
         self,
@@ -56,8 +85,14 @@ class RiskScorer:
         # ── Registry-only signals (skip for non-registry sources) ────────
         if meta.source == "registry":
             if meta.age_days is not None:
-                if meta.age_days < 7:
-                    add("very_new_package", 25, f"published {meta.age_days}d ago")
+                # Brand-new packages are the highest-risk supply-chain vector
+                # (mini-shai-hulud, LiteLLM backdoor). In an agentic context
+                # there's no human to review them, so <2d single-maintainer
+                # crosses BLOCK on its own (50 + 10 = 60).
+                if meta.age_days < 2:
+                    add("extreme_new_package", 50, f"published {meta.age_days}d ago — unreviewed")
+                elif meta.age_days < 7:
+                    add("very_new_package", 35, f"published {meta.age_days}d ago")
                 elif meta.age_days < 30:
                     add("new_package", 15, f"published {meta.age_days}d ago")
 
@@ -69,14 +104,23 @@ class RiskScorer:
             if meta.has_install_script:
                 add("has_install_script", 20, "has postinstall/preinstall script")
 
-            # ── CVE scoring via NVD ──────────────────────────────────────────
-            cves = fetch_cves(spec.name, meta.ecosystem)
-            _CVE_POINTS = {"critical": 50, "high": 30, "medium": 15, "low": 5}
-            cves_sorted = sorted(cves, key=lambda c: c.get("cvss_score") or 0, reverse=True)
-            for cve in cves_sorted[:3]:  # cap at 3 to avoid output noise
-                pts = _CVE_POINTS.get(cve["severity"], 0)
+            # ── Vulnerability scoring via OSV (version-aware) ────────────────
+            # Prefer the user-pinned version; fall back to whatever the
+            # registry reports as latest. OSV filters by version internally.
+            lookup_version = spec.version or meta.version or ""
+            vulns = fetch_vulns(spec.name, meta.ecosystem, lookup_version)
+            _SEV_POINTS = {"critical": 50, "high": 30, "medium": 15, "low": 5}
+            _SEV_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+            vulns_sorted = sorted(
+                vulns, key=lambda v: _SEV_RANK.get(v.get("severity"), -1), reverse=True
+            )
+            for vuln in vulns_sorted[:3]:  # cap at 3 to avoid output noise
+                if vuln.get("malicious"):
+                    add(f"ioc_osv_{vuln['id']}", 100, f"malicious package: {vuln['title']}")
+                    continue
+                pts = _SEV_POINTS.get(vuln["severity"], 0)
                 if pts:
-                    add(f"nvd_{cve['severity']}", pts, cve["title"])
+                    add(f"osv_{vuln['severity']}", pts, vuln["title"])
 
             # ── Typosquatting detection ──────────────────────────────────────
             mimic = check_typosquat(spec.name, meta.ecosystem)
@@ -110,6 +154,14 @@ class RiskScorer:
         else:
             verdict = "allow"
 
+        # Allowlist demotes BLOCK → WARN so signals stay visible but the
+        # install proceeds. IOC matches (known-malicious packages) are
+        # never demoted — the user explicitly opted in to a real attack.
+        allowlisted = self._is_allowlisted(spec, meta.ecosystem)
+        if allowlisted and verdict == "block" and not has_ioc:
+            verdict = "warn"
+
         return PackageVerdict(
-            spec=spec, meta=meta, score=total, verdict=verdict, signals=signals
+            spec=spec, meta=meta, score=total, verdict=verdict,
+            signals=signals, allowlisted=allowlisted,
         )
