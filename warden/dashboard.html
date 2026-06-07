@@ -224,6 +224,57 @@
   /* Empty state */
   .empty { padding: 24px; text-align: center; font-size: 11px; color: var(--gray-400); }
 
+  /* Section header — divides the dashboard into clear visual zones */
+  .section {
+    display: flex; align-items: center; gap: 10px;
+    margin: 28px 0 12px 2px;
+  }
+  .section h2 {
+    font-size: 11px; font-weight: 600; color: var(--gray-700);
+    text-transform: uppercase; letter-spacing: 0.10em;
+  }
+  .section .rule {
+    flex: 1; height: 1px; background: var(--gray-200);
+  }
+  .section .hint { font-size: 10px; color: var(--gray-400); }
+
+  /* Supply chain table extras */
+  .pkg-name { font-weight: 500; }
+  .pkg-ver  { color: var(--gray-400); font-size: 10px; }
+  .adv-pill {
+    display: inline-block; padding: 1px 5px; border-radius: 3px;
+    font-size: 9px; background: var(--gray-100); color: var(--gray-600);
+    margin-right: 3px;
+  }
+  .sugg-pill {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; background: #dcfce7; color: #15803d;
+  }
+  .sugg-none { color: var(--gray-300); font-size: 10px; }
+  .ts-hover { cursor: help; border-bottom: 1px dotted var(--gray-200); }
+
+  /* Trigger evidence block in finding drilldown */
+  .trigger-kind {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 9px; background: var(--gray-100); color: var(--gray-600);
+    text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px;
+  }
+  .trigger-detail {
+    margin-top: 6px; padding: 6px 8px;
+    background: var(--gray-900); color: #e5e7eb;
+    border-radius: 4px; font-size: 10px; word-break: break-all;
+    white-space: pre-wrap;
+  }
+  .trigger-detail:empty { display: none; }
+
+  /* Source pill */
+  .src-pill {
+    display: inline-block; padding: 1px 5px; border-radius: 3px;
+    font-size: 9px; color: var(--gray-500); background: var(--gray-100);
+    margin-left: 4px;
+  }
+  .src-pill.supply { background: #fef3c7; color: #92400e; }
+
   @media (max-width: 768px) {
     .grid-4, .grid-3, .grid-2, .grid-1-2 { grid-template-columns: 1fr; }
     body { padding: 12px; }
@@ -240,25 +291,28 @@
   </div>
 </div>
 
-<!-- KPI Strip -->
+<!-- ═══ AGENT ACTIVITY ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>Agent Activity</h2><div class="rule"></div><span class="hint">last 24h</span>
+</div>
+
 <div class="grid grid-3">
   <div class="card">
-    <div class="card-title">Active Sessions (24h)</div>
+    <div class="card-title">Active Sessions</div>
     <div id="kpiSessions" class="kpi-value">-</div>
   </div>
   <div class="card">
-    <div class="card-title">Tool Calls Inspected (24h)</div>
+    <div class="card-title">Tool Calls Inspected</div>
     <div id="kpiToolCalls" class="kpi-value">-</div>
     <div id="kpiToolsDelta" class="kpi-delta"></div>
   </div>
   <div class="card">
-    <div class="card-title">Dangerous Cmds Prevented (24h)</div>
+    <div class="card-title">Dangerous Cmds Prevented</div>
     <div id="kpiDangerous" class="kpi-value accent">-</div>
     <div id="kpiDangerousDelta" class="kpi-delta"></div>
   </div>
 </div>
 
-<!-- Severity Strip -->
 <div class="grid grid-4">
   <div class="card sev-card critical"><div class="sev-label">Critical</div><div id="sevCritical" class="sev-count">-</div></div>
   <div class="card sev-card high">    <div class="sev-label">High</div>    <div id="sevHigh"     class="sev-count">-</div></div>
@@ -266,42 +320,6 @@
   <div class="card sev-card low">     <div class="sev-label">Low</div>     <div id="sevLow"      class="sev-count">-</div></div>
 </div>
 
-<!-- Supply Chain KPI Strip -->
-<div class="grid grid-3" style="margin-bottom:4px">
-  <div class="card">
-    <div class="card-title">Packages Checked (24h)</div>
-    <div id="scChecked" class="kpi-value">-</div>
-  </div>
-  <div class="card">
-    <div class="card-title">Packages Blocked (24h)</div>
-    <div id="scBlocked" class="kpi-value accent">-</div>
-  </div>
-  <div class="card">
-    <div class="card-title">Packages Warned (24h)</div>
-    <div id="scWarned" class="kpi-value" style="color:var(--orange,#d97706)">-</div>
-  </div>
-</div>
-
-<!-- Supply Chain: Ecosystem Breakdown + Recent Blocks -->
-<div class="grid grid-1-2" style="margin-bottom:16px">
-  <div class="card">
-    <div class="card-title">Ecosystem Breakdown</div>
-    <div class="chart-container" style="height:180px"><canvas id="scEcoBar"></canvas></div>
-  </div>
-  <div class="card">
-    <div class="card-title">Recent Blocks &amp; Warnings</div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr>
-          <th>Package</th><th>Ecosystem</th><th class="right">Score</th><th>Top Signal</th><th>When</th>
-        </tr></thead>
-        <tbody id="scBlocksBody"></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<!-- Row 1: Threats Donut + Block Rate Line -->
 <div class="grid grid-1-2">
   <div class="card">
     <div class="card-title">Threats by Category</div>
@@ -314,7 +332,6 @@
   </div>
 </div>
 
-<!-- Row 2: Blocked by Agent + Tool Breakdown -->
 <div class="grid grid-2">
   <div class="card">
     <div class="card-title">Blocked Commands by Agent</div>
@@ -326,7 +343,6 @@
   </div>
 </div>
 
-<!-- Row 3: Top MCP & Skills -->
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
     <div class="card-title">Top MCP Servers &amp; Skills</div>
@@ -334,7 +350,78 @@
   </div>
 </div>
 
-<!-- Row 4: Sessions (paginated) -->
+<!-- ═══ SUPPLY CHAIN ═════════════════════════════════════════════ -->
+<div class="section">
+  <h2>Supply Chain</h2><div class="rule"></div><span class="hint">last 24h</span>
+</div>
+
+<div class="grid grid-4">
+  <div class="card">
+    <div class="card-title">Allowed</div>
+    <div id="scAllowed" class="kpi-value" style="color:var(--green-500)">-</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Warned</div>
+    <div id="scWarned" class="kpi-value" style="color:#d97706">-</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Blocked</div>
+    <div id="scBlocked" class="kpi-value accent">-</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Total Checked</div>
+    <div id="scChecked" class="kpi-value">-</div>
+  </div>
+</div>
+
+<div class="grid grid-1-2">
+  <div class="card">
+    <div class="card-title">Ecosystems</div>
+    <div class="chart-container" style="height:200px"><canvas id="scEcoBar"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Recent Blocks &amp; Warnings</div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Package</th>
+          <th>Eco</th>
+          <th class="right">Score</th>
+          <th>Advisory</th>
+          <th>Suggested</th>
+          <th>When</th>
+        </tr></thead>
+        <tbody id="scBlocksBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:1fr">
+  <div class="card">
+    <div class="card-title">Install Activity by Session</div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Session</th>
+          <th>Eco</th>
+          <th>Install Command</th>
+          <th class="right">Allowed</th>
+          <th class="right">Warned</th>
+          <th class="right">Blocked</th>
+          <th>When</th>
+        </tr></thead>
+        <tbody id="scSessionsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SESSIONS, FINDINGS, EVENTS ═══════════════════════════════ -->
+<div class="section">
+  <h2>Sessions, Findings &amp; Events</h2><div class="rule"></div>
+</div>
+
 <div class="grid" style="grid-template-columns:1fr">
   <div class="card">
     <div class="card-title">Sessions</div>
@@ -471,9 +558,28 @@ function safe(s) {
   return el.outerHTML;
 }
 
+// XSS-safe attribute injection (for title="…")
+function safeAttr(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// Render a relative timestamp with absolute-UTC tooltip on hover.
+function tsCell(rel, abs, color) {
+  const c = color || 'var(--gray-400)';
+  if (!rel) return '<span style="color:' + c + '">—</span>';
+  if (!abs) return '<span style="color:' + c + '">' + safe(rel) + '</span>';
+  return '<span class="ts-hover" style="color:' + c + '" title="' + safeAttr(abs) + '">' + safe(rel) + '</span>';
+}
+
 function fmtNum(n) {
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return n.toLocaleString();
+}
+
+function shortId(s, n) {
+  const x = String(s || '');
+  if (x.length <= (n || 20)) return x;
+  return x.slice(0, (n || 20)) + '…';
 }
 
 function sevClass(s) { return 'sev-' + (s || 'low'); }
@@ -624,13 +730,15 @@ function renderSessions(rows) {
   if (!rows.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No sessions yet</td></tr>'; return; }
   tbody.innerHTML = rows.map(s => {
     const rc = riskClass(s.riskScore);
+    const srcCls = s.source === 'supply_chain' ? 'supply' : '';
+    const srcLabel = s.source === 'supply_chain' ? 'supply-chain' : 'agent';
     return '<tr>' +
-      '<td class="mono">' + safe(s.sessionId) + '</td>' +
-      '<td><span class="agent-pill">' + safe(s.agent) + '</span></td>' +
+      '<td class="mono" title="' + safeAttr(s.sessionId) + '">' + safe(shortId(s.sessionId, 24)) + '</td>' +
+      '<td><span class="agent-pill">' + safe(s.agent) + '</span><span class="src-pill ' + srcCls + '">' + safe(srcLabel) + '</span></td>' +
       '<td style="color:var(--gray-500)">' + safe(s.workspace) + '</td>' +
       '<td><div class="risk-wrap"><div class="risk-bar"><div class="risk-fill ' + rc + '" style="width:' + s.riskScore + '%"></div></div><span class="risk-num">' + s.riskScore + '</span></div></td>' +
       '<td class="right"' + (s.findingsCount > 0 ? ' style="color:var(--pink-600);font-weight:600"' : '') + '>' + s.findingsCount + '</td>' +
-      '<td style="color:var(--gray-400)">' + safe(s.updatedAt) + '</td>' +
+      '<td>' + tsCell(s.updatedAt, s.updatedAtAbs) + '</td>' +
     '</tr>';
   }).join('');
 }
@@ -700,19 +808,27 @@ function renderFindings(rows) {
   if (!rows.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No findings match the current filters</td></tr>'; return; }
   tbody.innerHTML = rows.map((f, i) => {
     const eid = 'fev-' + i;
+    const trig = f.trigger || {};
+    const triggerBlock = trig.detail
+      ? '<div style="margin-top:8px"><span class="trigger-kind">' + safe(trig.kind || 'event') + '</span>' +
+        '<span style="font-size:10px;color:var(--gray-400)">— exact action that triggered this finding</span>' +
+        '<div class="trigger-detail">' + safe(trig.detail) + '</div></div>'
+      : '';
     return '<tr class="finding-row" onclick="toggleEvidence(\'' + eid + '\')">' +
       '<td>' + safe(f.title) + '</td>' +
       '<td><span class="agent-pill">' + safe(f.agent) + '</span></td>' +
       '<td style="color:var(--gray-500)">' + safe(CAT_LABELS[f.category] || f.category) + '</td>' +
       '<td><span class="sev-badge ' + sevClass(f.severity) + '">' + safe(f.severity) + '</span></td>' +
-      '<td style="color:var(--gray-400)">' + safe(f.ts) + '</td>' +
+      '<td>' + tsCell(f.ts, f.tsAbs) + '</td>' +
       '<td class="expand-arrow">▸</td>' +
     '</tr>' +
     '<tr id="' + eid + '" class="finding-ev-row">' +
       '<td class="finding-ev-cell" colspan="6">' +
         '<div>' + safe(f.evidence || 'No evidence recorded.') + '</div>' +
-        '<div class="finding-cmd">' + safe(f.command) + '</div>' +
-        '<div style="margin-top:6px;font-size:10px;color:var(--gray-400)">session: ' + safe(f.sessionId) + '</div>' +
+        triggerBlock +
+        '<div style="margin-top:8px;font-size:10px;color:var(--gray-400)">' +
+          'session: <span title="' + safeAttr(f.sessionId) + '">' + safe(shortId(f.sessionId, 32)) + '</span>' +
+        '</div>' +
       '</td>' +
     '</tr>';
   }).join('');
@@ -779,7 +895,12 @@ function renderEvents(rows) {
     '<div class="event-row">' +
       '<span class="event-dot ' + (ev.verdict || 'allowed') + '"></span>' +
       '<div style="flex:1;min-width:0">' +
-        '<div class="event-meta">' + safe(ev.ts) + ' &middot; ' + safe(ev.agent) + '</div>' +
+        '<div class="event-meta">' +
+          (ev.tsAbs
+            ? '<span class="ts-hover" title="' + safeAttr(ev.tsAbs) + '">' + safe(ev.ts) + '</span>'
+            : safe(ev.ts)) +
+          ' &middot; ' + safe(ev.agent) +
+        '</div>' +
         '<div class="event-action">' + safe(ev.action) + '</div>' +
       '</div>' +
       '<span class="sev-badge ' + sevClass(ev.severity) + '">' + safe(ev.severity) + '</span>' +
@@ -884,20 +1005,27 @@ async function loadStats() {
     mcpBarChart.data.datasets[1].data = mcp.map(m => m.blocked);
     mcpBarChart.update();
 
-    // Top users
-    const users = data.topUsersByBlocks || [];
-    const maxBlocked = users.length > 0 ? users[0].blocked : 1;
-    document.getElementById('usersContainer').innerHTML = users.map((u, i) =>
-      '<div class="user-row">' +
+    // Top sessions by blocks (was misleadingly labelled "users")
+    const sessions = data.topSessionsByBlocks || [];
+    const maxBlocked = sessions.length > 0 ? sessions[0].blocked : 1;
+    document.getElementById('usersContainer').innerHTML = sessions.map((u, i) => {
+      const srcCls = u.source === 'supply_chain' ? 'supply' : '';
+      const srcLabel = u.source === 'supply_chain' ? 'supply-chain' : 'agent';
+      return '<div class="user-row">' +
         '<span class="user-rank">' + (i + 1) + '</span>' +
         '<div class="user-info">' +
-          '<div class="user-top"><span class="user-id">' + safe(u.userId) + '</span>' +
-          '<span class="user-count">' + u.blocked + '</span></div>' +
+          '<div class="user-top">' +
+            '<span class="user-id" title="' + safeAttr(u.sessionId) + '">' +
+              safe(shortId(u.sessionId, 22)) +
+              '<span class="src-pill ' + srcCls + '">' + safe(u.agent) + ' · ' + safe(srcLabel) + '</span>' +
+            '</span>' +
+            '<span class="user-count">' + u.blocked + '</span>' +
+          '</div>' +
           '<div class="user-bar"><div class="user-bar-fill" style="width:' + (u.blocked / maxBlocked * 100) + '%"></div></div>' +
         '</div>' +
-        '<span class="user-seen">' + safe(u.lastSeen || '') + '</span>' +
-      '</div>'
-    ).join('');
+        '<span class="user-seen">' + tsCell(u.lastSeen, u.lastSeenAbs, 'var(--gray-400)') + '</span>' +
+      '</div>';
+    }).join('');
 
     // Threat patterns
     const patterns = data.topPatterns || [];
@@ -906,7 +1034,7 @@ async function loadStats() {
         '<td>' + safe(p.pattern || '') + '</td>' +
         '<td style="color:#9ca3af">' + safe(CAT_LABELS[p.category] || p.category) + '</td>' +
         '<td class="right" style="font-weight:500">' + (p.count || 0) + '</td>' +
-        '<td style="color:#9ca3af">' + safe(p.lastSeen || '') + '</td>' +
+        '<td>' + tsCell(p.lastSeen, p.lastSeenAbs, '#9ca3af') + '</td>' +
         '<td><span class="sev-badge ' + sevClass(p.severity) + '">' + safe(p.severity || 'low') + '</span></td>' +
       '</tr>'
     ).join('');
@@ -921,9 +1049,10 @@ async function loadSupplyChain() {
     const data = await res.json();
 
     const k = data.kpis || {};
-    document.getElementById('scChecked').textContent = fmtNum(k.checkedPackages24h || 0);
-    document.getElementById('scBlocked').textContent = fmtNum(k.blockedPackages24h || 0);
+    document.getElementById('scAllowed').textContent = fmtNum(k.allowedPackages24h || 0);
     document.getElementById('scWarned').textContent  = fmtNum(k.warnedPackages24h  || 0);
+    document.getElementById('scBlocked').textContent = fmtNum(k.blockedPackages24h || 0);
+    document.getElementById('scChecked').textContent = fmtNum(k.checkedPackages24h || 0);
 
     const eco = data.ecosystemBreakdown || [];
     scEcoBarChart.data.labels = eco.map(e => e.ecosystem);
@@ -934,20 +1063,49 @@ async function loadSupplyChain() {
     const blocks = data.recentBlocks || [];
     const tbody = document.getElementById('scBlocksBody');
     if (!blocks.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">No blocks yet — immunity CLI not run, or all packages clean</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No blocks yet — immunity CLI not run, or all packages clean</td></tr>';
     } else {
       tbody.innerHTML = blocks.map(b => {
         const badge = b.verdict === 'block'
           ? '<span class="sev-badge sev-critical">block</span>'
           : '<span class="sev-badge sev-medium">warn</span>';
-        return '<tr>' +
-          '<td>' + badge + ' ' + safe(b.package) + '</td>' +
+        const ver = b.version ? '<span class="pkg-ver">@' + safe(b.version) + '</span>' : '';
+        const adv = (b.advisoryIds || []).slice(0, 2).map(a =>
+          '<span class="adv-pill" title="' + safeAttr(a) + '">' + safe(a) + '</span>'
+        ).join('');
+        const more = (b.advisoryIds || []).length > 2
+          ? '<span style="font-size:10px;color:var(--gray-400)">+' + ((b.advisoryIds || []).length - 2) + '</span>'
+          : '';
+        const sugg = b.recommended
+          ? '<span class="sugg-pill">' + safe(b.package + '@' + b.recommended) + '</span>'
+          : '<span class="sugg-none">—</span>';
+        return '<tr title="' + safeAttr(b.installCmd || '') + '">' +
+          '<td>' + badge + ' <span class="pkg-name">' + safe(b.package) + '</span>' + ver + '</td>' +
           '<td style="color:var(--gray-500)">' + safe(b.ecosystem) + '</td>' +
           '<td class="right" style="font-weight:600;color:var(--pink-600)">' + (b.score || 0) + '</td>' +
-          '<td style="color:var(--gray-500);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + safe(b.reason) + '</td>' +
-          '<td style="color:var(--gray-400)">' + safe(b.ts) + '</td>' +
+          '<td>' + (adv || '<span class="sugg-none">—</span>') + ' ' + more + '</td>' +
+          '<td>' + sugg + '</td>' +
+          '<td>' + tsCell(b.ts, b.tsAbs) + '</td>' +
         '</tr>';
       }).join('');
+    }
+
+    const sessions = data.installsBySession || [];
+    const sbody = document.getElementById('scSessionsBody');
+    if (!sessions.length) {
+      sbody.innerHTML = '<tr><td colspan="7" class="empty">No install activity in the last 24 hours</td></tr>';
+    } else {
+      sbody.innerHTML = sessions.map(s =>
+        '<tr>' +
+          '<td class="mono" title="' + safeAttr(s.sessionId) + '">' + safe(shortId(s.sessionId, 20)) + '</td>' +
+          '<td style="color:var(--gray-500)">' + safe(s.ecosystem) + '</td>' +
+          '<td style="color:var(--gray-600);max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + safeAttr(s.installCmd) + '">' + safe(s.installCmd) + '</td>' +
+          '<td class="right" style="color:var(--green-500);font-weight:500">' + (s.allowed || 0) + '</td>' +
+          '<td class="right" style="color:#d97706;font-weight:500">' + (s.warned || 0) + '</td>' +
+          '<td class="right" style="color:var(--pink-600);font-weight:600">' + (s.blocked || 0) + '</td>' +
+          '<td>' + tsCell(s.lastSeen, s.lastSeenAbs) + '</td>' +
+        '</tr>'
+      ).join('');
     }
   } catch (e) { console.error('[warden] supply-chain fetch failed:', e); }
 }

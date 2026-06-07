@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -148,12 +149,24 @@ def initialize_database(workspace: Path) -> Path:
                 verdict TEXT,
                 score INTEGER,
                 signals_json TEXT,
-                ioc_id TEXT
+                ioc_id TEXT,
+                recommended_version TEXT,
+                session_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_sc_ts ON supply_chain_events(ts);
             CREATE INDEX IF NOT EXISTS idx_sc_verdict ON supply_chain_events(verdict);
+            CREATE INDEX IF NOT EXISTS idx_sc_session ON supply_chain_events(session_id);
             """
         )
+        # Backfill columns on pre-existing DBs (idempotent: ignore if column exists)
+        for ddl in (
+            "ALTER TABLE supply_chain_events ADD COLUMN recommended_version TEXT",
+            "ALTER TABLE supply_chain_events ADD COLUMN session_id TEXT",
+        ):
+            try:
+                connection.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         # Add learning tables (Tier 3: Session-Based Learning)
         from warden.learning import initialize_learning_tables
         initialize_learning_tables(connection)
@@ -430,6 +443,61 @@ def _relative_time_store(ts: str) -> str:
         return ts
 
 
+def _absolute_time_store(ts: str) -> str:
+    """Return a compact absolute UTC timestamp (YYYY-MM-DD HH:MM:SS) for tooltips."""
+    if not ts:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return ts
+
+
+def _ts_pair(ts: str) -> Dict[str, str]:
+    """Return ``{"rel": "2h ago", "abs": "2026-06-06 14:23:05 UTC"}`` for a ts."""
+    return {"rel": _relative_time_store(ts) if ts else "", "abs": _absolute_time_store(ts)}
+
+
+def _extract_mcp_or_tool(raw_json: str) -> Optional[Dict[str, str]]:
+    """Identify whether an event was an MCP server call or a skill/tool call.
+
+    Returns ``None`` for hook-event noise (Pre/PostToolUse without an MCP
+    server or a recognised tool name).  Otherwise returns
+    ``{"kind": "mcp"|"skill"|"tool", "name": str}``.
+    """
+    if not raw_json:
+        return None
+    try:
+        raw = json.loads(raw_json)
+    except Exception:
+        return None
+    meta = raw.get("metadata") or {}
+
+    mcp_server = raw.get("mcp_server") or meta.get("mcp_server")
+    if mcp_server:
+        return {"kind": "mcp", "name": str(mcp_server)}
+
+    tool_name = meta.get("tool_name") or (raw.get("metadata", {}) or {}).get("tool_name") or ""
+    if isinstance(tool_name, str) and tool_name.startswith("mcp__"):
+        server = tool_name[len("mcp__"):].split("__", 1)[0]
+        return {"kind": "mcp", "name": server}
+    if tool_name == "Skill":
+        # The skill name lives inside the raw payload's tool_input.
+        skill_name = ""
+        try:
+            skill_name = (raw.get("metadata", {}).get("raw", {})
+                          .get("tool_input", {}).get("skill", ""))
+        except Exception:
+            pass
+        return {"kind": "skill", "name": skill_name or "Skill"}
+    if tool_name in {"Bash", "Read", "Edit", "MultiEdit", "Write",
+                     "WebFetch", "WebSearch", "Grep", "Glob", "Task"}:
+        return {"kind": "tool", "name": tool_name}
+    return None
+
+
 def _connect_ro(db_path: Path):
     """Open a SQLite DB read-only; returns None if unavailable."""
     try:
@@ -438,6 +506,33 @@ def _connect_ro(db_path: Path):
         return conn
     except Exception:
         return None
+
+
+def _migrate_sc_columns(db_path: Path) -> None:
+    """Backfill any newly-added supply_chain_events columns onto an old DB.
+
+    Idempotent: if the column already exists, sqlite raises OperationalError
+    and we move on.  This lets the dashboard read pre-existing data without
+    requiring an immunity-cli write to trigger initialize_database.
+    """
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            for ddl in (
+                "ALTER TABLE supply_chain_events ADD COLUMN recommended_version TEXT",
+                "ALTER TABLE supply_chain_events ADD COLUMN session_id TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
@@ -460,8 +555,11 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     active_prev = 0
 
     threats_by_category: Counter = Counter()
+    threats_prev_acc = [0]  # boxed so nested scopes can mutate
     agent_blocks: Counter = Counter()
     tool_breakdown: Counter = Counter()
+    mcp_acc: Dict[str, Dict[str, Any]] = {}    # real MCP servers
+    skill_acc: Dict[str, Dict[str, Any]] = {}  # claude skills
 
     # keyed by date string → [total, flagged]
     timeseries_acc: Dict[str, List[int]] = {}
@@ -529,10 +627,37 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
             ).fetchone()
             dangerous_prev += (row[0] or 0)
 
-            # ── Threats by category ───────────────────────────────────────
-            for row in conn.execute("SELECT category, COUNT(*) as cnt FROM findings GROUP BY category"):
+            # ── Threats by category (24h) ─────────────────────────────────
+            # Join findings to their triggering event so we filter on the
+            # event's actual timestamp.  For supply-chain findings (which
+            # have no event_index), fall back to the session's updated_at.
+            for row in conn.execute(
+                """
+                SELECT f.category, COUNT(*) as cnt
+                FROM findings f
+                LEFT JOIN sessions s ON s.session_id = f.session_id
+                LEFT JOIN events e ON e.session_id = f.session_id
+                WHERE COALESCE(e.ts, s.updated_at) >= datetime('now', ?)
+                GROUP BY f.category
+                """,
+                (f"-{hours} hours",),
+            ):
                 dash_cat = _CATEGORY_MAP.get(row["category"] or "", "dangerous_command")
                 threats_by_category[dash_cat] += row["cnt"]
+
+            # Prior 24h window — for delta calculation.
+            for row in conn.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM findings f
+                LEFT JOIN sessions s ON s.session_id = f.session_id
+                LEFT JOIN events e ON e.session_id = f.session_id
+                WHERE COALESCE(e.ts, s.updated_at) >= datetime('now', ?)
+                  AND COALESCE(e.ts, s.updated_at) <  datetime('now', ?)
+                """,
+                (f"-{hours * 2} hours", f"-{hours} hours"),
+            ):
+                threats_prev_acc[0] += row["cnt"] or 0
 
             # ── Block rate timeseries (30 days) ───────────────────────────
             for row in conn.execute(
@@ -552,29 +677,47 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 timeseries_acc[day][0] += row["total_events"] or 0
                 timeseries_acc[day][1] += row["flagged_events"] or 0
 
-            # ── Agent blocked commands ────────────────────────────────────
+            # ── Agent blocked commands (24h, per-finding event) ───────────
+            # Counts each finding once by joining to its specific event via
+            # event_index — older join double-counted across the session.
             for row in conn.execute(
                 """
-                SELECT s.agent, COUNT(f.finding_id) as blocked
-                FROM findings f JOIN sessions s ON s.session_id = f.session_id
+                SELECT s.agent, COUNT(*) as blocked
+                FROM findings f
+                JOIN sessions s ON s.session_id = f.session_id
+                LEFT JOIN events e ON e.session_id = f.session_id
+                WHERE COALESCE(e.ts, s.updated_at) >= datetime('now', ?)
                 GROUP BY s.agent
-                """
+                """,
+                (f"-{hours} hours",),
             ):
                 agent = row["agent"] or "unknown"
                 agent_blocks[agent] += row["blocked"] or 0
 
-            # ── Tool call breakdown ───────────────────────────────────────
-            for row in conn.execute("SELECT type, COUNT(*) as count FROM events GROUP BY type"):
+            # ── Tool call breakdown (built-in tools only; MCP/skills below) ──
+            # Skip supply_chain events so they don't show up next to Bash/Read.
+            for row in conn.execute(
+                "SELECT type, COUNT(*) as count FROM events "
+                "WHERE type != 'supply_chain' GROUP BY type"
+            ):
                 label = _TYPE_LABEL.get(row["type"] or "", row["type"] or "other")
                 tool_breakdown[label] += row["count"] or 0
 
-            # ── Top patterns ─────────────────────────────────────────────
+            # ── Top patterns (last_seen = finding's specific event) ──────
+            # Use event_index to find the finding's event, then read its ts.
             for row in conn.execute(
                 """
                 SELECT f.title, f.category, f.severity,
-                       COUNT(*) as count, MAX(e.ts) as last_seen_ts
+                       COUNT(*) as count,
+                       MAX(COALESCE(e.ts, s.updated_at)) as last_seen_ts
                 FROM findings f
+                LEFT JOIN sessions s ON s.session_id = f.session_id
                 LEFT JOIN events e ON e.session_id = f.session_id
+                                  AND e.id = (
+                                    SELECT id FROM events
+                                    WHERE session_id = f.session_id
+                                    ORDER BY id LIMIT 1 OFFSET COALESCE(f.event_index, 0)
+                                  )
                 GROUP BY f.title, f.category, f.severity
                 ORDER BY count DESC LIMIT 30
                 """
@@ -587,6 +730,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                         "severity": (row["severity"] or "low").lower(),
                         "count": 0,
                         "lastSeen": "",
+                        "lastSeenAbs": "",
                         "lastSeenTs": "",
                     }
                 patterns_acc[title]["count"] += row["count"] or 0
@@ -594,6 +738,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 if ts > patterns_acc[title]["lastSeenTs"]:
                     patterns_acc[title]["lastSeenTs"] = ts
                     patterns_acc[title]["lastSeen"] = _relative_time_store(ts) if ts else ""
+                    patterns_acc[title]["lastSeenAbs"] = _absolute_time_store(ts) if ts else ""
 
             # ── Live events ───────────────────────────────────────────────
             for row in conn.execute(
@@ -615,61 +760,84 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 detail = row["command_text"] or row["path_text"] or row["url_text"] or ""
                 if detail:
                     action_parts.append(detail[:60])
+                ts_raw = row["ts"] or ""
                 live_events_raw.append({
-                    "ts": (row["ts"] or "")[-8:] or "00:00:00",
+                    "ts": _relative_time_store(ts_raw) or "—",
+                    "tsAbs": _absolute_time_store(ts_raw),
                     "agent": row["agent"] or "unknown",
                     "action": ": ".join(action_parts) if action_parts else "event",
                     "verdict": row["verdict"] or "allowed",
                     "severity": (row["severity"] or "low").lower(),
                 })
 
-            # ── Top users by blocks ───────────────────────────────────────
+            # ── Top sessions by blocks (full ID, agent, source) ──────────
             for row in conn.execute(
                 """
-                SELECT substr(f.session_id, 1, 10) as userId,
-                       COUNT(f.finding_id) as blocked, MAX(e.ts) as last_seen_ts
+                SELECT f.session_id as sid, s.agent, s.source,
+                       COUNT(f.finding_id) as blocked,
+                       MAX(COALESCE(e.ts, s.updated_at)) as last_seen_ts
                 FROM findings f
+                LEFT JOIN sessions s ON s.session_id = f.session_id
                 LEFT JOIN events e ON e.session_id = f.session_id
-                GROUP BY userId
+                GROUP BY f.session_id
                 ORDER BY blocked DESC LIMIT 10
                 """
             ):
-                uid = row["userId"] or "unknown"
-                if uid not in top_users_acc:
-                    top_users_acc[uid] = {"userId": uid, "blocked": 0, "lastSeen": "", "lastSeenTs": ""}
-                top_users_acc[uid]["blocked"] += row["blocked"] or 0
+                sid = row["sid"] or "unknown"
+                if sid not in top_users_acc:
+                    top_users_acc[sid] = {
+                        "sessionId": sid,
+                        "agent": row["agent"] or "unknown",
+                        "source": row["source"] or "agent",
+                        "blocked": 0,
+                        "lastSeen": "", "lastSeenAbs": "", "lastSeenTs": "",
+                    }
+                top_users_acc[sid]["blocked"] += row["blocked"] or 0
                 ts = row["last_seen_ts"] or ""
-                if ts > top_users_acc[uid]["lastSeenTs"]:
-                    top_users_acc[uid]["lastSeenTs"] = ts
-                    top_users_acc[uid]["lastSeen"] = _relative_time_store(ts) if ts else ""
+                if ts > top_users_acc[sid]["lastSeenTs"]:
+                    top_users_acc[sid]["lastSeenTs"] = ts
+                    top_users_acc[sid]["lastSeen"] = _relative_time_store(ts) if ts else ""
+                    top_users_acc[sid]["lastSeenAbs"] = _absolute_time_store(ts) if ts else ""
 
-            # ── Top MCP / skills ─────────────────────────────────────────
+            # ── Top MCP servers + skills (parse raw_json — hook events
+            #    like Pre/PostToolUse are filtered out so the chart shows
+            #    real server / skill names instead of hook noise) ────────
             for row in conn.execute(
                 """
-                SELECT COALESCE(e.agent_event, e.type, 'unknown') as name,
-                       e.type,
-                       COUNT(*) as calls,
-                       COUNT(f.finding_id) as blocked
+                SELECT e.raw_json, s.agent, f.finding_id IS NOT NULL as blocked
                 FROM events e
+                JOIN sessions s ON s.session_id = e.session_id
                 LEFT JOIN findings f ON f.session_id = e.session_id
-                GROUP BY name
-                ORDER BY calls DESC LIMIT 15
+                                    AND f.event_index = (
+                                      SELECT COUNT(*) FROM events e2
+                                      WHERE e2.session_id = e.session_id
+                                        AND e2.id < e.id
+                                    )
+                WHERE e.type != 'supply_chain'
                 """
             ):
-                name = row["name"] or "unknown"
-                if name not in top_mcp_acc:
-                    top_mcp_acc[name] = {
-                        "name": name,
-                        "type": "mcp" if "mcp" in name.lower() else "skill",
-                        "calls": 0,
-                        "blocked": 0,
-                    }
-                top_mcp_acc[name]["calls"] += row["calls"] or 0
-                top_mcp_acc[name]["blocked"] += row["blocked"] or 0
+                info = _extract_mcp_or_tool(row["raw_json"] or "")
+                if info is None or info["kind"] == "tool":
+                    continue
+                acc = mcp_acc if info["kind"] == "mcp" else skill_acc
+                key = info["name"]
+                if key not in acc:
+                    acc[key] = {"name": key, "type": info["kind"], "calls": 0, "blocked": 0}
+                acc[key]["calls"] += 1
+                if row["blocked"]:
+                    acc[key]["blocked"] += 1
 
-            # ── Severity breakdown ────────────────────────────────────────
+            # ── Severity breakdown (24h, gated on the finding's event ts) ─
             for row in conn.execute(
-                "SELECT severity, COUNT(*) as cnt FROM findings GROUP BY severity"
+                """
+                SELECT f.severity, COUNT(*) as cnt
+                FROM findings f
+                LEFT JOIN sessions s ON s.session_id = f.session_id
+                LEFT JOIN events e ON e.session_id = f.session_id
+                WHERE COALESCE(e.ts, s.updated_at) >= datetime('now', ?)
+                GROUP BY f.severity
+                """,
+                (f"-{hours} hours",),
             ):
                 sev = (row["severity"] or "low").lower()
                 severity_breakdown[sev] += row["cnt"]
@@ -710,6 +878,14 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     for u in top_users:
         u.pop("lastSeenTs", None)
 
+    # MCP + skills merged for the chart — MCP first (typically higher signal),
+    # then skills, capped at 15 entries.
+    combined = (
+        sorted(mcp_acc.values(),   key=lambda x: x["calls"], reverse=True) +
+        sorted(skill_acc.values(), key=lambda x: x["calls"], reverse=True)
+    )
+    top_mcp_and_skills = combined[:15]
+
     # Deduplicate live events (same ts+agent+action), keep 50
     seen = set()
     live_events_deduped = []
@@ -727,7 +903,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
             "toolCallsInspected24h": tool_calls_24h,
             "dangerousCommandsPrevented24h": dangerous_prevented_24h,
             "deltas": {
-                "threats": _pct_delta(sum(threats_out.values()), 0),
+                "threats": _pct_delta(sum(threats_out.values()), threats_prev_acc[0]),
                 "tools": _pct_delta(tool_calls_24h, tool_calls_prev),
                 "dangerous": _pct_delta(dangerous_prevented_24h, dangerous_prev),
             },
@@ -744,8 +920,8 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
         ],
         "topPatterns": top_patterns,
         "liveEvents": live_events_deduped,
-        "topUsersByBlocks": top_users,
-        "topMcpAndSkills": sorted(top_mcp_acc.values(), key=lambda x: x["calls"], reverse=True)[:15],
+        "topSessionsByBlocks": top_users,
+        "topMcpAndSkills": top_mcp_and_skills,
         "severityBreakdown": {
             "critical": severity_breakdown.get("critical", 0),
             "high": severity_breakdown.get("high", 0),
@@ -790,16 +966,19 @@ def get_sessions_page(
             continue
         try:
             for row in conn.execute(
-                "SELECT session_id, agent, risk_score, findings_count, "
+                "SELECT session_id, agent, source, risk_score, findings_count, "
                 "started_at, updated_at, workspace_path FROM sessions LIMIT 5000"
             ):
                 rows.append({
-                    "sessionId": (row["session_id"] or "")[:20],
+                    "sessionId": row["session_id"] or "",
                     "agent": row["agent"] or "unknown",
+                    "source": row["source"] or "agent",
                     "riskScore": row["risk_score"] or 0,
                     "findingsCount": row["findings_count"] or 0,
                     "startedAt": _relative_time_store(row["started_at"]) if row["started_at"] else "",
+                    "startedAtAbs": _absolute_time_store(row["started_at"] or ""),
                     "updatedAt": _relative_time_store(row["updated_at"]) if row["updated_at"] else "",
+                    "updatedAtAbs": _absolute_time_store(row["updated_at"] or ""),
                     "_sortRaw": row[sort_col] or "",
                     "workspace": Path(row["workspace_path"] or "").name if row["workspace_path"] else "",
                 })
@@ -857,34 +1036,54 @@ def get_findings_page(
                 where_clauses.append("(LOWER(f.title) LIKE ? OR LOWER(COALESCE(f.evidence,'')) LIKE ?)")
                 params.extend([f"%{search.lower()}%"] * 2)
             where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+            # The triggering event for a finding is identified by event_index
+            # (its 0-based position in the session's event list). Resolve it
+            # via a correlated subquery so we get the actual command/prompt
+            # rather than MAX(...) across the whole session.
             for row in conn.execute(
                 f"""
                 SELECT f.finding_id, f.session_id, f.title, f.category,
-                       f.severity, f.evidence, s.agent,
-                       MAX(e.ts) as ts,
-                       MAX(e.command_text) as command_text,
-                       MAX(e.path_text) as path_text,
-                       MAX(e.url_text) as url_text
+                       f.severity, f.evidence, f.event_index, s.agent,
+                       te.ts          as trig_ts,
+                       te.type        as trig_type,
+                       te.command_text as trig_cmd,
+                       te.path_text    as trig_path,
+                       te.url_text     as trig_url,
+                       te.content_text as trig_content,
+                       te.agent_event  as trig_hook,
+                       s.updated_at    as session_updated
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                LEFT JOIN events e ON e.session_id = f.session_id
+                LEFT JOIN events te ON te.id = (
+                    SELECT id FROM events
+                    WHERE session_id = f.session_id
+                    ORDER BY id LIMIT 1 OFFSET COALESCE(f.event_index, 0)
+                )
                 {where}
-                GROUP BY f.finding_id
-                ORDER BY ts DESC LIMIT 5000
+                ORDER BY COALESCE(te.ts, s.updated_at) DESC
+                LIMIT 5000
                 """,
                 params,
             ):
+                ts_raw = row["trig_ts"] or row["session_updated"] or ""
+                trig_kind = (row["trig_type"] or "").strip() or row["trig_hook"] or ""
+                trig_detail = (row["trig_cmd"] or row["trig_path"] or row["trig_url"]
+                              or row["trig_content"] or "")
                 rows.append({
                     "id": (row["finding_id"] or "")[:20],
-                    "sessionId": (row["session_id"] or "")[:20],
+                    "sessionId": row["session_id"] or "",
                     "title": row["title"] or "Unknown",
                     "category": _CATEGORY_MAP.get(row["category"] or "", "dangerous_command"),
                     "severity": (row["severity"] or "low").lower(),
-                    "evidence": (row["evidence"] or "")[:500],
+                    "evidence": (row["evidence"] or "")[:800],
                     "agent": row["agent"] or "unknown",
-                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
-                    "_tsRaw": row["ts"] or "",
-                    "command": (row["command_text"] or row["path_text"] or row["url_text"] or "")[:160],
+                    "ts": _relative_time_store(ts_raw) if ts_raw else "",
+                    "tsAbs": _absolute_time_store(ts_raw),
+                    "_tsRaw": ts_raw,
+                    "trigger": {
+                        "kind": trig_kind,
+                        "detail": (trig_detail or "")[:1200],
+                    },
                 })
         except Exception:
             pass
@@ -956,9 +1155,11 @@ def get_events_page(
                 detail = row["command_text"] or row["path_text"] or row["url_text"] or ""
                 if detail:
                     action_parts.append(detail[:80])
+                ts_raw = row["ts"] or ""
                 rows.append({
-                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
-                    "_tsRaw": row["ts"] or "",
+                    "ts": _relative_time_store(ts_raw) if ts_raw else "",
+                    "tsAbs": _absolute_time_store(ts_raw),
+                    "_tsRaw": ts_raw,
                     "agent": row["agent"] or "unknown",
                     "action": ": ".join(action_parts) if action_parts else "event",
                     "verdict": row["verdict"] or "allowed",
@@ -1005,16 +1206,25 @@ def write_supply_chain_event(
     ecosystem: str,
     install_cmd: str,
     verdicts: list,
+    recommendations: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Record immunity CLI scoring results into the warden DB. Fail-open."""
+    """Record immunity CLI scoring results into the warden DB. Fail-open.
+
+    ``recommendations`` maps ``spec.raw`` → safe version string so the
+    dashboard can show "blocked X, suggested Y" instead of just "blocked X".
+    """
     import uuid as _uuid
+    recommendations = recommendations or {}
     try:
         db_path = initialize_database(workspace)
         conn = sqlite3.connect(db_path)
         try:
             cursor = conn.cursor()
 
-            n_findings = sum(1 for v in verdicts if v.verdict in ("block", "warn"))
+            n_blocked = sum(1 for v in verdicts if v.verdict == "block")
+            n_warned = sum(1 for v in verdicts if v.verdict == "warn")
+            n_allowed = sum(1 for v in verdicts if v.verdict == "allow")
+            n_findings = n_blocked + n_warned
             max_score = max((v.score for v in verdicts), default=0)
             cursor.execute(
                 """
@@ -1026,7 +1236,13 @@ def write_supply_chain_event(
                 (
                     session_id, str(workspace), ts, ts,
                     max_score, n_findings,
-                    json.dumps({"ecosystem": ecosystem}),
+                    json.dumps({
+                        "ecosystem": ecosystem,
+                        "installCmd": install_cmd,
+                        "allowed": n_allowed,
+                        "blocked": n_blocked,
+                        "warned": n_warned,
+                    }),
                 ),
             )
 
@@ -1035,6 +1251,7 @@ def write_supply_chain_event(
                     (s.id[len("ioc_"):] for s in v.signals if s.id.startswith("ioc_")),
                     None,
                 )
+                recommended = recommendations.get(v.spec.raw, "") or ""
                 cursor.execute(
                     """
                     INSERT INTO events (
@@ -1048,6 +1265,7 @@ def write_supply_chain_event(
                             "ecosystem": ecosystem,
                             "verdict": v.verdict,
                             "score": v.score,
+                            "recommended": recommended,
                         }),
                     ),
                 )
@@ -1055,13 +1273,14 @@ def write_supply_chain_event(
                     """
                     INSERT INTO supply_chain_events (
                         ts, workspace_path, ecosystem, package_name, package_version,
-                        install_cmd, verdict, score, signals_json, ioc_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        install_cmd, verdict, score, signals_json, ioc_id,
+                        recommended_version, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ts, str(workspace), ecosystem,
                         v.spec.name,
-                        getattr(v.meta, "version", None) or "",
+                        getattr(v.spec, "version", None) or getattr(v.meta, "version", None) or "",
                         install_cmd,
                         v.verdict,
                         v.score,
@@ -1070,13 +1289,19 @@ def write_supply_chain_event(
                             for s in v.signals
                         ]),
                         ioc_id,
+                        recommended,
+                        session_id,
                     ),
                 )
 
                 if v.verdict in ("block", "warn"):
-                    top = next(iter(sorted(v.signals, key=lambda s: s.points, reverse=True)), None)
                     has_ioc = any(s.id.startswith("ioc_") for s in v.signals)
                     severity = "CRITICAL" if has_ioc else ("HIGH" if v.score >= 60 else "MEDIUM")
+                    title = f"{v.verdict.upper()}: {v.spec.raw} [{ecosystem}] score {v.score}"
+                    evidence_parts = ["; ".join(s.description for s in v.signals[:3])]
+                    if recommended:
+                        evidence_parts.append(f"Suggested safe version: {recommended}")
+                    evidence_parts.append(f"Triggered by: {install_cmd}")
                     cursor.execute(
                         """
                         INSERT INTO findings (
@@ -1087,8 +1312,8 @@ def write_supply_chain_event(
                             str(_uuid.uuid4()),
                             session_id,
                             severity,
-                            f"{v.verdict.upper()}: {v.spec.raw} [{ecosystem}] score {v.score}",
-                            "; ".join(s.description for s in v.signals[:3]),
+                            title,
+                            " | ".join(evidence_parts),
                         ),
                     )
 
@@ -1099,6 +1324,27 @@ def write_supply_chain_event(
         pass
 
 
+_ADVISORY_RE = re.compile(r"(GHSA-[0-9a-z-]+|CVE-\d{4}-\d{4,}|MAL-\d{4}-\d+|PYSEC-\d{4}-\d+|RUSTSEC-\d{4}-\d+)", re.IGNORECASE)
+
+
+def _extract_advisory_ids(signals_json: str) -> List[str]:
+    """Pull GHSA/CVE/MAL/PYSEC/RUSTSEC IDs out of a signals_json blob."""
+    if not signals_json:
+        return []
+    ids: List[str] = []
+    seen: set = set()
+    try:
+        for sig in json.loads(signals_json) or []:
+            for match in _ADVISORY_RE.findall(str(sig.get("description", ""))):
+                up = match.upper()
+                if up not in seen:
+                    seen.add(up)
+                    ids.append(up)
+    except Exception:
+        pass
+    return ids
+
+
 def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
     """Aggregate supply chain enforcement data across all registered workspaces."""
     from collections import Counter
@@ -1106,6 +1352,7 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
     workspaces = list_registered_workspaces()
 
     checked_24h = 0
+    allowed_24h = 0
     blocked_24h = 0
     warned_24h = 0
     ecosystem_total: Counter = Counter()
@@ -1113,10 +1360,12 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
     pkg_blocks: Counter = Counter()
     pkg_ecosystem: Dict[str, str] = {}
     pkg_ioc: Dict[str, str] = {}
-    recent_blocks: list = []
+    recent_rows: List[Dict[str, Any]] = []   # raw rows for later sort/format
+    session_acc: Dict[str, Dict[str, Any]] = {}
 
     for ws in workspaces:
         db_path = get_db_path(ws)
+        _migrate_sc_columns(db_path)
         conn = _connect_ro(db_path)
         if conn is None:
             continue
@@ -1131,6 +1380,8 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                     blocked_24h += row["cnt"]
                 elif v == "warn":
                     warned_24h += row["cnt"]
+                elif v == "allow":
+                    allowed_24h += row["cnt"]
                 checked_24h += row["cnt"]
 
             for row in conn.execute(
@@ -1153,36 +1404,119 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                 if row["ioc_id"] and name not in pkg_ioc:
                     pkg_ioc[name] = row["ioc_id"]
 
+            # Recent blocks + warnings with full enrichment.
             for row in conn.execute(
-                "SELECT ts, package_name, ecosystem, score, signals_json, verdict "
-                "FROM supply_chain_events WHERE verdict IN ('block','warn') "
-                "ORDER BY ts DESC LIMIT 60"
+                """
+                SELECT ts, package_name, package_version, ecosystem, score,
+                       signals_json, verdict, install_cmd,
+                       COALESCE(recommended_version, '') as recommended,
+                       COALESCE(session_id, '') as session_id, ioc_id
+                FROM supply_chain_events
+                WHERE verdict IN ('block','warn')
+                ORDER BY ts DESC
+                LIMIT 60
+                """
             ):
                 try:
                     sigs = json.loads(row["signals_json"] or "[]")
                 except Exception:
                     sigs = []
-                recent_blocks.append({
-                    "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
+                # The "reason" is the highest-impact signal — the original
+                # code just took sigs[0] which often was a low-weight
+                # informational signal like "maintainer data unavailable".
+                top_sig = max(sigs, key=lambda s: s.get("points", 0), default=None)
+                recent_rows.append({
+                    "tsRaw": row["ts"] or "",
                     "package": row["package_name"] or "",
+                    "version": row["package_version"] or "",
                     "ecosystem": row["ecosystem"] or "",
                     "score": row["score"] or 0,
                     "verdict": row["verdict"] or "block",
-                    "reason": sigs[0]["description"][:80] if sigs else "",
+                    "reason": (top_sig.get("description", "")[:120] if top_sig else ""),
+                    "installCmd": row["install_cmd"] or "",
+                    "recommended": row["recommended"] or "",
+                    "advisoryIds": _extract_advisory_ids(row["signals_json"] or ""),
+                    "iocId": row["ioc_id"] or "",
+                    "sessionId": row["session_id"] or "",
                 })
+
+            # Per-session install activity in the 24h window.
+            for row in conn.execute(
+                """
+                SELECT COALESCE(session_id, '') as session_id,
+                       ecosystem,
+                       MAX(install_cmd) as install_cmd,
+                       MIN(ts) as started,
+                       MAX(ts) as last_seen,
+                       SUM(CASE WHEN verdict='allow' THEN 1 ELSE 0 END) as allowed,
+                       SUM(CASE WHEN verdict='block' THEN 1 ELSE 0 END) as blocked,
+                       SUM(CASE WHEN verdict='warn'  THEN 1 ELSE 0 END) as warned,
+                       COUNT(*) as total
+                FROM supply_chain_events
+                WHERE ts >= datetime('now', ?)
+                GROUP BY session_id, install_cmd
+                ORDER BY last_seen DESC
+                LIMIT 25
+                """,
+                (f"-{hours} hours",),
+            ):
+                sid = row["session_id"] or "—"
+                key = (sid, row["install_cmd"] or "")
+                if key in session_acc:
+                    continue
+                session_acc[key] = {
+                    "sessionId": sid,
+                    "ecosystem": row["ecosystem"] or "",
+                    "installCmd": row["install_cmd"] or "",
+                    "allowed": row["allowed"] or 0,
+                    "blocked": row["blocked"] or 0,
+                    "warned": row["warned"] or 0,
+                    "total": row["total"] or 0,
+                    "lastSeen": _relative_time_store(row["last_seen"]) if row["last_seen"] else "",
+                    "lastSeenAbs": _absolute_time_store(row["last_seen"] or ""),
+                    "_tsRaw": row["last_seen"] or "",
+                }
         except Exception:
             pass
         finally:
             conn.close()
 
-    recent_blocks.sort(key=lambda x: x.get("ts", ""), reverse=False)
-    recent_blocks = recent_blocks[:30]
+    # Sort recent rows by raw ts (the old code sorted by relative-time string
+    # which interleaved "12m ago" with "2h ago" arbitrarily) then format.
+    recent_rows.sort(key=lambda r: r["tsRaw"], reverse=True)
+    recent_blocks = [
+        {
+            "ts": _relative_time_store(r["tsRaw"]) if r["tsRaw"] else "",
+            "tsAbs": _absolute_time_store(r["tsRaw"]),
+            "package": r["package"],
+            "version": r["version"],
+            "ecosystem": r["ecosystem"],
+            "score": r["score"],
+            "verdict": r["verdict"],
+            "reason": r["reason"],
+            "installCmd": r["installCmd"],
+            "recommended": r["recommended"],
+            "advisoryIds": r["advisoryIds"],
+            "iocId": r["iocId"],
+            "sessionId": r["sessionId"],
+        }
+        for r in recent_rows[:30]
+    ]
+
+    by_session = sorted(
+        session_acc.values(),
+        key=lambda s: s.get("_tsRaw") or "",
+        reverse=True,
+    )[:15]
+    for s in by_session:
+        s.pop("_tsRaw", None)
 
     top_blocked = sorted(pkg_blocks, key=lambda k: pkg_blocks[k], reverse=True)[:10]
 
     return {
         "kpis": {
             "checkedPackages24h": checked_24h,
+            "allowedPackages24h": allowed_24h,
             "blockedPackages24h": blocked_24h,
             "warnedPackages24h": warned_24h,
         },
@@ -1204,4 +1538,5 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
             for name in top_blocked
         ],
         "recentBlocks": recent_blocks,
+        "installsBySession": by_session,
     }

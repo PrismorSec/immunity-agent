@@ -215,13 +215,18 @@ def _exec(argv: List[str]) -> None:
 
 # ── Store integration ─────────────────────────────────────────────────────────
 
-def _record_to_store(event, verdicts) -> None:
+def _record_to_store(event, verdicts, recommendations=None) -> None:
     """Write scoring results to the warden store. Fail-open."""
     try:
         import uuid
         from datetime import datetime, timezone
         from warden.store import infer_default_workspace, write_supply_chain_event
         workspace = infer_default_workspace(Path.cwd())
+        rec_map = {
+            spec_raw: rec.version
+            for spec_raw, rec in (recommendations or {}).items()
+            if rec is not None
+        }
         write_supply_chain_event(
             workspace=workspace,
             session_id=f"immunity-{uuid.uuid4().hex[:16]}",
@@ -229,6 +234,7 @@ def _record_to_store(event, verdicts) -> None:
             ecosystem=event.ecosystem,
             install_cmd=" ".join(sys.argv[1:]),
             verdicts=verdicts,
+            recommendations=rec_map,
         )
     except Exception:
         pass
@@ -292,7 +298,7 @@ def run_supply(argv: Optional[List[str]] = None) -> None:
 
     _print_report(event, verdicts, feed_hits, recommendations)
     sys.stdout.flush()
-    _record_to_store(event, verdicts)
+    _record_to_store(event, verdicts, recommendations)
 
     # ── Decision ──────────────────────────────────────────────────────────────
     blocked = [v for v in verdicts if v.verdict == "block"]
