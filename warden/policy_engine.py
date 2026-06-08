@@ -7,6 +7,7 @@ evaluates events. Replaces the hardcoded patterns in policies.py.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -383,6 +384,48 @@ class PolicyEngine:
                         beacon(hit, f"canary-{event_type}", {"session": session_id})
                 except Exception:
                     pass
+
+        # ── Prismor vault access guard ──────────────────────────────────
+        # The plaintext secret vault (~/.prismor/secrets, or wherever
+        # PRISMOR_SECRETS_DIR points) must never be touched by an agent tool
+        # call. Resolving the live path honors env overrides that a static
+        # YAML pattern would silently miss. Cloaking's own decloak/recloak
+        # hooks read the vault via bash `cat` outside hook-dispatch, so they
+        # never reach evaluate() — only an agent reading the vault trips this.
+        try:
+            from warden.cloaking.secrets_store import secrets_dir as _secrets_dir
+            # normpath+expanduser (not resolve) so both sides normalize the same
+            # way — avoids symlink mismatches like macOS /var → /private/var.
+            _vault = os.path.normpath(os.path.expanduser(str(_secrets_dir())))
+        except Exception:
+            _vault = ""
+        if _vault:
+            _hit_vault = None
+            if event_type in ("file_read", "file_write"):
+                _p = field_values.get("path", "")
+                if _p:
+                    _np = os.path.normpath(os.path.expanduser(_p.split("\n", 1)[0]))
+                    if _np == _vault or _np.startswith(_vault + os.sep):
+                        _hit_vault = _p
+            elif event_type == "shell":
+                _cmd = field_values.get("command", "")
+                # ".prismor/secrets" matches every expansion form of the default
+                # location (~/, $HOME/, absolute); _vault matches a custom dir.
+                if _cmd and (".prismor/secrets" in _cmd or _vault in _cmd):
+                    _hit_vault = _cmd
+            if _hit_vault is not None:
+                finding_id = f"prismor-vault-access-{index}"
+                prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                findings.append({
+                    "id": prefixed_id,
+                    "severity": "CRITICAL",
+                    "category": "secret_access",
+                    "title": "Access to Prismor plaintext secret vault",
+                    "evidence": _truncate(_hit_vault),
+                    "eventIndex": index,
+                    "ruleId": "prismor-vault-access",
+                    "action": "block",
+                })
 
         # Canary marker found in tool stdout/stderr (PostToolUse content
         # scanning) — catches the case where the canary is read indirectly.

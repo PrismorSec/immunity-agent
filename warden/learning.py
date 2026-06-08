@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import sqlite3
@@ -55,6 +56,18 @@ CREATE TABLE IF NOT EXISTS evasion_attempts (
     detected_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_evasion_session ON evasion_attempts(session_id);
+
+CREATE TABLE IF NOT EXISTS staged_executions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_path TEXT,
+    created_origin TEXT,
+    created_evidence TEXT,
+    executing_command TEXT,
+    detected_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_staged_session ON staged_executions(session_id);
 """
 
 
@@ -275,6 +288,306 @@ def detect_evasion(
                 break  # One match is enough
 
         return evasion_findings
+    finally:
+        conn.close()
+
+
+# ── Staged-execution detection (write/fetch-then-execute correlation) ────────
+#
+# Closes the cross-call bypass where the dangerous action is split across two
+# tool calls so neither matches a single-command rule:
+#   call 1:  curl -o /tmp/x.sh URL   (or  echo … > /tmp/x.sh,  or a Write tool)
+#   call 2:  bash /tmp/x.sh
+# We track files *created* earlier in the same session (downloads, redirects,
+# tee, file_write events) and flag a later command that executes — or exfils via
+# scp/rsync — one of those paths. The single-command chained form
+# (`curl -o x && bash x`) is caught by also scanning the segments of one command.
+#
+# Safety property: created paths come ONLY from in-session events, so a
+# repo-tracked script (`bash ./scripts/build.sh`) that was never written this
+# session is absent from the set and never fires. We never blanket-flag "running
+# a script" — only "running a script this session created".
+
+# A path token: double-quoted, single-quoted, or a bare run of non-delimiter chars.
+_PATH_TOK = r"""(?:"[^"]+"|'[^']+'|[^\s;&|<>]+)"""
+
+# CREATED-path extractors (scanned against prior events + earlier segments).
+_RE_CURL_OUT = re.compile(r"\bcurl\b[^\n]*?(?:-o|--output)\s+(" + _PATH_TOK + r")")
+_RE_WGET_OUT = re.compile(r"\bwget\b[^\n]*?(?:-O|--output-document=?)\s*(" + _PATH_TOK + r")")
+_RE_REDIRECT = re.compile(r"(?<![0-9&])>>?\s*(" + _PATH_TOK + r")")
+_RE_TEE = re.compile(r"\btee\b\s+(?:-a\s+)?(" + _PATH_TOK + r")")
+
+# EXECUTED-path extractors (scanned against the current command).
+_INTERP = r"(?:bash|sh|zsh|ksh|dash|python3?|node|nodejs|ruby|perl|php|deno|bun)"
+_RE_INTERP_EXEC = re.compile(r"\b" + _INTERP + r"\b((?:\s+-{1,2}[^\s]+)*)\s+(" + _PATH_TOK + r")")
+_RE_SOURCE_EXEC = re.compile(r"(?:\bsource\b|(?:^|[;&|]\s*)\.)\s+(" + _PATH_TOK + r")")
+_RE_DIRECT_EXEC = re.compile(r"(?:^|[;&|]\s*)(\./" + _PATH_TOK + r"|/" + _PATH_TOK + r")")
+
+# EXFIL extractors (scp / rsync local-source args).
+_RE_SCP = re.compile(r"\bscp\b\s+(.*)")
+_RE_RSYNC = re.compile(r"\brsync\b\s+(.*)")
+_RE_REMOTE_TGT = re.compile(r"^[^/\s]*@?[^/\s]*:")  # host:path / user@host:path
+
+_NON_FILE_SINKS = {"-", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/tty"}
+# Generic basenames that must NOT match across different paths on basename alone.
+_GENERIC_BASENAMES = {"", "a.out", "main", "index.js", "setup.py", "__init__.py",
+                      "manage.py", "app.py", "run.py", "main.py"}
+
+
+def _clean_token(tok: str) -> str:
+    tok = tok.strip()
+    if len(tok) >= 2 and tok[0] in "\"'" and tok[-1] == tok[0]:
+        tok = tok[1:-1]
+    return tok
+
+
+def _norm_path(tok: str) -> str:
+    tok = _clean_token(tok)
+    if not tok:
+        return ""
+    return os.path.normpath(os.path.expanduser(tok))
+
+
+def _extract_created_paths(command: str) -> List[Tuple[str, str]]:
+    """Return [(normalized_path, origin)] for files this command creates."""
+    out: List[Tuple[str, str]] = []
+    for rx, origin in (
+        (_RE_CURL_OUT, "download"),
+        (_RE_WGET_OUT, "download"),
+        (_RE_TEE, "tee"),
+        (_RE_REDIRECT, "redirect"),
+    ):
+        for m in rx.finditer(command):
+            np = _norm_path(m.group(1))
+            if np and np not in _NON_FILE_SINKS:
+                out.append((np, origin))
+    return out
+
+
+def _extract_executed_paths(command: str) -> List[str]:
+    """Return normalized file paths the command executes as code."""
+    out: List[str] = []
+    for m in _RE_INTERP_EXEC.finditer(command):
+        flags = (m.group(1) or "").split()
+        if "-m" in flags or "-c" in flags or "-e" in flags:
+            continue  # module / inline-code invocation: no concrete file target
+        tok = _clean_token(m.group(2))
+        if not tok or tok.startswith("-") or tok in _NON_FILE_SINKS:
+            continue
+        np = _norm_path(tok)
+        if np:
+            out.append(np)
+    for rx in (_RE_SOURCE_EXEC, _RE_DIRECT_EXEC):
+        for m in rx.finditer(command):
+            np = _norm_path(m.group(1))
+            if np and np not in _NON_FILE_SINKS:
+                out.append(np)
+    return out
+
+
+def _extract_exfil_paths(command: str) -> List[str]:
+    """Return normalized local source paths handed to scp/rsync."""
+    out: List[str] = []
+    for rx in (_RE_SCP, _RE_RSYNC):
+        m = rx.search(command)
+        if not m:
+            continue
+        for raw in m.group(1).split():
+            tok = _clean_token(raw)
+            if not tok or tok.startswith("-") or _RE_REMOTE_TGT.match(tok):
+                continue
+            np = _norm_path(tok)
+            if np and np not in _NON_FILE_SINKS:
+                out.append(np)
+    return out
+
+
+def _paths_match(created: str, target: str) -> bool:
+    if not created or not target:
+        return False
+    if created == target:
+        return True
+    bc, bt = os.path.basename(created), os.path.basename(target)
+    # Basename match handles relative-vs-absolute, but only for non-generic names
+    # so `python setup.py` never matches an unrelated written setup.py.
+    return bool(bc) and bc == bt and bc not in _GENERIC_BASENAMES
+
+
+def _match_against(target: str, created: Dict[str, str]) -> Optional[Tuple[str, str]]:
+    for cp, origin in created.items():
+        if _paths_match(cp, target):
+            return (cp, origin)
+    return None
+
+
+def _build_staged(
+    session_id: str, command: str, created_path: str, origin: str, exec_path: str, exfil: bool
+) -> Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]:
+    if not exfil and origin == "download":
+        # Fetch-then-execute — the genuine two-step curl|bash bypass. Legit
+        # installs pipe (`curl | bash`, already blocked) or use package
+        # managers; staging a download to disk then running it is the evasion
+        # signature, so this blocks. Low false-positive risk.
+        category, severity, action = "remote_execution", "HIGH", "block"
+        title = "Fetch-then-execute: running a file downloaded earlier this session"
+        verb = "executes"
+    elif exfil:
+        # scp/rsync of an in-session file. Common in legit deploys, so warn
+        # (telemetry/learning) rather than break the workflow.
+        category, severity, action = "staged_execution", "MEDIUM", "warn"
+        title = "Exfiltration of in-session-generated file (scp/rsync)"
+        verb = "exfiltrates"
+    else:
+        # Local write-then-execute. Agents write+run helper scripts constantly,
+        # so warn rather than block; operators can promote `staged_execution`
+        # to a block category in policy for stricter enforcement.
+        category, severity, action = "staged_execution", "MEDIUM", "warn"
+        title = "Staged execution: running a file created earlier this session"
+        verb = "executes"
+    finding = {
+        "id": f"{session_id}:staged-exec-0" if session_id else "staged-exec-0",
+        "severity": severity,
+        "category": category,
+        "title": title,
+        "evidence": (
+            f"Command '{command[:160]}' {verb} '{exec_path}' "
+            f"(created via {origin} earlier this session)"
+        ),
+        "ruleId": "staged-execution",
+        "action": action,
+    }
+    record = (category, created_path, origin, exec_path, command)
+    return finding, record
+
+
+def _match_command(
+    command: str, created: Dict[str, str], session_id: str
+) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
+    for ex in _extract_executed_paths(command):
+        hit = _match_against(ex, created)
+        if hit:
+            return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
+    for ex in _extract_exfil_paths(command):
+        hit = _match_against(ex, created)
+        if hit:
+            return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
+    return None
+
+
+def _scan_intra_command(
+    command: str, session_id: str
+) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
+    """Catch the single-command chained form: `curl -o x && bash x`."""
+    seen: Dict[str, str] = {}
+    for seg in _SHELL_SPLIT.split(command):
+        for ex in _extract_executed_paths(seg):
+            hit = _match_against(ex, seen)
+            if hit:
+                return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
+        for ex in _extract_exfil_paths(seg):
+            hit = _match_against(ex, seen)
+            if hit:
+                return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
+        for cp, origin in _extract_created_paths(seg):
+            seen.setdefault(cp, origin)
+    return None
+
+
+def _persist_staged_conn(
+    conn: sqlite3.Connection, session_id: str, records: List[Tuple[str, str, str, str, str]]
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    for category, created_path, origin, exec_path, command in records:
+        conn.execute(
+            """
+            INSERT INTO staged_executions
+                (session_id, category, created_path, created_origin,
+                 created_evidence, executing_command, detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, category, created_path[:1000], origin,
+             exec_path[:1000], command[:4000], now),
+        )
+    conn.commit()
+
+
+def _persist_staged(workspace: Path, session_id: str, records: List[Tuple[str, str, str, str, str]]) -> None:
+    try:
+        db_path = initialize_database(workspace)
+        conn = sqlite3.connect(db_path)
+        try:
+            initialize_learning_tables(conn)
+            _persist_staged_conn(conn, session_id, records)
+        finally:
+            conn.close()
+    except Exception:
+        pass  # best-effort; never break the hook
+
+
+def detect_staged_execution(
+    workspace: Path,
+    session_id: str,
+    event: Dict[str, Any],
+    current_findings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Flag a passing shell command that executes/exfils a file created earlier
+    in the same session (write-then-exec, fetch-then-exec, scp of a staged file).
+
+    Only runs when the event has no findings (it passed policy checks). Returns
+    at most one HIGH-severity, action=block finding.
+    """
+    if current_findings:
+        return []
+
+    command = event.get("command", "")
+    if not command:
+        return []
+
+    # ── Intra-command pass (no DB needed) ──
+    intra = _scan_intra_command(command, session_id)
+    if intra is not None:
+        finding, record = intra
+        _persist_staged(workspace, session_id, [record])
+        return [finding]
+
+    # ── Cross-event pass ──
+    db_path = get_db_path(workspace)
+    if not db_path.exists():
+        return []
+
+    conn = sqlite3.connect(db_path)
+    try:
+        initialize_learning_tables(conn)
+        rows = conn.execute(
+            "SELECT id, type, command_text, path_text FROM events "
+            "WHERE session_id = ? ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+        # Drop the current event (highest id) — save_session_snapshot already
+        # persisted it, and it would otherwise self-match.
+        if rows:
+            rows = rows[:-1]
+
+        created: Dict[str, str] = {}
+        for _id, etype, cmd_text, path_text in rows:
+            if etype == "file_write" and path_text:
+                np = _norm_path(path_text)
+                if np:
+                    created.setdefault(np, "write")
+            elif etype == "shell" and cmd_text:
+                for cp, origin in _extract_created_paths(cmd_text):
+                    created.setdefault(cp, origin)
+
+        if not created:
+            return []
+
+        result = _match_command(command, created, session_id)
+        if result is None:
+            return []
+
+        finding, record = result
+        _persist_staged_conn(conn, session_id, [record])
+        return [finding]
     finally:
         conn.close()
 

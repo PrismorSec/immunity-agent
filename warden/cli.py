@@ -724,6 +724,18 @@ def main(argv: Optional[List[str]] = None) -> None:
             except Exception as _ev_exc:
                 sys.stderr.write(f"[warden] evasion detection error: {_ev_exc}\n")
 
+        # ── Learning: staged-execution / fetch-then-exec / exfil correlation ──
+        # Catches the cross-call bypass where a file is created in one tool call
+        # (download, redirect, Write) and executed/exfiltrated in another.
+        if not current_findings and event.get("type") == "shell":
+            try:
+                from warden.learning import detect_staged_execution as _detect_staged
+                _staged_findings = _detect_staged(workspace, normalized["sessionId"], event, current_findings)
+                if _staged_findings:
+                    current_findings.extend(_staged_findings)
+            except Exception as _staged_exc:
+                sys.stderr.write(f"[warden] staged-exec detection error: {_staged_exc}\n")
+
         # Forward findings to configured telemetry sinks (webhook/syslog/file)
         # BEFORE the blocking decision — so a SIEM sees every event, even
         # the ones that get blocked. Dispatch is best-effort.
