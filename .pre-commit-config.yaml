@@ -1,0 +1,12 @@
+# Local guardrails. Install with: pip install pre-commit && pre-commit install
+# The blob-size hook mirrors the CI check (.github/workflows/blob-guard.yml) so
+# oversized files are caught before they ever reach a commit.
+repos:
+  - repo: local
+    hooks:
+      - id: check-blob-size
+        name: reject files larger than 1 MiB
+        entry: python3 scripts/check_blob_size.py
+        language: system
+        # pre-commit passes the staged filenames as args.
+        pass_filenames: true

@@ -34,7 +34,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "pytest"]
+# `requests` + `jsonschema` are imported by the intelligence pipeline
+# (pipeline/fetch_nvd_intel.py) which tests/test_pipeline.py imports at
+# collection time. Without them here, `pip install -e .[dev] && pytest` aborts
+# collection entirely (see audit F-1), so the whole suite silently runs zero
+# tests. Versions track pipeline/requirements.txt.
+dev = ["build", "pytest", "requests>=2.31.0", "jsonschema>=4.21.1"]
 
 [project.urls]
 Homepage = "https://prismor.dev"

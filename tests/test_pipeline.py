@@ -4,6 +4,13 @@ import sys
 import os
 import unittest
 
+import pytest
+
+# The pipeline pulls in `requests` (and `jsonschema`); they ship in the `dev`
+# extra, but guard here too so a bare install skips these tests cleanly instead
+# of aborting collection for the entire suite (audit F-1).
+pytest.importorskip("requests")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline.fetch_nvd_intel import (
