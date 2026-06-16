@@ -1,3 +1,19 @@
+## [1.7.0] — 2026-06-16
+
+Enterprise control-plane and policy hardening release.
+
+### Added
+
+- **Enterprise control-plane** — signed remote policy pulls, device identity and enrollment, layered workspace scoping, admin-granted exemptions, offline telemetry spool, and heartbeat / telemetry ingest hardening.
+- **Per-rule enforcement** — policy-authoritative observe/enforce modes now gate on each rule's effective mode instead of the global install mode alone.
+- **Pattern customization** — add/disable pattern overrides with compile isolation and a non-weakening floor for core rules.
+- **Prompt-injection coverage** — deterministic regex and heuristic coverage expanded to close benchmark false negatives without adding LLM cost.
+- **Supply-chain hardening** — gitleaks version gating, cross-platform install hints, AI-key ruleset, and graceful fallback scanning when the binary is absent.
+
+### Fixed
+
+- **Session-report follow-ups** — closes the remaining v1.6.0 report issues, including claude transcript scoping, exfiltration-directive detection, SCM-domain false positives, and shell-level PII detection.
+
 ## [1.6.0] — 2026-06-05
 
 Hermes Agent secret cloaking plugin. Secret prevention now works natively inside Hermes Agent (Nous Research's AI agent platform), with dual-discovery via pip entry point or filesystem install.

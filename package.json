@@ -1,6 +1,6 @@
 {
   "name": "immunity-agent",
-  "version": "1.5.1",
+  "version": "1.7.0",
   "description": "Runtime security for AI coding agents: policy enforcement, secret prevention, and supply-chain blocking.",
   "license": "Apache-2.0",
   "keywords": [
