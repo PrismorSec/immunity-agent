@@ -1105,7 +1105,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     sys.stderr.write(f"error: invalid encoded command: {exc}\n")
                     raise SystemExit(1)
             elif not cmd:
-                pieces = getattr(args, "command", None) or []
+                pieces = getattr(args, "sandbox_args", None) or []
                 if pieces and pieces[0] == "--":
                     pieces = pieces[1:]
                 cmd = " ".join(pieces)
@@ -1884,7 +1884,7 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_run = sandbox_sub.add_parser("run", help="Run a command inside the configured sandbox")
     sandbox_run.add_argument("--mode", choices=["observe", "enforce"], help="Override sandbox mode for this run")
     sandbox_run.add_argument("--encoded", help="Base64url-encoded command string (used by hooks)")
-    sandbox_run.add_argument("command", nargs=argparse.REMAINDER, help="Command after --")
+    sandbox_run.add_argument("sandbox_args", nargs=argparse.REMAINDER, help="Command after --")
     sandbox_run.add_argument("--command-string", help=argparse.SUPPRESS)
 
     # ── status ─────────────────────────────────────────────────────────

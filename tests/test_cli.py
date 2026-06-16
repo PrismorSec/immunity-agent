@@ -68,6 +68,11 @@ class TestCliExitCodes(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("--agent", r.stdout)
 
+    def test_sandbox_help(self):
+        r = run_cli("sandbox", "--help")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Docker-backed sandbox", r.stdout)
+
 
 class TestCliAnalyze(unittest.TestCase):
     """Test the analyze command against the sample session."""
@@ -139,7 +144,7 @@ class TestImmunityUmbrella(unittest.TestCase):
         # Every advertised domain must appear in the top-level help.
         for domain in (
             "warden", "cloak", "policy", "sweep",
-            "iam", "canary", "scope", "learn", "supplychain",
+            "iam", "sandbox", "canary", "scope", "learn", "supplychain",
         ):
             self.assertIn(domain, r.stdout, f"domain '{domain}' missing from --help")
         # Quick-start shortcuts must appear too.

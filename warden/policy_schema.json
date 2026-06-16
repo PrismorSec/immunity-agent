@@ -57,6 +57,70 @@
                     "type": "object",
                     "description": "Settings for the optional LLM-assisted semantic prompt-injection layer.",
                     "additionalProperties": true
+                },
+                "sandbox": {
+                    "type": "object",
+                    "description": "Docker-backed shell sandbox settings for constraining allowed Bash commands.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Whether hook-dispatch rewrites supported Bash tool calls through the sandbox runner."
+                        },
+                        "backend": {
+                            "type": "string",
+                            "enum": ["docker"],
+                            "description": "Sandbox backend. Docker is the v1 backend."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["observe", "enforce"],
+                            "description": "observe logs unavailable sandbox state; enforce fails closed when the sandbox is unavailable."
+                        },
+                        "image": {
+                            "type": "string",
+                            "description": "Container image used for sandboxed shell execution."
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Container working directory for the workspace mount."
+                        },
+                        "network": {
+                            "type": "string",
+                            "enum": ["none", "bridge", "host", "allowlist"],
+                            "description": "Docker network mode. allowlist currently fails closed to none because Docker cannot enforce domain allowlists by itself."
+                        },
+                        "workspace_mount": {
+                            "type": "string",
+                            "enum": ["ro", "rw"],
+                            "description": "Whether the workspace bind mount is read-only or read-write."
+                        },
+                        "read_only_root": {
+                            "type": "boolean",
+                            "description": "Run the container with a read-only root filesystem."
+                        },
+                        "tmpfs": {
+                            "type": "array",
+                            "description": "Docker --tmpfs entries for controlled writable scratch space.",
+                            "items": { "type": "string" }
+                        },
+                        "env_allowlist": {
+                            "type": "array",
+                            "description": "Host environment variable names allowed into the sandbox.",
+                            "items": { "type": "string" }
+                        },
+                        "resource_limits": {
+                            "type": "object",
+                            "description": "Docker resource limits.",
+                            "properties": {
+                                "cpus": { "type": "string" },
+                                "memory": { "type": "string" },
+                                "pids_limit": { "type": "integer" },
+                                "timeout_seconds": { "type": "integer" }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false

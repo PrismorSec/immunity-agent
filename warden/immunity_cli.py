@@ -49,7 +49,7 @@ _TOP_LEVEL_SHORTCUTS = {
 # Domains that map to a warden.cli subparser of the same name. Used only to
 # group them under "Domains" in --help; routing is introspection-driven below.
 _WARDEN_DOMAINS = {
-    "cloak", "policy", "sweep", "iam", "canary", "scope", "learn",
+    "cloak", "policy", "sweep", "iam", "canary", "scope", "learn", "sandbox",
 }
 
 _SUPPLY_DOMAIN = "supplychain"
@@ -148,6 +148,7 @@ def _print_usage() -> None:
     print(f"    immunity policy      <action>   {d('Manage policy rules (init/validate/show/edit/test)')}")
     print(f"    immunity sweep       [options]  {d('Scan AI tool configs for leaked secrets')}")
     print(f"    immunity iam         <action>   {d('Agent identities and permission profiles')}")
+    print(f"    immunity sandbox     <action>   {d('Docker-backed shell sandbox')}")
     print(f"    immunity canary      <action>   {d('Plant and manage canarytokens')}")
     print(f"    immunity scope       <action>   {d('Session-scoped policy rules')}")
     print(f"    immunity learn       [options]  {d('Mine session history for new rules')}")

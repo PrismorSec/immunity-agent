@@ -8,6 +8,7 @@ Performs a single-shot check across all Warden subsystems:
   5. Feed signature        — Ed25519 signature verification
   6. Egress allowlist      — is network lockdown configured?
   7. Network isolation     — are network rules enabled?
+  8. Sandbox readiness     — is Docker sandboxing configured and available?
 
 Each check returns findings with a severity, a human-readable message,
 and an optional auto-fix function for ``immunity audit --fix``.
@@ -80,6 +81,7 @@ def run_audit(
     findings.extend(_check_feed_signature(repo_root))
     findings.extend(_check_egress_allowlist(workspace))
     findings.extend(_check_network_rules(workspace))
+    findings.extend(_check_sandbox(workspace))
     findings.extend(_check_lockfile_presence(workspace))
 
     findings.sort(key=lambda f: AuditFinding.SEVERITY_ORDER.get(f.severity, 99))
@@ -467,6 +469,89 @@ def _check_network_rules(workspace: Path) -> List[AuditFinding]:
             severity="PASS",
             category="network",
             message=f"All {len(network_rule_ids)} network isolation rules active",
+        ))
+
+    return findings
+
+
+def _check_sandbox(workspace: Path) -> List[AuditFinding]:
+    """Check Docker sandbox configuration and backend readiness."""
+    findings: List[AuditFinding] = []
+
+    try:
+        from warden import sandbox as sandbox_mod
+    except ImportError:
+        findings.append(AuditFinding(
+            severity="MEDIUM",
+            category="sandbox",
+            message="Sandbox module not available",
+        ))
+        return findings
+
+    engine = PolicyEngine(workspace=workspace)
+    cfg = sandbox_mod.effective_config(getattr(engine, "sandbox_config", {}))
+
+    if not cfg.get("enabled"):
+        findings.append(AuditFinding(
+            severity="LOW",
+            category="sandbox",
+            message="Docker sandboxing is disabled — Bash commands run on the host after policy checks",
+        ))
+        return findings
+
+    status = sandbox_mod.docker_status()
+    if not status.get("cli_found"):
+        findings.append(AuditFinding(
+            severity="HIGH" if cfg.get("mode") == "enforce" else "MEDIUM",
+            category="sandbox",
+            message="Docker sandboxing is enabled but the docker CLI was not found",
+        ))
+    elif not status.get("server_reachable"):
+        findings.append(AuditFinding(
+            severity="HIGH" if cfg.get("mode") == "enforce" else "MEDIUM",
+            category="sandbox",
+            message=f"Docker sandboxing is enabled but Docker is not reachable: {status.get('error') or 'unknown error'}",
+        ))
+    else:
+        findings.append(AuditFinding(
+            severity="PASS",
+            category="sandbox",
+            message=f"Docker sandbox backend available (image: {cfg.get('image')})",
+        ))
+
+    if cfg.get("network") in {"host", "bridge"}:
+        findings.append(AuditFinding(
+            severity="MEDIUM",
+            category="sandbox",
+            message=f"Sandbox network mode is {cfg.get('network')} — use 'none' for strongest exfiltration protection",
+        ))
+    else:
+        findings.append(AuditFinding(
+            severity="PASS",
+            category="sandbox",
+            message="Sandbox network is disabled by default",
+        ))
+
+    if not cfg.get("read_only_root", True):
+        findings.append(AuditFinding(
+            severity="MEDIUM",
+            category="sandbox",
+            message="Sandbox read_only_root is disabled",
+        ))
+
+    limits = cfg.get("resource_limits") or {}
+    missing_limits = [name for name in ("cpus", "memory", "pids_limit", "timeout_seconds") if not limits.get(name)]
+    if missing_limits:
+        findings.append(AuditFinding(
+            severity="MEDIUM",
+            category="sandbox",
+            message=f"Sandbox resource limits missing: {', '.join(missing_limits)}",
+        ))
+    else:
+        findings.append(AuditFinding(
+            severity="PASS",
+            category="sandbox",
+            message="Sandbox resource limits configured",
         ))
 
     return findings
