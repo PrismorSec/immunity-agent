@@ -1,1 +1,4 @@
 pyyaml>=6.0
+
+flask==2.3.2
+requests==2.32.0
