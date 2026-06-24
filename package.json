@@ -1,25 +1,15 @@
 {
-  "name": "immunity-agent",
-  "version": "1.7.1",
-  "description": "Runtime security for AI coding agents: policy enforcement, secret prevention, and supply-chain blocking.",
-  "license": "Apache-2.0",
-  "keywords": [
-    "agent-skill",
-    "skills",
-    "security",
-    "warden",
-    "ai-agents",
-    "policy-enforcement",
-    "secret-prevention",
-    "supply-chain",
-    "claude-code",
-    "cursor",
-    "codex",
-    "opencode",
-    "github-copilot"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/PrismorSec/immunity-agent.git"
+  "name": "your-package-name",
+  "version": "1.0.0",
+  "dependencies": {
+    "requests": "2.32.0"
+  },
+  "devDependencies": {},
+  "scripts": {},
+  "overrides": {
+    "some-transitive-package": {
+      "requests": "2.32.0"
+    },
+    "requests": "2.32.0"
   }
 }
