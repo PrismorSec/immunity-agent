@@ -13,17 +13,37 @@
   <a href="https://discord.gg/FH2PRX754c"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
+<h3 align="center">
+  <a href="https://prismor.dev"><b>Website</b></a> &bull;
+  <a href="SKILL.md"><b>Onboard with Skill</b></a> &bull;
+  <a href="docs/cli-reference.md"><b>CLI Reference</b></a> &bull;
+  <a href="docs/supply-chain.md"><b>Supply Chain</b></a> &bull;
+  <a href="docs/sweep-and-cloak.md"><b>Sweep & Cloak</b></a>
+</h3>
+
 <p align="center">
-  <a href="https://prismor.dev">Website</a> &middot;
-  <a href="SKILL.md">Onboard with Skill</a> &middot;
-  <a href="docs/cli-reference.md">CLI Reference</a> &middot;
-  <a href="docs/supply-chain.md">Supply Chain</a> &middot;
-  <a href="docs/sweep-and-cloak.md">Sweep & Cloak</a>
+  <img src="assets/warden-runtime-monitor.gif" width="90%" alt="Prismor Warden runtime monitor"/>
 </p>
 
 ---
 
-## The Problem
+## Table of Contents
+
+- [The Problem](#the-problem)
+- [Capabilities](#capabilities)
+- [Quick Start](#quick-start)
+- [Disabling Prismor](#disabling-prismor)
+- [Benchmarks](#benchmarks)
+- [Hybrid Semantic Prompt-Injection Defense](#hybrid-semantic-prompt-injection-defense)
+- [Self-Hosted Dashboard](#self-hosted-dashboard)
+- [How It Works](#how-it-works)
+- [Supply Chain Enforcement](#supply-chain-enforcement)
+- [Contributing](#contributing)
+- [Contributors](#contributors)
+
+---
+
+## The Problem<a name="the-problem" />
 
 AI coding agents execute shell commands, read and write files, access credentials, and call external APIs. They do this autonomously, often across many steps, with limited checkpoints.
 
@@ -40,7 +60,7 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 
 ---
 
-## Capabilities
+## Capabilities<a name="capabilities" />
 
 ![Prismor Architecture](assets/immunity-highlevel.png)
 
@@ -66,7 +86,7 @@ These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.
 
 ---
 
-## Quick Start
+## Quick Start<a name="quick-start" />
 
 ### Platform-specific Install
 
@@ -160,7 +180,7 @@ prismor install-hooks --agent all --mode enforce    # honor policy enforce rules
 
 ---
 
-## Disabling Prismor
+## Disabling Prismor<a name="disabling-prismor" />
 
 There are three independent layers that can each restrict an agent session. Disabling one does not disable the others — pick the layer that matches what you're actually trying to turn off.
 
@@ -220,7 +240,7 @@ There's no bulk-clear — each session is cleared by ID individually. If a sessi
 
 ---
 
-## Benchmarks
+## Benchmarks<a name="benchmarks" />
 
 Measured overhead is 0.8 ms per tool call across 10,000 simulated agent sessions, below the 1 ms threshold for every task category tested.
 
@@ -230,7 +250,7 @@ See [benchmark.md](benchmark.md) for the full methodology, per-category breakdow
 
 ---
 
-## Hybrid Semantic Prompt-Injection Defense
+## Hybrid Semantic Prompt-Injection Defense<a name="hybrid-semantic-prompt-injection-defense" />
 
 Regex rules catch known injection shapes. The opt-in semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to a local Claude Code subagent for an LLM verdict. Tested across 800+ cases — **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex.
 
@@ -254,7 +274,7 @@ Disabled by default. See [docs/semantic-guard.md](docs/semantic-guard.md) for fu
 
 ---
 
-## Self-Hosted Dashboard
+## Self-Hosted Dashboard<a name="self-hosted-dashboard" />
 
 ```bash
 prismor dashboard            # opens http://127.0.0.1:7070 in your browser
@@ -268,7 +288,7 @@ Sessions, findings, threat categories, agent breakdowns, and a live event feed �
 
 ---
 
-## How It Works
+## How It Works<a name="how-it-works" />
 
 ```mermaid
 flowchart TD
@@ -313,7 +333,7 @@ flowchart TD
 
 ---
 
-## Supply Chain Enforcement
+## Supply Chain Enforcement<a name="supply-chain-enforcement" />
 
 `prismor` wraps your package manager and scores every install against live threat intelligence before it runs — age, maintainer count, install scripts, and known IOCs. Ships with coverage for **mini-shai-hulud** (May 2026) and the **AntV hijacked-maintainer** attack (May 2026).
 
@@ -337,13 +357,23 @@ See [docs/supply-chain.md](docs/supply-chain.md) for the full scoring table, eco
 
 ---
 
-## Contributing
+## Contributing<a name="contributing" />
 
 PRs are welcome. Guidelines:
 
 - New detection rules go in `warden/default_policy.yaml`, following the schema in `warden/policy_schema.json`
 - Tests live in `tests/`, so run `pytest` before opening a PR
 - Open an issue first if you're unsure where something fits
+
+---
+
+## Contributors<a name="contributors" />
+
+<a href="https://github.com/PrismorSec/prismor/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=PrismorSec/prismor" />
+</a>
+
+Made with [contrib.rocks](https://contrib.rocks).
 
 ---
 
