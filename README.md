@@ -367,16 +367,6 @@ PRs are welcome. Guidelines:
 
 ---
 
-## Contributors<a name="contributors" />
-
-<a href="https://github.com/PrismorSec/prismor/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=PrismorSec/prismor" />
-</a>
-
-Made with [contrib.rocks](https://contrib.rocks).
-
----
-
 ## Star History
 
 <a href="https://www.star-history.com/?repos=PrismorSec%2Fprismor&type=date&legend=top-left">
