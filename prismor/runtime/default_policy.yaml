@@ -148,7 +148,7 @@ rules:
   - id: destructive-command
     severity: CRITICAL
     category: destructive_command
-    title: Blocks rm -rf /, mkfs, dd to disk, shutdown, reboot
+    title: Blocks rm -rf /, world-writable chmod/chown -R, mkfs, dd to disk, shutdown, reboot
     event_types: [shell]
     fields: [command]
     patterns:
@@ -166,7 +166,12 @@ rules:
       - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\.\.(?:/\.\.)*/?(\s|$|&|;|\|)'
       # sudo elevates blast radius — always block sudo rm -rf (any flag form)
       - '(?:^|\s|;|&|\|)sudo\s+rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))'
-      - 'chmod\s+777\s+(/|\$\{?HOME\}?|~|/etc|/bin|/usr|/var)'
+      # World-writable chmod — numeric modes whose "other" digit grants write
+      # (…2/3/6/7, e.g. 777, 666, 0777, 1777), any path — plus symbolic grants
+      # of write to other/all (o+w, a+w, a+rwx). Group-only and read-only
+      # modes are intentionally not flagged (chmod g+w, 644, 755, +x, 600, …).
+      - 'chmod\s+(?:-[A-Za-z]+\s+)*[0-7]?[0-7][0-7][2367]\b'
+      - 'chmod\s+(?:-[A-Za-z]+\s+)*[ugoa,+=rwxXst-]*[oa][+=][a-zX]*w'
       - 'chown\s+-R\s+[^\n]*\s(/|\$\{?HOME\}?|~)(\s|$|/)'
       - 'mkfs\b'
       - 'dd\s+if=.*of=/dev/'

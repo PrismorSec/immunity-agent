@@ -8,6 +8,9 @@
 
 - Adapter distributions now depend on `prismor>=1.13.0` instead of the deprecated `immunity-agent` package name.
 - The wheel now bundles the framework docs (`frameworks-*.md`), `sdk-integration.md`, and `connecting-to-the-platform.md` under `prismor/runtime/data/docs/`, so links from the installed skill's `SKILL.md` resolve.
+- **`destructive-command` policy now catches world-writable chmod/chown in the live YAML-based `PolicyEngine`**, not just the legacy `evaluate_event()` path — `chmod 666`, `chmod 0777`/`1777`, `chmod -R 777 <any dir>`, and symbolic grants (`a+rwx`, `o+w`, `ugo+rwx`) are now blocked in enforce mode across `prismor check`, hook dispatch, and every SDK adapter, matching what `ae7e22e` already fixed in the legacy path. (#121)
+- CLI `--help`/usage output and `--version` no longer say `immunity` / `immunity-agent` — both now report `prismor`. (#124)
+- `scripts/install.sh` now verifies the `prismor` resolved on `$PATH` actually matches the version it just installed, and fails loudly instead of reporting success when a stale/conflicting prior install (e.g. an old `easy_install` script or leftover `immunity-agent` venv) shadows it. (#123)
 - Post-install banner and `scripts/init.sh` no longer reference the old `immunity-agent` name/repo; `package.json` metadata updated to `prismor`.
 
 ## [1.13.0] — 2026-06-29

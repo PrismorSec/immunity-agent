@@ -1779,12 +1779,12 @@ def build_parser() -> argparse.ArgumentParser:
         # `prismor` is the canonical entrypoint that forwards here, so anchor
         # usage/error strings to it instead of leaking the module filename
         # (argparse otherwise shows "immunity_cli.py" in subcommand usage/errors).
-        prog="immunity",
+        prog="prismor",
         description="Prismor — runtime security for AI coding agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--workspace", help="Workspace path (applies to all commands)")
-    parser.add_argument("--version", action="version", version=f"immunity-agent {__version__}")
+    parser.add_argument("--version", action="version", version=f"prismor {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     # ── info (deprecated alias of status) ───────────────────────────────

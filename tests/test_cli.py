@@ -46,7 +46,7 @@ class TestCliExitCodes(unittest.TestCase):
     def test_version_exits_zero(self):
         r = run_cli("--version")
         self.assertEqual(r.returncode, 0)
-        self.assertIn("immunity-agent", r.stdout)
+        self.assertIn("prismor", r.stdout)
 
     def test_bare_invocation_exits_zero(self):
         r = run_cli()
