@@ -663,7 +663,7 @@ rules:
     event_types: [shell, file_write]
     fields: [command, path]
     patterns:
-      - '\bsystemctl\b[^\n]*(enable|start|daemon-reload)'
+      - '\bsystemctl\b[^\n]*\b(enable|start|daemon-reload)\b'
       - '(^|/)\.config/systemd/user/'
       - '(^|\n)/etc/systemd/system/'
       - '(^|\n)/lib/systemd/system/'
@@ -1223,5 +1223,68 @@ rules:
       - 'from\s+(?:now|this\s+point)\s+on[,\s]+you\s+(?:will|must|should|are\s+to)\b'
       - 'for\s+all\s+future\s+(?:responses?|messages?|requests?|interactions?)\b'
     action: warn
+
+  # ════════════════════════════════════════════════════════════════════
+  # T1-T15 follow-up gap fills (benchmark residuals): container escape,
+  # env->network exfil, staged fetch-and-run droppers, security-control
+  # disabling. Scoped to clearly-malicious forms; routine ops (service
+  # restarts, `env | grep`, downloading a tarball) stay clean.
+  # ════════════════════════════════════════════════════════════════════
+
+  # ── CRITICAL: Privileged container / host-root mount (container escape) ──
+  - id: container-escape
+    severity: CRITICAL
+    category: privilege_escalation
+    title: Privileged container or host-root mount (container escape to host)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(docker|podman|nerdctl)\s+(run|create)\b[^\n]*--privileged\b'
+      - '\b(docker|podman|nerdctl)\s+(run|create)\b[^\n]*(-v|--volume|--mount)\b[^\n]*\s/:/'
+      - '\b(docker|podman|nerdctl)\s+(run|create)\b[^\n]*--pid\s*=?\s*host\b'
+      - '\b(docker|podman|nerdctl)\s+(run|create)\b[^\n]*--cap-add[= ]\s*(SYS_ADMIN|ALL)\b'
+    action: block
+
+  # ── CRITICAL: Environment dumped to a network destination (exfil) ───────
+  - id: env-network-exfil
+    severity: CRITICAL
+    category: secret_exfiltration
+    title: Dumps environment variables to a network destination (secret exfiltration)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(env|printenv|set)\b\s*\|\s*(curl|wget|nc|ncat|socat)\b'
+    action: block
+
+  # ── HIGH: Staged fetch-and-run dropper (download then execute) ──────────
+  - id: fetch-then-execute
+    severity: HIGH
+    category: remote_execution
+    title: Downloads a file and then executes it (staged fetch-and-run dropper)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # curl/wget -o FILE ... && ... (chmod +x | bash/sh/zsh | ./run)
+      - '\b(curl|wget)\b[^\n]*(-o|-O|--output)\b[^\n]*(&&|;|\|\|)\s*[^\n]*(\bchmod\b[^\n]*\+x|\b(bash|sh|zsh)\b|(^|\s)\./)'
+      # chmod +x a tmp/download path then execute a tmp/download path
+      - '\bchmod\b[^\n]*\+x[^\n]*(/tmp/|/var/tmp/|/dev/shm/)\S+[^\n]*(&&|;)\s*[^\n]*(/tmp/|/var/tmp/|/dev/shm/)'
+    action: block
+
+  # ── HIGH: Disable host security services or firewall ────────────────────
+  - id: disable-security-controls
+    severity: HIGH
+    category: security_bypass
+    title: Disables host security services or firewall (SSH, auditd, SELinux, firewall)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bsystemctl\s+(mask|disable|stop)\b[^\n]*\b(sshd?|firewalld|ufw|auditd|apparmor|fail2ban|falcon-sensor)\b'
+      - '\bservice\s+(ssh|sshd|firewalld|ufw|auditd|apparmor|fail2ban)\s+stop\b'
+      - '\bufw\s+disable\b'
+      - '\bsetenforce\s+0\b'
+      - '\biptables\s+-F\b'
+      - '\biptables\s+-P\s+\w+\s+ACCEPT\b'
+      - '\bnft\s+flush\s+ruleset\b'
+    action: block
 
 allowlists: []
