@@ -189,6 +189,8 @@ rules:
     fields: [command]
     patterns:
       - '\b(cat|sed|grep|awk)\b[^\n]*(\.env|id_rsa|id_ed25519|\.npmrc|\.pypirc|\.aws|\.ssh)[^\n]*(curl|wget|nc|scp|ftp|http)'
+      # scp/rsync/sftp UPLOAD of a secret file to a remote host (secret then user@host:)
+      - '\b(scp|rsync|sftp)\b[^\n]*(\.env|id_rsa|id_ed25519|\.npmrc|\.pypirc|credentials|secrets?)\b[^\n]*@'
     action: block
 
   # ── CRITICAL: DoS / resource exhaustion ───────────────────────────────
@@ -226,6 +228,8 @@ rules:
       - '\bnc\b[^\n]*\s-[a-z]*l[a-z]*\b[^\n]*\s-[a-z]*p[a-z]*\b'
       - 'python3?\s+-c\s+.*(?:exec|eval|import\s+os)'
       - 'perl\s+-e\s+.*(?:socket|exec)'
+      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
+      - 'ruby\s+-e\b[^\n]*(\bsystem\s*\(|\bexec\s*\(|IO\.popen|Open3)'
       - 'echo\s+.*\|\s*crontab'
       - '\*\s+\*\s+\*\s+\*\s+\*.*crontab'
       - '\b(ncat|socat)\b.*(?:exec|listen|EXEC)'
@@ -319,7 +323,11 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh)\b'
+      - '\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|zsh|dash|ksh)\b'
+      # process substitution: bash <(curl ...) — no pipe, so the rule above missed it
+      - '\b(bash|sh|zsh|dash|ksh)\b[^\n]*<\(\s*(curl|wget)\b'
+      # eval of remotely-fetched content: eval "$(curl ...)"
+      - '\beval\b[^\n]*\b(curl|wget)\b'
     action: block
 
   # ── HIGH: Sensitive file access ───────────────────────────────────────
@@ -780,6 +788,8 @@ rules:
       - '(^|/)\.windsurfrules$'
       - '(^|/)\.github/copilot-instructions\.md$'
       - '(^|/)\.github/chatmodes/'
+      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.mcp\.json(\s|$)'
+      - '(^|/)\.mcp\.json$'
       - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.github/copilot-instructions\.md'
     action: warn
 
@@ -1100,6 +1110,25 @@ rules:
       - '\byarn\s+add\b[^\n]*\s(git\+https?://|git\+ssh://|git://)'
       - '\bpnpm\s+add\b[^\n]*\s(git\+https?://|git\+ssh://|git://)'
     action: warn
+
+  # ── HIGH: Execute a vendored/third-party shell script (unvetted supply chain) ──
+  # Running a pre-existing script from a vendored/third-party directory executes
+  # code the agent did not author or audit — the classic "run ./vendor/installer.sh"
+  # supply-chain vector (OWASP Agentic AI T2/ASI04). Scoped to clearly third-party
+  # directories (vendor/, third_party/) so first-party project scripts (./scripts/build.sh, ./run.sh,
+  # ./ci/test.sh) are untouched. See the T1-T15 coverage benchmark.
+  - id: execute-vendored-script
+    severity: HIGH
+    category: dependency_risk
+    title: Executes a shell script from a vendored/third-party directory (unvetted supply-chain code)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # interpreter (bash/sh/zsh/ksh/dash/source/.) running a .sh under a third-party dir
+      - '\b(bash|sh|zsh|ksh|dash|source)\s+[^\n]*\b(vendor|vendored|third[_-]?party)/[^\n]*\.(sh|bash|zsh)\b'
+      # direct execution ./vendor/x.sh (no interpreter prefix)
+      - '(^|\s|;|&|\|)\.?/(vendor|vendored|third[_-]?party)/[^\n]*\.(sh|bash|zsh)\b'
+    action: block
 
   # ── HIGH: Skill makes outbound POST/PUT requests ─────────────────
   - id: skill-network-exfil
