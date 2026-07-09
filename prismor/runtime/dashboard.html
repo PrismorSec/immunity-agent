@@ -783,7 +783,7 @@
   .upgrade-btn {
     font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
     padding: 5px 14px; border-radius: 6px; border: none; color: #fff;
-    background: linear-gradient(135deg, #7c3aed, #db2777);
+    background: var(--gray-900);
     display: inline-flex; align-items: center; gap: 6px;
     transition: opacity 0.15s, transform 0.1s;
   }
@@ -1088,12 +1088,12 @@
 
   /* ── Contained primary buttons ── */
   .btn-primary, .upgrade-btn {
-    background: var(--md-primary); color: #fff; border: none;
+    background: var(--gray-900); color: #fff; border: none;
     border-radius: var(--md-radius-sm); text-transform: uppercase; letter-spacing: .5px;
     font-weight: 600; box-shadow: var(--md-e1);
     transition: box-shadow .15s, background .15s, transform .04s;
   }
-  .btn-primary:hover, .upgrade-btn:hover { background: var(--md-primary-d); box-shadow: var(--md-e2); }
+  .btn-primary:hover, .upgrade-btn:hover { background: #000; box-shadow: var(--md-e2); }
   .btn-primary:active, .upgrade-btn:active { transform: translateY(1px); box-shadow: var(--md-e1); }
   .upgrade-btn .icon { color: #fff; }
 
@@ -1131,6 +1131,29 @@
 
   /* ── Data-table row hover (Material) ── */
   tbody tr:hover td { background: rgba(16,24,40,.03); }
+
+  /* ── Font-size parity: Agents/Sessions/Policy/Fleet read too small next
+     to Overview. Bump their small-text tiers by 1px; Overview is untouched. ── */
+  #page-agents, #page-sessions, #page-agent, #page-session,
+  #page-policy, #page-fleet {
+    font-size: 12px;
+  }
+  #page-agents th, #page-sessions th, #page-agent th, #page-session th,
+  #page-policy th, #page-fleet th,
+  #page-agents td, #page-sessions td, #page-agent td, #page-session td,
+  #page-policy td, #page-fleet td {
+    font-size: 12px;
+  }
+  #page-agents [style*="font-size:10px"], #page-sessions [style*="font-size:10px"],
+  #page-agent [style*="font-size:10px"], #page-session [style*="font-size:10px"],
+  #page-policy [style*="font-size:10px"], #page-fleet [style*="font-size:10px"] {
+    font-size: 11px !important;
+  }
+  #page-agents [style*="font-size:11px"], #page-sessions [style*="font-size:11px"],
+  #page-agent [style*="font-size:11px"], #page-session [style*="font-size:11px"],
+  #page-policy [style*="font-size:11px"], #page-fleet [style*="font-size:11px"] {
+    font-size: 12px !important;
+  }
 
 </style>
 </head>
