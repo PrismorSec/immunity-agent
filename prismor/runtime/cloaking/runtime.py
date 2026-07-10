@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from prismor.runtime.cloaking.secrets_store import secrets_dir
 
 _PLACEHOLDER_RE = re.compile(r"@@SECRET:([a-zA-Z0-9_-]{1,64})@@")
+_ENV_ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 _READER_UTILS = frozenset({
     "cat", "bat", "less", "more", "head", "tail", "grep", "egrep", "fgrep",
@@ -78,6 +79,19 @@ def scrub_text(text: str, *, secrets: Optional[Dict[str, str]] = None) -> str:
         if len(value) >= 4:
             out = out.replace(value, f"@@SECRET:{name}@@")
     return out
+
+
+def _split_env_assignments(args: List[str]) -> tuple[Dict[str, str], List[str]]:
+    """Split leading shell-style env assignments from the command argv."""
+    env_updates: Dict[str, str] = {}
+    index = 0
+    for arg in args:
+        match = _ENV_ASSIGNMENT_RE.fullmatch(arg)
+        if not match:
+            break
+        env_updates[match.group(1)] = match.group(2)
+        index += 1
+    return env_updates, args[index:]
 
 
 def codex_cloak_finding(event: Dict[str, Any], session_id: str) -> Optional[Dict[str, Any]]:
@@ -181,8 +195,14 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
     if not args:
         raise ValueError("Usage: prismor cloak run -- <command> [args...]")
     secrets = _read_secret_map()
+    env_updates, command_args = _split_env_assignments(args)
+    if not command_args:
+        raise ValueError("Usage: prismor cloak run -- <command> [args...]")
     try:
-        resolved = [decloak_text(arg, secrets=secrets) for arg in args]
+        resolved_env = {
+            name: decloak_text(value, secrets=secrets) for name, value in env_updates.items()
+        }
+        resolved = [decloak_text(arg, secrets=secrets) for arg in command_args]
     except KeyError as exc:
         name = str(exc).strip("'")
         raise ValueError(
@@ -190,10 +210,18 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
             f"Run: prismor cloak add {name}"
         ) from exc
 
-    proc = subprocess.run(resolved, capture_output=True, text=True, errors="replace", check=False)
+    env = os.environ.copy()
+    env.update(resolved_env)
+    proc = subprocess.run(
+        resolved,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        env=env,
+    )
     if proc.stdout:
         sys.stdout.write(scrub_text(proc.stdout, secrets=secrets))
     if proc.stderr:
         sys.stderr.write(scrub_text(proc.stderr, secrets=secrets))
     return int(proc.returncode)
-

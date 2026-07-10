@@ -74,6 +74,22 @@ class TestCodexCloakRuntime(unittest.TestCase):
         self.assertIn("@@SECRET:OPENAI_API_KEY@@", combined)
         self.assertNotIn("sk-test-1234567890", combined)
 
+    def test_cloak_run_decloaks_leading_env_assignments(self):
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = run_decloaked_command([
+                "OPENAI_API_KEY=@@SECRET:OPENAI_API_KEY@@",
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['OPENAI_API_KEY'])",
+            ])
+
+        self.assertEqual(code, 0)
+        combined = stdout.getvalue() + stderr.getvalue()
+        self.assertIn("@@SECRET:OPENAI_API_KEY@@", combined)
+        self.assertNotIn("sk-test-1234567890", combined)
+
     def test_codex_hook_dispatch_blocks_and_records_placeholder(self):
         payload = {
             "hook_event_name": "PreToolUse",

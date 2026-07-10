@@ -149,6 +149,17 @@ def test_placeholder_substituted_and_output_scrubbed():
           _CANARY not in out and _PLACEHOLDER in out, out.strip())
 
 
+def test_leading_env_assignment_decloaked_and_scrubbed():
+    out, code = execute_wrapped(
+        f"OPENAI_API_KEY={_PLACEHOLDER} python3 -c 'import os; print(os.environ[\"OPENAI_API_KEY\"])'"
+    )
+    check(
+        "leading env assignment is decloaked and output is re-masked",
+        code == 0 and _CANARY not in out and _PLACEHOLDER in out,
+        out.strip(),
+    )
+
+
 def test_unregistered_placeholder_denied():
     res = run_hook(_DECLOAK, bash_payload("echo @@SECRET:NOPE@@"))
     dec = (res or {}).get("hookSpecificOutput", {}).get("permissionDecision")
@@ -182,6 +193,7 @@ def main() -> int:
         test_grep_output_scrubbed, test_source_echo_scrubbed,
         test_no_secret_in_wrapped_command, test_exit_code_preserved,
         test_placeholder_substituted_and_output_scrubbed,
+        test_leading_env_assignment_decloaked_and_scrubbed,
         test_unregistered_placeholder_denied,
         test_read_of_secret_file_denied, test_read_of_clean_file_allowed,
     ]:
