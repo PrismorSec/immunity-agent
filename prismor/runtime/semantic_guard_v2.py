@@ -25,10 +25,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-# Import heuristic engine from v1
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_HERE))
-
+# Import heuristic engine from v1. This is an absolute import that resolves via
+# the installed `prismor` namespace package — it must NOT prepend the package
+# directory to sys.path, or `prismor/<subdir>` namespace packages (e.g. the
+# framework-adapter shims prismor/openai, prismor/crewai) become importable as
+# top-level modules and shadow the real SDKs they wrap.
 from prismor.runtime.semantic_guard import SemanticRisk, _heuristic_analyze
 
 # ── Thresholds for LLM escalation ──────────────────────────────────────────

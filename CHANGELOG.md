@@ -1,3 +1,9 @@
+## [1.18.4] — 2026-07-10
+
+### Fixed
+
+- **Framework SDK adapters no longer shadow the real SDK they wrap.** `prismor/runtime/semantic_guard_v2.py` prepended the `prismor` package directory to `sys.path` (a v1 relic), which made the PEP-420 namespace shims `prismor/openai`, `prismor/crewai`, `prismor/langchain`, and `prismor/browser_use` importable as top-level modules — so a plain `import openai` (or `crewai`/`langchain`/`browser_use`) resolved to the adapter shim and hijacked `sys.modules`, breaking the genuine SDK for every in-process adapter. The stray `sys.path.insert` is removed; the sibling heuristic import resolves through the installed `prismor` namespace without it. Regression test added.
+
 ## [1.18.3] — 2026-07-10
 
 ### Fixed
