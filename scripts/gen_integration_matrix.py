@@ -61,7 +61,7 @@ def render_matrix() -> str:
         "",
         "Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. "
         "Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · "
-        "`mcp` (proxy) · `rules-only` (static guardrails).",
+        "`mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails).",
         "",
         _END,
     ]

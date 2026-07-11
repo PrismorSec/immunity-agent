@@ -962,7 +962,24 @@ def main(argv: Optional[List[str]] = None) -> None:
             if blocking.get("remediation"):
                 reason += f"\nRecommended fix: {blocking['remediation']}"
 
-            if verdict == "step_up":
+            if verdict == "defer":
+                # DEFER: hold the ambiguous action and escalate to the deeper
+                # semantic evaluator (verdict cached per session+action). Clear →
+                # proceed as allowed; deny/error → fall into the block below.
+                try:
+                    from prismor.runtime.enterprise import deferred as _deferred
+                    _cleared = _deferred.resolve_defer(
+                        blocking, event,
+                        session_id=normalized["sessionId"], workspace=workspace,
+                    )
+                except Exception:
+                    _cleared = False
+                if _cleared:
+                    blocking = None  # adjudicated allow → skip the block entirely
+                else:
+                    verdict = "block"  # adjudicated deny → block with the reason
+
+            if blocking is not None and verdict == "step_up":
                 # Inline human-in-the-loop where the surface supports it.
                 if args.agent == "claude":
                     sys.stdout.write(json.dumps({
@@ -983,7 +1000,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 sys.stderr.write(f"Prismor requires approval for this action (no approval surface — blocked): {reason}\n")
                 raise SystemExit(2)
 
-            if verdict == "modify":
+            if blocking is not None and verdict == "modify":
                 # Rewrite the tool input via the named transform. Only Claude
                 # PreToolUse can rewrite input in Phase 1; otherwise fail closed.
                 transform = str(blocking.get("transform") or "")
@@ -1007,17 +1024,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                 sys.stderr.write(f"Prismor could not safely modify this action (blocked): {reason}\n")
                 raise SystemExit(2)
 
-            # Default verdict: DENY.
-            if args.agent == "copilot":
-                # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
-                sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
-            else:
-                sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
-                if blocking.get("evidence"):
-                    sys.stderr.write(f"{blocking['evidence']}\n")
-                if blocking.get("remediation"):
-                    sys.stderr.write(f"Recommended fix: {blocking['remediation']}\n")
-                raise SystemExit(2)
+            # Default verdict: DENY (also the resolved-deny path for defer). When
+            # `blocking` was cleared by a deferred ALLOW, none of this runs and the
+            # call proceeds.
+            if blocking is not None:
+                if args.agent == "copilot":
+                    # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
+                    sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
+                else:
+                    sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
+                    if blocking.get("evidence"):
+                        sys.stderr.write(f"{blocking['evidence']}\n")
+                    if blocking.get("remediation"):
+                        sys.stderr.write(f"Recommended fix: {blocking['remediation']}\n")
+                    raise SystemExit(2)
         elif current_findings:
             # Observe: surface all findings so agents know every package to fix.
             # Prefer a would-be-blocking finding for the dismissal record.

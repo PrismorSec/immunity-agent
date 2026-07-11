@@ -23,9 +23,11 @@ _REGISTRY_PATH = Path(__file__).resolve().parent / "registry.yaml"
 
 # Allowed enum values — kept in sync with registry.schema.json.
 KINDS = frozenset({"coding-agent", "framework"})
-SURFACES = frozenset({"hook-config", "sdk", "mcp", "rules-only"})
+# http = language-agnostic eval-server / Vercel AI sidecar (POST /v1/evaluate)
+SURFACES = frozenset({"hook-config", "sdk", "mcp", "rules-only", "http"})
 STATUSES = frozenset({"shipped", "roadmap", "sweep-only"})
-BLOCKING = frozenset({"exit-2", "json-permission", "throw", "proxy-deny", "none"})
+# client-side = HTTP eval-server adapters that enforce in the caller (Node/Ruby/Java/Rust)
+BLOCKING = frozenset({"exit-2", "json-permission", "throw", "proxy-deny", "none", "client-side"})
 
 
 @dataclass(frozen=True)
@@ -85,7 +87,7 @@ def get(agent_id: str, path: Optional[Path] = None) -> Optional[Integration]:
 
 
 def by_surface(surface: str, path: Optional[Path] = None) -> List[Integration]:
-    """All integrations exposing ``surface`` (hook-config|sdk|mcp|rules-only)."""
+    """All integrations exposing ``surface`` (hook-config|sdk|mcp|rules-only|http)."""
     return [i for i in load_registry(path) if i.surface == surface]
 
 

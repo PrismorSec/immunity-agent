@@ -21,5 +21,11 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
       - name: Install pytest
         run: python3 -m pip install --quiet pytest
+      - name: Verify integration registry
+        # Catches registry.yaml drift vs SURFACES/BLOCKING enums and matrix sync
+        # (see TODO.md: verify_registry.sh in CI). Needs PyYAML for the YAML load path.
+        run: |
+          python3 -m pip install --quiet pyyaml
+          bash scripts/verify_registry.sh
       - name: Run security regression suite
         run: bash scripts/run_security_tests.sh
