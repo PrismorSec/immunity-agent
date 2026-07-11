@@ -72,6 +72,10 @@ _DEFAULT_FIELDS: Dict[str, List[str]] = {
     # against the same combined_text field. See issue #155.
     "memory": ["combined_text"],
     "skill_manifest": ["combined_text"],
+    # Charter (prompt/description) handed to a spawned subagent. Untrusted
+    # instruction text that will drive an autonomous agent, so it is scanned
+    # like tool output — see _UNTRUSTED_CONTENT_ALIASES below.
+    "subagent_spawn": ["combined_text"],
     # Synthetic type for ad-hoc validation of arbitrary agent I/O
     # (PolicyEngine.check_text / `prismor check --type text`). It has no rules
     # of its own; evaluate() routes it through the agent-I/O content rules.
@@ -87,7 +91,7 @@ _TEXT_CONTENT_TYPES = frozenset({"prompt", "tool_result"})
 # loaded at session start) is folded in here so no rule can silently exempt the
 # project-memory source from block-category evaluation (issue #155).
 _UNTRUSTED_CONTENT_ALIASES: Dict[str, set[str]] = {
-    "tool_result": {"memory"},
+    "tool_result": {"memory", "subagent_spawn"},
 }
 
 # Human-readable provenance tag attached to each finding, so telemetry and the
@@ -214,6 +218,7 @@ class CompiledRule:
     __slots__ = (
         "id", "severity", "category", "title", "event_types",
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
+        "transform",
         "severity_on_write", "severity_on_manifest",
     )
 
@@ -234,6 +239,9 @@ class CompiledRule:
                 self.event_types |= aliases
         self.fields: List[str] = raw.get("fields") or []
         self.action: str = raw.get("action", "warn")
+        # Named transform for action: modify (R4 MODIFY). Empty for other
+        # actions; the hook dispatcher rewrites tool input via this name.
+        self.transform: str = raw.get("transform", "")
         self.enabled: bool = raw.get("enabled", True)
         # Per-rule observe/enforce override. None = inherit settings.default_mode
         # (which itself defaults to "observe"). enforce = this rule blocks on a
@@ -725,6 +733,7 @@ class PolicyEngine:
                 "eventIndex": index,
                 "ruleId": rule.id,
                 "action": rule.action,
+                "transform": rule.transform,
                 "subject": subject_dict,
                 # Provenance of the authorizing instruction — lets telemetry and
                 # the dashboard distinguish a directive from live user input,
@@ -1905,8 +1914,8 @@ def validate_policy(path: Path) -> List[str]:
             errors.append(f"{prefix}: rule '{rule_id}' is a core protection — disable_patterns is not allowed")
 
         action = rule.get("action", "")
-        if action and action not in ("block", "warn", "log"):
-            errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, or log)")
+        if action and action not in ("block", "warn", "log", "modify", "step_up", "defer"):
+            errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, log, modify, step_up, or defer)")
 
     for i, entry in enumerate(raw.get("allowlists", []) or []):
         prefix = f"allowlists[{i}]"

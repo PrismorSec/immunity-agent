@@ -1,3 +1,9 @@
+## [1.19.0] — 2026-07-10
+
+### Added
+
+- **Five-value authorization verdicts at the hook boundary.** Policy rules can now resolve to `action: step_up` or `action: modify` alongside `block`/`warn`/`log`. On the Claude surface a `step_up` finding emits a `PreToolUse` `permissionDecision: "ask"` for inline human approval (also honored by Copilot), and a `modify` finding rewrites the tool input through a named transform (`transform: sandbox` wraps the command in the Docker sandbox) via `hookSpecificOutput.updatedInput`. Any verdict a surface cannot honor fails closed to a block — never a silent allow. New transform registry in `prismor/runtime/transforms.py`; end-to-end coverage in `tests/test_r4_decisions.py`. `defer` is accepted by the policy validator but not yet emitted (fails closed pending the async-approval path).
+
 ## [1.18.4] — 2026-07-10
 
 ### Fixed

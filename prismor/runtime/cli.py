@@ -949,13 +949,67 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         force_observe = args.mode == "observe" and os.environ.get("PRISMOR_LOCAL_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
         if blocking is not None and not force_observe:
+            # R4 authorization verdict, driven by the surfaced enforce finding's
+            # `action`. `block` (or unset) → DENY; `step_up` → inline human
+            # approval; `modify` → rewrite the tool input via a named transform.
+            # Any verdict a surface can't honor fails closed to DENY — never a
+            # silent ALLOW. STEP_UP/DEFER on headless surfaces land in Phase 2
+            # (async approval queue); here they deny with a clear reason.
+            verdict = str(blocking.get("action") or "block").lower()
+            reason = f"[{blocking['severity']}] {blocking['title']}"
+            if blocking.get("evidence"):
+                reason += f"\n{blocking['evidence']}"
+            if blocking.get("remediation"):
+                reason += f"\nRecommended fix: {blocking['remediation']}"
+
+            if verdict == "step_up":
+                # Inline human-in-the-loop where the surface supports it.
+                if args.agent == "claude":
+                    sys.stdout.write(json.dumps({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "ask",
+                            "permissionDecisionReason": reason,
+                        }
+                    }) + "\n")
+                    return
+                if args.agent == "copilot":
+                    sys.stdout.write(json.dumps({
+                        "permissionDecision": "ask",
+                        "permissionDecisionReason": reason,
+                    }) + "\n")
+                    return
+                # No inline-approval surface (cursor/windsurf/codex): fail closed.
+                sys.stderr.write(f"Prismor requires approval for this action (no approval surface — blocked): {reason}\n")
+                raise SystemExit(2)
+
+            if verdict == "modify":
+                # Rewrite the tool input via the named transform. Only Claude
+                # PreToolUse can rewrite input in Phase 1; otherwise fail closed.
+                transform = str(blocking.get("transform") or "")
+                update = None
+                if (
+                    args.agent == "claude"
+                    and event.get("agent_event") == "PreToolUse"
+                    and transform
+                ):
+                    from prismor.runtime import transforms as _transforms
+                    update = _transforms.apply_transform(
+                        transform,
+                        payload=payload,
+                        workspace=workspace,
+                        mode=str(args.mode),
+                    )
+                if update:
+                    sys.stdout.write(json.dumps(update) + "\n")
+                    return
+                # Transform unavailable / declined on this surface: fail closed.
+                sys.stderr.write(f"Prismor could not safely modify this action (blocked): {reason}\n")
+                raise SystemExit(2)
+
+            # Default verdict: DENY.
             if args.agent == "copilot":
                 # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
-                reason = f"[{blocking['severity']}] {blocking['title']}"
-                if blocking.get("evidence"):
-                    reason += f"\n{blocking['evidence']}"
-                if blocking.get("remediation"):
-                    reason += f"\nRecommended fix: {blocking['remediation']}"
                 sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
             else:
                 sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
