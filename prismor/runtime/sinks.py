@@ -325,6 +325,14 @@ def _dispatch_prismor(
             rec["hash"] = digest
         except Exception:
             pass
+        # Ed25519 signature over {hash, ts, identity}: binds the immutable chain
+        # hash to the receipt's identity claims (non-repudiation + R6 identity
+        # binding). Best-effort — no-op without `cryptography`, and never fatal.
+        try:
+            from prismor.runtime.enterprise import receipt_signing as _signing
+            _signing.sign_record(rec)
+        except Exception:
+            pass
         records.append(rec)
 
     if not records:

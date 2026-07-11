@@ -1,3 +1,9 @@
+## [1.20.0] — 2026-07-10
+
+### Added
+
+- **Ed25519-signed telemetry receipts (non-repudiation + identity binding).** Each enrolled device now holds an Ed25519 keypair and signs every telemetry receipt over a canonical `{hash, ts, identity}` payload — binding the immutable per-device chain hash to the receipt's service (device), agent, and human-principal identity claims and its timestamp. Records carry `signature`, `signing_pubkey`, `signing_key_id`, and `signing_alg`; the public key is registered at enrollment (`receipt_pubkey`) for control-plane verification and trusted-on-first-use pinning. This upgrades receipts from tamper-*evident* (keyless SHA-256 chain) to tamper-*evident + non-repudiable*: a forged or identity-swapped receipt no longer verifies without the device's private key. Signing needs the optional `cryptography` extra (`pip install "prismor[signing]"`); without it, telemetry falls back to the hash chain. New module `prismor/runtime/enterprise/receipt_signing.py`; coverage in `tests/test_receipt_signing.py`.
+
 ## [1.19.0] — 2026-07-10
 
 ### Added

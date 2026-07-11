@@ -98,6 +98,10 @@ All events are stored under `.prismor/` in your project:
 - `.prismor/sessions/<session-id>.jsonl` is an append-only log with one JSON object per tool call
 - `.prismor/prismor.db` is a SQLite database indexed for fast querying across sessions
 
+### Tamper-evident, signed receipts (enrolled devices)
+
+When a device is enrolled against the control plane, each telemetry receipt is linked into a per-device **hash chain** (a retroactively edited or deleted record breaks the recomputed linkage) and **signed with the device's Ed25519 key**. The signature covers the chain hash plus the receipt's identity (device, agent, human principal) and timestamp — so a forged or identity-swapped receipt cannot verify without the device's private key. The public key is registered at enrollment and pinned by the control plane. Signing uses the optional `cryptography` extra (`pip install "prismor[signing]"`); without it, receipts fall back to the keyless hash chain.
+
 ## Security Audit
 
 Run a single command to check your entire security posture across hooks, policy, cloaking, permissions, and network isolation:

@@ -34,7 +34,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "pytest"]
+dev = ["build", "pytest", "cryptography>=41"]
+# Ed25519 receipt signing for enrolled devices (tamper-evident + non-repudiable
+# telemetry receipts). Optional: without it, telemetry falls back to the keyless
+# hash chain. `pip install "prismor[signing]"`.
+signing = ["cryptography>=41"]
 # Framework adapters ship inside this package (prismor.<framework>);
 # the extras just pull the framework itself so `pip install "prismor[langchain]"`
 # is a one-liner. See adapters/ for the sources and docs/frameworks-*.

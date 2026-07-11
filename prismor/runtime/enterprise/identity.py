@@ -208,11 +208,22 @@ def enroll(token: str, base: Optional[str] = None, label: Optional[str] = None,
 
     base = (base or api_base()).rstrip("/")
     label = label or _hostname_label()
+    # Register this device's Ed25519 receipt-signing public key so the control
+    # plane can verify signed telemetry receipts and pin the key to the device.
+    # Best-effort: None when `cryptography` isn't installed; the server treats it
+    # as optional and can still pin trusted-on-first-use from the first receipt.
+    receipt_pubkey = None
+    try:
+        from prismor.runtime.enterprise import receipt_signing as _signing
+        receipt_pubkey = _signing.public_key_b64()
+    except Exception:
+        receipt_pubkey = None
     payload = json.dumps({
         "token": token,
         "label": label,
         "platform": _platform(),
         "prismor_version": _ver,
+        "receipt_pubkey": receipt_pubkey,
     }).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/api/devices/enroll",
