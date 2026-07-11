@@ -135,12 +135,26 @@ def guard_controller(
     mode: str = "enforce",
     session_id: Optional[str] = None,
     raise_on_block: bool = False,
+    goal: Optional[str] = None,
 ) -> Any:
     """Patch ``controller.registry.execute_action`` to route every browser
     action through the Prismor policy engine before Playwright executes it.
 
+    Pass ``goal="..."`` to also capture the agent's intent so
+    ``evaluate_tool_call`` enforces task-alignment for this headless agent (R2/R3).
     Returns the same controller object.
     """
+    if goal:
+        try:
+            from prismor.runtime.intent import capture_intent
+            capture_intent(
+                goal,
+                workspace=Path(workspace) if workspace else Path.cwd(),
+                session_id=session_id or f"browser-use-{os.getpid()}",
+                agent=agent,
+            )
+        except Exception:
+            pass
     registry = getattr(controller, "registry", None)
     if registry is None:
         raise TypeError("controller has no .registry — is this a browser-use Controller?")

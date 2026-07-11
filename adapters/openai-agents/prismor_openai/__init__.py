@@ -288,6 +288,7 @@ def guard_agent(
     session_id: Optional[str] = None,
     event_type: str = "shell",
     raise_on_block: bool = False,
+    goal: Optional[str] = None,
 ) -> Any:
     """Guard **every** FunctionTool on an Agent in one call — the easy path.
 
@@ -317,4 +318,19 @@ def guard_agent(
             )
             guarded.append(getattr(tool, "name", "tool"))
     agent_obj.__prismor_guarded_tools__ = guarded  # type: ignore[attr-defined]
+    # Intent capture (R2/R3): synthesize the session's intent-scoped rules from
+    # the agent's goal + its real tool names, so evaluate_tool_call enforces
+    # "does this serve the task?" for this headless agent too. Best-effort.
+    if goal:
+        try:
+            from prismor.runtime.intent import capture_intent
+            capture_intent(
+                goal,
+                workspace=Path(workspace) if workspace else Path.cwd(),
+                session_id=session_id or f"openai-agents-{os.getpid()}",
+                available_tools=guarded or None,
+                agent=agent,
+            )
+        except Exception:
+            pass
     return agent_obj

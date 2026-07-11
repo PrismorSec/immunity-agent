@@ -136,5 +136,25 @@ def prismor_guard_tool(
 
 
 def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
-    """Guard a list of CrewAI tools in one call. Returns the same list."""
-    return [prismor_guard_tool(t, **kwargs) for t in tools]
+    """Guard a list of CrewAI tools in one call. Returns the same list.
+
+    Pass ``goal="..."`` to also capture the agent's intent: the session's
+    intent-scoped rules are synthesized from the goal + these tools' names so
+    ``evaluate_tool_call`` enforces task-alignment for this headless agent (R2/R3).
+    """
+    goal = kwargs.pop("goal", None)
+    guarded = [prismor_guard_tool(t, **kwargs) for t in tools]
+    if goal:
+        try:
+            from prismor.runtime.intent import capture_intent
+            _names = [getattr(t, "name", None) or getattr(t, "__name__", None) for t in tools]
+            capture_intent(
+                goal,
+                workspace=Path(kwargs["workspace"]) if kwargs.get("workspace") else Path.cwd(),
+                session_id=kwargs.get("session_id") or f"crewai-{os.getpid()}",
+                available_tools=[n for n in _names if n] or None,
+                agent=kwargs.get("agent", "crewai"),
+            )
+        except Exception:
+            pass
+    return guarded
