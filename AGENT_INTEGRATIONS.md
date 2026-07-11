@@ -45,7 +45,9 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | CrewAI | framework | sdk | ✅ | `throw` |
 | LangChain / LangGraph | framework | sdk | ✅ | `throw` |
 | browser-use | framework | sdk | ✅ | `throw` |
-| MCP Proxy (any MCP-speaking agent) | framework | mcp | 🟡 | `proxy-deny` |
+| Vercel AI SDK | framework | http | ✅ | `throw` |
+| HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
+| MCP Proxy (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
 
 Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · `mcp` (proxy) · `rules-only` (static guardrails).
 
@@ -171,10 +173,18 @@ telemetry scope to the end-user.
   before execution, `echo` allowed.
 - **Code:** `adapters/crewai/prismor_crewai/__init__.py`.
 
-### MCP proxy — roadmap
+### MCP proxy — shipped
 
 A `surface: mcp` shim in front of downstream MCP servers intercepts `tools/call`
 and evaluates it, covering any MCP-speaking agent with no per-framework code.
+
+- **CLI:** `prismor mcp-proxy --stdio -- <upstream…>` or
+  `prismor mcp-proxy --upstream <url> --port 8080`
+- **Blocking:** MCP `result.isError` (default) or JSON-RPC error (`--jsonrpc-error`)
+- **Code:** `prismor/runtime/mcp_proxy.py`
+
+Wire as the MCP server command so the agent talks to Prismor; Prismor talks to
+the real server. See [CLI reference — mcp-proxy](docs/cli-reference.md#mcp-proxy).
 
 ---
 

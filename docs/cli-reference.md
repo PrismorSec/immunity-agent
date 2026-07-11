@@ -49,6 +49,7 @@ prismor
 │   ├─ semantic-check         Hybrid LLM prompt-injection guard
 │   ├─ sandbox <action>       status · check · run — Docker command sandbox
 │   ├─ eval-server            HTTP evaluation endpoint for non-Python adapters
+│   ├─ mcp-proxy              MCP firewall — intercept tools/call, deny on enforce
 │   └─ policy <action>        init · validate · show · edit · test
 │
 ├─ Visibility (audit & forensics)
@@ -120,6 +121,26 @@ Modes (`observe` vs `enforce`): [Prismor](prismor-runtime.md).
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace` | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
+
+### mcp-proxy
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor mcp-proxy --stdio -- <cmd…>` | `--mode`, `--workspace`, `--subject`, `--session-id` | Spawn an upstream MCP server and bridge stdio. Intercepts `tools/call`, evaluates with the policy engine, returns MCP `isError` (or JSON-RPC error with `--jsonrpc-error`) on deny. Wire as the MCP server command in Claude Code / Cursor / any MCP client. |
+| `prismor mcp-proxy --upstream <url>` | `--port` (default 8080), `--host`, `--mode`, `--workspace` | HTTP reverse proxy: POST JSON-RPC to the listen port; `tools/call` is evaluated before forwarding. |
+
+Example (Claude Code `mcpServers` entry)::
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "prismor",
+      "args": ["mcp-proxy", "--stdio", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}
+```
 
 Full policy model, rule schema, and the default rule list: [Prismor](prismor-runtime.md).
 

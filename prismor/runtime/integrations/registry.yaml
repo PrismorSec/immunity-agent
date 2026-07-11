@@ -278,15 +278,15 @@ agents:
     notes: "Sidecar HTTP server (immunity eval-server --port 7071). POST /v1/evaluate accepts tool name/args/subject/mode, runs full evaluate_tool_call pipeline, returns Decision JSON. Any language with an HTTP client works as adapter. Validated: Node.js, Ruby, Java 21, Rust."
     sources: []
 
-  # ── Universal — MCP proxy (follow-on) ────────────────────────────────────
+  # ── Universal — MCP proxy ────────────────────────────────────────────────
   - id: mcp-proxy
     name: MCP Proxy (any MCP-speaking agent)
     kind: framework
     surface: mcp
-    status: roadmap
+    status: shipped
     config_paths: {}
     events: ["tools/call"]
     blocking: proxy-deny
     normalizer: null
-    notes: "stdio/HTTP shim in front of downstream MCP servers; covers any MCP client."
+    notes: "stdio/HTTP shim (prismor mcp-proxy). Intercepts tools/call, evaluates via evaluate_tool_call, denies with MCP isError (or JSON-RPC error). Pass-through for initialize/tools/list/etc. Usage: prismor mcp-proxy --stdio -- <upstream> or --upstream <url> --port 8080."
     sources: ["https://modelcontextprotocol.io/"]
