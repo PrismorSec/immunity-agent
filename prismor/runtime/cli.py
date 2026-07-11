@@ -167,6 +167,35 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         return
 
+    # ── mcp-proxy: firewall in front of any MCP server ───────────────────
+    if args.command == "mcp-proxy":
+        from prismor.runtime.mcp_proxy import run_mcp_proxy
+        upstream_cmd = list(getattr(args, "upstream_cmd", None) or [])
+        # argparse REMAINDER keeps a leading "--" when the user wrote ` -- cmd`
+        if upstream_cmd and upstream_cmd[0] == "--":
+            upstream_cmd = upstream_cmd[1:]
+        # --stdio alone is a flag that implies command mode; require args after --
+        if getattr(args, "stdio", False) and not upstream_cmd and not getattr(args, "upstream", None):
+            sys.stderr.write(
+                "Usage: prismor mcp-proxy --stdio -- <upstream-command…>\n"
+                "   or: prismor mcp-proxy --upstream <url> [--port 8080]\n"
+            )
+            raise SystemExit(2)
+        raise SystemExit(run_mcp_proxy(
+            upstream_cmd=upstream_cmd or None,
+            upstream_url=getattr(args, "upstream", None) or None,
+            host=getattr(args, "host", "127.0.0.1"),
+            port=int(getattr(args, "port", 8080) or 8080),
+            workspace=workspace,
+            mode=getattr(args, "mode", None) or "enforce",
+            session_id=getattr(args, "session_id", None) or "",
+            subject=getattr(args, "subject", None) or os.environ.get("PRISMOR_SUBJECT"),
+            agent_name=getattr(args, "agent_name", None) or "",
+            persist=not getattr(args, "no_persist", False),
+            as_jsonrpc_error=getattr(args, "jsonrpc_error", False),
+            framing=getattr(args, "framing", None) or "auto",
+        ))
+
     # ── dashboard / serve: local web dashboard (HTTP server) ─────────────
     # `dashboard` starts the server and opens a browser tab. `serve` is the
     # deprecated alias that defaults to headless (no browser).
@@ -1971,6 +2000,58 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--port", type=int, default=7071, help="Port to listen on (default: 7071)")
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
+
+    # ── mcp-proxy: MCP firewall ─────────────────────────────────────────
+    _mp = subparsers.add_parser(
+        "mcp-proxy",
+        help="Proxy in front of an MCP server — intercepts tools/call, denies on enforce",
+        description=(
+            "stdio/HTTP shim in front of a downstream MCP server. Intercepts "
+            "tools/call, evaluates with the Prismor policy engine, and denies "
+            "on enforce. All other JSON-RPC methods pass through.\n\n"
+            "Examples:\n"
+            "  prismor mcp-proxy --stdio -- npx -y @modelcontextprotocol/server-filesystem /tmp\n"
+            "  prismor mcp-proxy --upstream http://127.0.0.1:9000 --port 8080"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _mp.add_argument(
+        "--stdio", action="store_true",
+        help="stdio mode: spawn upstream command after -- and bridge client stdio",
+    )
+    _mp.add_argument(
+        "--upstream", metavar="URL",
+        help="HTTP mode: upstream MCP server URL to forward JSON-RPC POSTs to",
+    )
+    _mp.add_argument("--port", type=int, default=8080, help="HTTP listen port (default: 8080)")
+    _mp.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default: 127.0.0.1)")
+    _mp.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
+    _mp.add_argument(
+        "--mode", choices=["enforce", "observe"], default="enforce",
+        help="enforce blocks denied tools; observe logs only (default: enforce)",
+    )
+    _mp.add_argument("--session-id", default="", help="Session id for the store/dashboard")
+    _mp.add_argument(
+        "--subject", default=None,
+        help="End-user principal (user:alice or user=x;team=y). Also PRISMOR_SUBJECT.",
+    )
+    _mp.add_argument("--agent-name", default="", help="Named agent instance label (kill-switch / IAM)")
+    _mp.add_argument(
+        "--no-persist", action="store_true",
+        help="Do not write events/findings to the local session store",
+    )
+    _mp.add_argument(
+        "--jsonrpc-error", action="store_true",
+        help="On deny, return a JSON-RPC error instead of MCP isError result",
+    )
+    _mp.add_argument(
+        "--framing", choices=["auto", "content-length", "ndjson"], default="auto",
+        help="stdio message framing (default: auto-detect)",
+    )
+    _mp.add_argument(
+        "upstream_cmd", nargs=argparse.REMAINDER,
+        help="Upstream MCP server command after -- (stdio mode)",
+    )
 
     # ── check ──────────────────────────────────────────────────────────
     check_parser = subparsers.add_parser("check", help="Quick pre-check a command or file path")

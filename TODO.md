@@ -6,17 +6,17 @@ Items are ordered by priority. Each has a registry anchor where relevant.
 
 ## High priority
 
-### MCP proxy (`immunity mcp-proxy`)
-Registry: `id: mcp-proxy, status: roadmap`
+### ~~MCP proxy (`prismor mcp-proxy`)~~ — DONE
+Registry: `id: mcp-proxy, status: shipped`
 
-A stdio/HTTP shim in front of downstream MCP servers that intercepts `tools/call`, normalizes to the canonical event shape, calls `evaluate_tool_call`, and denies on enforce. Zero per-framework code — any MCP-speaking agent (Claude Code, Cursor, custom) gets coverage without a hook-config install.
+stdio/HTTP shim in front of downstream MCP servers. Intercepts `tools/call`,
+normalizes to the canonical event shape, calls `evaluate_tool_call`, denies on
+enforce. Zero per-framework code.
 
-Rough sketch:
-- `immunity mcp-proxy --upstream <mcp-server-url>` or `immunity mcp-proxy --stdio`
-- Intercept `tools/call` JSON-RPC method; pass-through everything else
-- Build event from `params.name` + `params.arguments`; call `evaluate_tool_call`
-- On deny: return `{"error": {"code": -32600, "message": "blocked by Prismor"}}` (or MCP `isError` shape)
-- On allow: forward to upstream, return result
+- `prismor mcp-proxy --stdio -- <upstream-command…>`
+- `prismor mcp-proxy --upstream <url> [--port 8080]`
+- Deny: MCP `isError` result (or `--jsonrpc-error` for JSON-RPC error)
+- Module: `prismor/runtime/mcp_proxy.py`
 
 ---
 
