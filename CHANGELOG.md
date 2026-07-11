@@ -1,3 +1,9 @@
+## [1.21.1] — 2026-07-10
+
+### Fixed
+
+- **Framework-adapter namespace shims now refuse to load under a top-level name.** Each `prismor.<framework>` shim (`prismor/openai`, `prismor/crewai`, `prismor/langchain`, `prismor/browser_use`) aliases its implementation into `sys.modules`. That alias now fires only when the shim is imported under its intended dotted name; if the `prismor` package directory ever leaks onto `sys.path` and Python resolves the shim as a bare top-level module (e.g. `openai`), it raises a clear `ImportError` pointing at the sys.path pollution instead of silently replacing the real SDK with the adapter. Defense in depth complementing the sys.path fix (#173).
+
 ## [1.21.0] — 2026-07-10
 
 ### Added
