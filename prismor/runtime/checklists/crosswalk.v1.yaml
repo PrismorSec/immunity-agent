@@ -1,0 +1,99 @@
+# Crosswalk: Prismor rule / subsystem  ->  framework control IDs
+#
+# The single mapping file behind `prismor attest coverage`. Each key is a
+# Prismor policy rule ID (from default_policy.yaml) or a subsystem pseudo-ID
+# (prefixed `subsystem:`) for capabilities that aren't a single rule. Each
+# value lists the "framework:control" pairs that rule/subsystem helps satisfy.
+#
+# A control counts as COVERED when at least one mapped rule is active in the
+# effective policy (subsystem pseudo-IDs are always considered active). This is
+# a coverage claim about what Prismor enforces, not a legal compliance opinion.
+#
+# Fork freely. Add a rule ID, add its control pairs, and it flows into the
+# bundle. Control IDs must exist in the matching checklist pack.
+version: "1"
+map:
+  # ── Prompt injection ────────────────────────────────────────────────
+  prompt-injection:
+    - owasp-llm-top10:LLM01
+    - owasp-agentic-t10:ASI06
+    - nist-ai-rmf:MEASURE-2.6
+  prompt-injection-hidden:
+    - owasp-llm-top10:LLM01
+    - owasp-agentic-t10:ASI06
+  memory-embedded-directive:
+    - owasp-llm-top10:LLM01
+    - owasp-agentic-t10:ASI06
+  model-manipulation:
+    - owasp-llm-top10:LLM05
+    - owasp-agentic-t10:ASI06
+
+  # ── Sensitive information disclosure ────────────────────────────────
+  secret-exfiltration:
+    - owasp-llm-top10:LLM02
+    - nist-ai-rmf:MEASURE-2.7
+  bulk-pii-exfiltration:
+    - owasp-llm-top10:LLM02
+  secret-in-url-params:
+    - owasp-llm-top10:LLM02
+  credential-in-header:
+    - owasp-llm-top10:LLM02
+  secret-access:
+    - owasp-llm-top10:LLM02
+  pii-exposure:
+    - owasp-llm-top10:LLM02
+
+  # ── Supply chain ────────────────────────────────────────────────────
+  pkg-install-from-url:
+    - owasp-llm-top10:LLM03
+    - owasp-agentic-t10:ASI04
+  pkg-suspicious-name:
+    - owasp-llm-top10:LLM03
+    - owasp-agentic-t10:ASI04
+  dependency-confusion:
+    - owasp-llm-top10:LLM03
+    - owasp-agentic-t10:ASI04
+  package-registry-poisoning:
+    - owasp-llm-top10:LLM03
+    - owasp-agentic-t10:ASI04
+  lockfile-direct-edit:
+    - owasp-llm-top10:LLM03
+
+  # ── Excessive agency / tool misuse / privilege ──────────────────────
+  destructive-command:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+    - nist-ai-rmf:MEASURE-2.6
+  remote-execution:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+  privilege-escalation:
+    - owasp-agentic-t10:T03
+    - nist-ai-rmf:MEASURE-2.7
+    - eu-ai-act:ART15
+  container-escape:
+    - owasp-agentic-t10:T03
+    - eu-ai-act:ART15
+  disable-security-controls:
+    - owasp-agentic-t10:T03
+    - eu-ai-act:ART15
+  agent-config-tampering:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T03
+
+  # ── Resource / unbounded consumption ────────────────────────────────
+  dos-resource-exhaustion:
+    - owasp-llm-top10:LLM10
+    - owasp-agentic-t10:T04
+
+  # ── Subsystems (not a single rule) ──────────────────────────────────
+  # The signed audit trail satisfies the record-keeping / monitoring
+  # obligations across frameworks.
+  subsystem:audit-trail:
+    - nist-ai-rmf:MANAGE-4.1
+    - nist-ai-rmf:GOVERN-1.4
+    - eu-ai-act:ART12
+  # Step-up (human approval) is the human-oversight control.
+  subsystem:step-up-approval:
+    - nist-ai-rmf:MANAGE-2.1
+    - eu-ai-act:ART14

@@ -9,6 +9,7 @@ with one command and no access to the machine:
       "generated_at", "device_id", "prismor_version",
       "agents":         [ {name, framework, enabled, mode, last_seen} ],   # what runs here
       "audit_findings": [ {severity, category, message} ],                 # posture (run_audit)
+      "framework_coverage": { frameworks[], summary },                     # control coverage
       "trail_checkpoint": { seq, hash, ... },                             # signed audit-trail anchor
       "content_hash":   sha256 over the JCS-canonical bundle body,
       "signature", "signing_alg", "signing_pubkey", "signing_key_id"       # Ed25519 (receipt_signing)
@@ -106,6 +107,13 @@ def build_bundle(workspace: Path, repo_root: Optional[Path] = None) -> Dict[str,
     except Exception:
         pass
 
+    coverage: Optional[Dict[str, Any]] = None
+    try:
+        from prismor.runtime.enterprise import compliance as _compliance
+        coverage = _compliance.coverage(workspace)
+    except Exception:
+        pass
+
     bundle: Dict[str, Any] = {
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -113,6 +121,7 @@ def build_bundle(workspace: Path, repo_root: Optional[Path] = None) -> Dict[str,
         "prismor_version": _prismor_version(),
         "agents": agents,
         "audit_findings": findings,
+        "framework_coverage": coverage,
         "trail_checkpoint": checkpoint,
     }
     bundle["content_hash"] = _content_hash(

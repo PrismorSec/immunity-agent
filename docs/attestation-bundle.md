@@ -32,6 +32,7 @@ Without it the bundle is still assembled and hashed, just unsigned.
 | `device_id`, `prismor_version` | which machine and which Prismor built it |
 | `agents` | the governed-agent inventory |
 | `audit_findings` | posture findings from `prismor audit` |
+| `framework_coverage` | which compliance-framework controls the active policy covers |
 | `trail_checkpoint` | signed audit-trail head (`seq`, `hash`) |
 | `content_hash` | SHA-256 over the JCS-canonical bundle body |
 | `signature`, `signing_pubkey`, `signing_key_id` | the Ed25519 signature |
@@ -49,11 +50,41 @@ prismor attest --out evidence.json    # write it to a file
 prismor attest verify evidence.json   # re-check hash + signature
 prismor attest verify evidence.json --pubkey B64   # pin an out-of-band signer key
 prismor attest verify evidence.json --json         # machine-readable report
+prismor attest coverage               # framework-control coverage of active policy
 ```
 
 Building a bundle is read-only. It runs the audit, reads the inventory, grabs
 the current trail head, and signs the result. Nothing on disk changes except the
 file you asked for with `--out`.
+
+## Framework coverage
+
+`prismor attest coverage` shows which compliance-framework controls the active
+policy covers, and the same data rides inside every bundle under
+`framework_coverage`:
+
+```
+  PRISMOR  framework coverage  (19/19 controls across 4 frameworks)
+
+  OWASP Top 10 for LLM Applications  6/6
+    ✓ LLM01          Prompt Injection  (prompt-injection, prompt-injection-hidden)
+    ✓ LLM02          Sensitive Information Disclosure  (secret-exfiltration, ...)
+    ...
+```
+
+A control counts as covered when at least one policy rule mapped to it is
+active. Disable the last rule behind a control and it flips to uncovered, so
+the report tracks your real posture rather than a static claim. The mapping
+lives in plain YAML under `prismor/runtime/checklists/`: one pack per framework
+(control IDs and titles) plus `crosswalk.v1.yaml` tying Prismor rule IDs to
+control IDs. Fork a pack, add a rule to the crosswalk, and it flows into the
+next bundle.
+
+Four frameworks ship today: OWASP Top 10 for LLM Applications, OWASP Agentic AI
+Threats, NIST AI RMF, and the EU AI Act high-risk obligations. Coverage is a
+statement about what Prismor enforces at the tool boundary. It is not a legal
+compliance opinion, and Prismor is one control among the many a full program
+needs.
 
 ## Handing a bundle to an auditor
 
@@ -101,12 +132,15 @@ prismor attest verify q3-evidence.json --pubkey <your-device-pubkey>
 Now a bundle signed by any other key is rejected, even if its own hash and
 signature are internally consistent.
 
-## What this is not (yet)
+## What this is and isn't
 
-The bundle proves *what Prismor was enforcing* and *which agents it saw*, signed
-and re-verifiable. Mapping those controls onto named compliance frameworks
-(NIST AI RMF, ISO/IEC 42001, EU AI Act, and the rest) is the next step, not
-today's. That work is per-framework checklist packs plus a crosswalk from
-Prismor rules to framework controls, rolled into this same bundle. For now,
-read the bundle as signed evidence of runtime posture. It's not yet a
-framework-by-framework compliance report.
+The bundle is signed, re-verifiable evidence of *what Prismor was enforcing*,
+*which agents it saw*, and *which framework controls that enforcement covers*.
+An auditor can trust the file came from your device and hasn't been touched.
+
+Read the coverage as a map of Prismor's runtime controls onto framework
+language, not as a certification. A full NIST AI RMF or EU AI Act program has
+obligations Prismor never touches: data governance, model documentation, human
+oversight processes, legal review. Prismor attests to the slice it enforces at
+the tool boundary. Wider framework packs (ISO/IEC 42001, HIPAA-for-AI) and
+per-control evidence links are the next additions to the crosswalk.

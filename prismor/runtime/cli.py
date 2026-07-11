@@ -2064,6 +2064,9 @@ def build_parser() -> argparse.ArgumentParser:
     attest_verify.add_argument(
         "--pubkey", help="Pin verification to this base64 raw Ed25519 public key")
     attest_verify.add_argument("--json", action="store_true", help="Machine-readable report")
+    attest_coverage = attest_sub.add_parser(
+        "coverage", help="Show framework-control coverage of the active policy")
+    attest_coverage.add_argument("--json", action="store_true", help="Machine-readable report")
 
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
@@ -2807,6 +2810,27 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
     from prismor.runtime.enterprise import attestation as _attest
 
     sub = getattr(args, "attest_command", None)
+
+    if sub == "coverage":
+        from prismor.runtime.enterprise import compliance as _compliance
+        cov = _compliance.coverage(workspace)
+        if getattr(args, "json", False):
+            print(json.dumps(cov, indent=2))
+            return
+        s = cov["summary"]
+        print(f"\n  {_color('PRISMOR', _BOLD)}  framework coverage  "
+              f"({s['controls_covered']}/{s['controls_total']} controls across "
+              f"{s['frameworks']} frameworks)\n")
+        for fw in cov["frameworks"]:
+            print(f"  {_color(fw['title'], _BOLD)}  {fw['covered']}/{fw['total']}")
+            for c in fw["controls"]:
+                mark = "✓" if c["covered"] else "·"
+                by = f"  ({', '.join(c['by'])})" if c["covered"] else ""
+                print(f"    {mark} {c['id']:<14} {str(c['title'])[:48]}{by}")
+            print()
+        print("  Coverage = a rule mapping this control is active. Evidence of what")
+        print("  Prismor enforces, not a legal compliance opinion.\n")
+        return
 
     if sub == "verify":
         try:

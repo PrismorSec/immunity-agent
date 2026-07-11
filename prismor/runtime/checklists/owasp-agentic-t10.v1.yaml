@@ -1,0 +1,20 @@
+# OWASP Agentic AI Threats and Mitigations (Agentic Top 10)
+# https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/
+#
+# Agent-specific threats Prismor's runtime guards against. IDs follow the
+# OWASP Agentic threat (Txx) / ASIxx numbering the policy comments already
+# reference.
+framework: owasp-agentic-t10
+title: OWASP Agentic AI Threats and Mitigations
+version: "1.0"
+controls:
+  - id: T02
+    title: Tool Misuse
+  - id: T03
+    title: Privilege Compromise
+  - id: T04
+    title: Resource Overload
+  - id: ASI04
+    title: Supply Chain and Dependency Attacks
+  - id: ASI06
+    title: Intent Breaking and Goal Manipulation

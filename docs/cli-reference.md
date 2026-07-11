@@ -58,7 +58,7 @@ prismor
 │   ├─ analyze / ingest       Run the engine over a JSONL session
 │   ├─ sessions / session     List / show stored sessions
 │   ├─ trail <action>         verify · show · checkpoint — signed audit trail
-│   ├─ attest [verify]        Signed evidence bundle for auditors
+│   ├─ attest [verify|coverage]  Signed evidence bundle + framework coverage
 │   ├─ status --all           Terminal overview of all workspaces
 │   └─ dashboard              Local web dashboard (127.0.0.1:7070, opens browser)
 │
@@ -143,6 +143,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor trail checkpoint` | `--out FILE` | Export a signed chain-head checkpoint for anchoring outside the machine. |
 | `prismor attest` | `--out FILE`, `--workspace` | Build a signed evidence bundle: posture findings, agent inventory, and the trail anchor in one Ed25519-signed file. See [Attestation Bundle](attestation-bundle.md). |
 | `prismor attest verify <bundle>` | `--pubkey`, `--json` | Re-verify a bundle's content hash and signature. `--pubkey` pins an out-of-band signer key. Exit non-zero on failure. |
+| `prismor attest coverage` | `--json`, `--workspace` | Show which compliance-framework controls the active policy covers (OWASP LLM/Agentic, NIST AI RMF, EU AI Act). |
 | `prismor status --all` | `--days N` | Terminal overview of every registered workspace. See [Dashboard](dashboard.md). |
 | `prismor dashboard` | `--port`, `--host`, `--no-open` | Local web dashboard at `http://127.0.0.1:7070` (opens a browser tab). See [Dashboard](dashboard.md). |
 | `prismor serve` | `--port`, `--host`, `--no-open` | _Deprecated_ alias of `dashboard --no-open` (headless server only). |

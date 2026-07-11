@@ -1,0 +1,23 @@
+# OWASP Top 10 for LLM Applications (2025)
+# https://genai.owasp.org/llm-top-10/
+#
+# Controls Prismor's runtime can attest to. This pack lists the OWASP LLM
+# risks that Prismor's policy engine actively guards against at the tool
+# boundary. Fork and edit; the crosswalk (crosswalk.v1.yaml) maps Prismor
+# rule IDs onto these control IDs.
+framework: owasp-llm-top10
+title: OWASP Top 10 for LLM Applications
+version: "2025"
+controls:
+  - id: LLM01
+    title: Prompt Injection
+  - id: LLM02
+    title: Sensitive Information Disclosure
+  - id: LLM03
+    title: Supply Chain
+  - id: LLM05
+    title: Improper Output Handling
+  - id: LLM06
+    title: Excessive Agency
+  - id: LLM10
+    title: Unbounded Consumption

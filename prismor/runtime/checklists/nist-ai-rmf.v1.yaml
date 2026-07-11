@@ -1,0 +1,20 @@
+# NIST AI Risk Management Framework 1.0 (+ Generative AI Profile)
+# https://www.nist.gov/itl/ai-risk-management-framework
+#
+# The MANAGE and MEASURE subcategories a runtime guardrail contributes to.
+# Prismor is one control among many a full RMF program needs; this pack scopes
+# to the subcategories Prismor's enforcement + audit trail genuinely support.
+framework: nist-ai-rmf
+title: NIST AI Risk Management Framework
+version: "1.0"
+controls:
+  - id: MANAGE-2.1
+    title: Resources to enact AI risk responses are documented and applied
+  - id: MANAGE-4.1
+    title: Post-deployment monitoring and incident response are in place
+  - id: MEASURE-2.6
+    title: AI system is evaluated for safety risks and unsafe behavior is prevented
+  - id: MEASURE-2.7
+    title: Security and resilience are evaluated and documented
+  - id: GOVERN-1.4
+    title: Risk management is continuously monitored with an audit trail

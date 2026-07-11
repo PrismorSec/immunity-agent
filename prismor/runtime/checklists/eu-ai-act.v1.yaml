@@ -1,0 +1,16 @@
+# EU AI Act high-risk system obligations (Regulation 2024/1689)
+# https://eur-lex.europa.eu/eli/reg/2024/1689/oj
+#
+# The Articles a runtime guardrail with a signed audit trail contributes to.
+# Prismor covers the technical enforcement + record-keeping surface; legal,
+# data-governance, and human-oversight obligations sit outside it.
+framework: eu-ai-act
+title: EU AI Act (high-risk obligations)
+version: "2024/1689"
+controls:
+  - id: ART12
+    title: "Record-keeping: automatic logging of events over the system's lifetime"
+  - id: ART14
+    title: "Human oversight: measures enabling humans to intervene or halt"
+  - id: ART15
+    title: Accuracy, robustness and cybersecurity
