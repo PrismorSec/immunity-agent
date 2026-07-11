@@ -1385,5 +1385,84 @@ class TestT15FollowupGaps(unittest.TestCase):
             self.assertIn("persistence-systemd", self._ids(c), msg=c)
 
 
+class TestAuditTrailTampering(unittest.TestCase):
+    """The signed audit trail (~/.prismor/audit/) and its Ed25519 signing key
+    must be protected from the agent by the policy engine itself."""
+
+    def setUp(self):
+        self.engine = PolicyEngine()
+
+    def _ids(self, command):
+        return [f.get("ruleId") for f in self.engine.check_command(command)]
+
+    def test_trail_writes_and_deletes_blocked(self):
+        for c in (
+            "rm -rf ~/.prismor/audit",
+            "rm ~/.prismor/audit/trail.jsonl",
+            "echo '{}' > ~/.prismor/audit/chain.json",
+            "truncate -s 0 /Users/dev/.prismor/audit/trail.jsonl",
+            "sed -i '' '3d' ~/.prismor/audit/trail.jsonl",
+        ):
+            findings = self.engine.check_command(c)
+            match = [f for f in findings if f.get("ruleId") == "audit-trail-tampering"]
+            self.assertTrue(match, msg=c)
+            self.assertEqual(match[0]["severity"], "CRITICAL", msg=c)
+            self.assertEqual(match[0]["action"], "block", msg=c)
+
+    def test_signing_key_reads_blocked(self):
+        for c in (
+            "cat ~/.prismor/receipt_signing_key.pem",
+            "base64 ~/.prismor/receipt_signing_key.pem",
+            "cp ~/.prismor/receipt_signing_key.pem /tmp/k.pem",
+            "openssl pkey -in /Users/dev/.prismor/receipt_signing_key.pem -text",
+        ):
+            self.assertIn("audit-trail-tampering", self._ids(c), msg=c)
+
+    def test_telemetry_chain_writes_blocked(self):
+        for c in (
+            "rm ~/.prismor/telemetry_chain.json",
+            "echo '{\"seq\":0}' > ~/.prismor/telemetry_chain.json",
+        ):
+            self.assertIn("audit-trail-tampering", self._ids(c), msg=c)
+
+    def test_file_write_events_blocked(self):
+        for path in (
+            "/Users/dev/.prismor/audit/trail.jsonl",
+            "/Users/dev/.prismor/receipt_signing_key.pem",
+            "/Users/dev/.prismor/telemetry_chain.json",
+        ):
+            findings = self.engine.check_path(path, event_type="file_write")
+            self.assertIn("audit-trail-tampering",
+                          [f.get("ruleId") for f in findings], msg=path)
+
+    def test_benign_commands_not_flagged(self):
+        for c in (
+            "prismor trail verify",
+            "prismor trail show --last 50",
+            "git add prismor/runtime/enterprise/audit_trail.py",
+            "pytest tests/test_audit_trail.py",
+            "ls ~/.prismor",
+        ):
+            self.assertNotIn("audit-trail-tampering", self._ids(c), msg=c)
+
+    def test_rule_is_non_overridable(self):
+        from prismor.runtime.policy_engine import _NON_OVERRIDABLE_RULE_IDS
+        self.assertIn("audit-trail-tampering", _NON_OVERRIDABLE_RULE_IDS)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_dir = Path(tmpdir) / ".prismor"
+            policy_dir.mkdir()
+            (policy_dir / "policy.yaml").write_text(
+                'version: "1.0"\n'
+                "rules:\n"
+                "  - id: audit-trail-tampering\n"
+                "    enabled: false\n",
+                encoding="utf-8",
+            )
+            engine = PolicyEngine(workspace=Path(tmpdir))
+            findings = engine.check_command("rm -rf ~/.prismor/audit")
+            self.assertIn("audit-trail-tampering",
+                          [f.get("ruleId") for f in findings])
+
+
 if __name__ == "__main__":
     unittest.main()

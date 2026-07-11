@@ -270,6 +270,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         _run_doctor(workspace, as_json=bool(getattr(args, "json", False)))
         return
 
+    if args.command == "trail":
+        _run_trail(args)
+        return
+
     if args.command == "logout":
         from prismor.runtime.enterprise import identity as _identity, remote_policy as _remote
         had = _identity.clear_identity()
@@ -2022,6 +2026,25 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--fix", action="store_true", help="Auto-remediate fixable issues")
     audit_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
+    # ── trail ──────────────────────────────────────────────────────────
+    trail_parser = subparsers.add_parser(
+        "trail",
+        help="Tamper-evident signed audit trail of agent actions",
+        description="Verify, inspect, or checkpoint the hash-chained, "
+                    "Ed25519-signed audit trail at ~/.prismor/audit/",
+    )
+    trail_sub = trail_parser.add_subparsers(dest="trail_command")
+    trail_verify = trail_sub.add_parser(
+        "verify", help="Re-walk the trail: hashes, linkage, seq, signatures")
+    trail_verify.add_argument(
+        "--pubkey", help="Pin verification to this base64 raw Ed25519 public key")
+    trail_verify.add_argument("--json", action="store_true", help="Machine-readable report")
+    trail_show = trail_sub.add_parser("show", help="Render recent trail records")
+    trail_show.add_argument("--last", type=int, default=20, help="Number of records (default 20)")
+    trail_checkpoint = trail_sub.add_parser(
+        "checkpoint", help="Emit a signed chain-head checkpoint for external anchoring")
+    trail_checkpoint.add_argument("--out", help="Write the checkpoint JSON to FILE (default stdout)")
+
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
         "sandbox",
@@ -2675,6 +2698,87 @@ def _print_status(session: Dict[str, Any]) -> None:
         print(f"  {_color(f'[{sev}]', color)} {finding['title']} ({finding['category']})")
         if finding.get("evidence"):
             print(f"         {finding['evidence']}")
+
+
+def _run_trail(args) -> None:
+    """`prismor trail` — the signed, hash-chained audit trail of agent actions.
+
+    `verify` re-walks trail.jsonl (hashes, linkage, seq, signatures) and exits
+    non-zero on anything but a clean chain; `show` renders recent records;
+    `checkpoint` emits a signed chain head for anchoring outside this machine.
+    """
+    from prismor.runtime.enterprise import audit_trail as _audit
+
+    sub = getattr(args, "trail_command", None)
+
+    if sub == "verify":
+        report = _audit.verify_trail(pubkey_b64=getattr(args, "pubkey", None))
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2))
+            raise SystemExit(0 if report["ok"] else 1)
+        glyph = {"ok": "✓", "empty": "✓", "gaps": "⚠", "tampered": "✗"}.get(report["status"], "?")
+        print(
+            f"{glyph} audit trail {report['status']} — {report['records']} records "
+            f"({report['signed']} signed, {report['unsigned']} unsigned)"
+        )
+        if report.get("pinned_key_id"):
+            print(f"  verified against key id {report['pinned_key_id']}")
+        for lo, hi in report["gaps"]:
+            span = f"record {lo}" if lo == hi else f"records {lo}–{hi}"
+            print(f"  ⚠ gap: {span} missing — crash and deletion look identical locally; "
+                  f"compare an anchored checkpoint to tell them apart")
+        for err in report["errors"]:
+            where = f"seq {err['seq']}" if err.get("seq") is not None else f"line {err.get('line')}"
+            print(f"  ✗ {err['kind']} at {where}: {err['detail']}")
+        for seq in report["sig_failures"]:
+            print(f"  ✗ invalid signature at seq {seq}")
+        for fk, count in (report.get("foreign_keys") or {}).items():
+            print(f"  ✗ {count} record(s) signed by foreign key {fk} — "
+                  f"history may have been rewritten and re-signed")
+        raise SystemExit(0 if report["ok"] else 1)
+
+    if sub == "show":
+        path = _audit.trail_path()
+        if not path.exists():
+            print("No audit trail yet — records appear as agents make tool calls.")
+            return
+        last = max(1, int(getattr(args, "last", 20) or 20))
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines[-last:]:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                print("  <unparseable line>")
+                continue
+            verdict = str(r.get("verdict") or r.get("status") or "?")
+            glyph = {"allowed": "·", "warned": "⚠", "blocked": "✗",
+                     "step_up": "?", "approved": "✓", "denied": "✗"}.get(verdict, "·")
+            ts = str(r.get("ts") or "")[:19]
+            who = str(r.get("agent_name") or r.get("agent") or "-")
+            tool = str(r.get("tool_name") or r.get("event_type") or "-")
+            detail = str(r.get("input_summary") or r.get("reason") or "").replace("\n", " ")
+            print(f"  [{str(r.get('seq', '?')):>5}] {ts} {glyph} {verdict:<9} "
+                  f"{who:<12} {tool:<20} {detail[:70]}")
+        return
+
+    if sub == "checkpoint":
+        cp = _audit.checkpoint()
+        text = json.dumps(cp, indent=2)
+        out = getattr(args, "out", None)
+        if out:
+            Path(out).write_text(text + "\n", encoding="utf-8")
+            print(f"Checkpoint at seq {cp['seq']} written to {out}")
+        else:
+            print(text)
+        if not cp.get("signature"):
+            sys.stderr.write(
+                "[prismor] warning: checkpoint is unsigned — install `prismor[signing]` "
+                "for Ed25519 signatures\n"
+            )
+        return
+
+    print("Usage: prismor trail {verify|show|checkpoint}")
+    raise SystemExit(2)
 
 
 def _run_doctor(workspace: Path, as_json: bool = False) -> None:

@@ -106,6 +106,36 @@ def _get_status(ident: Dict[str, Any], approval_id: str, timeout: float) -> Opti
         return None
 
 
+def _audit_outcome(
+    body: Dict[str, Any],
+    *,
+    status: str,
+    approval_id: Optional[str],
+    agent: str,
+    session_id: str,
+) -> None:
+    """Record the human-approval outcome on the signed audit trail.
+
+    Best-effort: the approval decision itself is already final; the trail
+    write must never change it or raise into the tool path."""
+    try:
+        from prismor.runtime.enterprise import audit_trail as _audit
+        if _audit.enabled():
+            _audit.append_approval_record(
+                status=status,
+                approval_id=approval_id,
+                tool=str(body.get("tool") or ""),
+                rule_id=body.get("rule_id"),
+                severity=body.get("severity"),
+                reason=str(body.get("reason") or ""),
+                fingerprint=str(body.get("fingerprint") or ""),
+                agent=agent,
+                session_id=session_id,
+            )
+    except Exception:
+        pass
+
+
 def await_step_up(
     decision: Any,
     *,
@@ -118,6 +148,8 @@ def await_step_up(
     Returns True only on an explicit ``approved``. Not enrolled, denied, expired,
     timeout, or any error → False (the caller must fail closed). Safe to call for
     any decision — a no-op returning False when the verdict is not STEP_UP.
+    Every resolved request (approved/denied/expired/timeout/request_failed) is
+    recorded on the signed audit trail.
     """
     finding = step_up_finding(decision)
     if finding is None:
@@ -136,12 +168,21 @@ def await_step_up(
         "session_id": session_id or None,
         "agent": agent or None,
     }
+
+    def _record(status: str, approval_id: Optional[str] = None) -> None:
+        _audit_outcome(
+            body, status=status, approval_id=approval_id,
+            agent=agent, session_id=session_id,
+        )
+
     poll_timeout = min(10.0, _poll_interval() + 5.0)
     created = _post_request(ident, body, timeout=poll_timeout)
     if not created or not created.get("id"):
+        _record("request_failed")
         return False
     approval_id = str(created["id"])
     if str(created.get("status") or "").lower() == _APPROVED:
+        _record("approved", approval_id)
         return True
 
     deadline = _monotonic() + _timeout()
@@ -150,9 +191,12 @@ def await_step_up(
         time.sleep(interval)
         status = _get_status(ident, approval_id, timeout=poll_timeout)
         if status == _APPROVED:
+            _record("approved", approval_id)
             return True
         if status in _DECIDED:  # denied / expired
+            _record(status, approval_id)
             return False
+    _record("timeout", approval_id)
     return False  # timed out → fail closed
 
 

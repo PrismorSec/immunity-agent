@@ -14,6 +14,7 @@ a JSON permission object, or a raised exception).
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -381,6 +382,45 @@ def evaluate_tool_call(
     if blocking is not None and mode == "observe":
         if blocking.get("category") != "agent-control":
             blocking = None
+
+    # Tamper-evident signed audit trail: one chained + signed record per
+    # evaluated call — every verdict, not just findings — so the local trail
+    # is complete (see enterprise/audit_trail.py). Best-effort by default (a
+    # skipped record is a detectable seq gap); PRISMOR_AUDIT_STRICT=1 fails
+    # the action closed when the record cannot be written.
+    try:
+        from prismor.runtime.enterprise import audit_trail as _audit
+        if _audit.enabled():
+            _audit.append_action_record(
+                event=event,
+                findings=findings,
+                blocking=blocking,
+                workspace=workspace,
+                agent=agent,
+                agent_name=_agent_name,
+                session_id=session_id,
+                subject=subject.as_dict(),
+                mode=mode,
+                eval_ms=_eval_ms,
+            )
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] audit trail error: {exc}\n")
+        if os.environ.get("PRISMOR_AUDIT_STRICT", "").lower() in ("1", "true", "yes", "on"):
+            blocking = {
+                "action": "block",
+                "severity": "critical",
+                "category": "agent-control",
+                "ruleId": "audit-trail-strict",
+                "title": "Audit trail write failed — action blocked (PRISMOR_AUDIT_STRICT=1)",
+            }
+            return Decision(
+                allow=False,
+                findings=findings,
+                blocking=blocking,
+                reason=_block_reason(blocking),
+                subject=subject,
+                engine=engine,
+            )
 
     return Decision(
         allow=blocking is None,

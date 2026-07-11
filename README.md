@@ -78,6 +78,7 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
 - 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
 - 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
+- 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
 - 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
 
 Full command map across every capability: [CLI Reference](docs/cli-reference.md).

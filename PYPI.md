@@ -14,6 +14,7 @@ AI coding agents execute shell commands, read files, call APIs, and install pack
 - **Intercept package installs** and score them for supply-chain risk before they touch your disk
 - **Prevent secrets from reaching the model** — register a secret under a placeholder name; Prismor resolves it locally through supported hooks or `prismor cloak run`
 - **Log every tool call** to a local SQLite store for session review and auditing
+- **Keep a tamper-evident audit trail** where every action is hash-chained and Ed25519-signed, so `prismor trail verify` catches edited, deleted, or rewritten history
 
 Supports Claude Code, Cursor, Windsurf, and more.
 

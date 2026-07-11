@@ -57,6 +57,7 @@ prismor
 │   ├─ deps                   Check project deps vs. threat feed
 │   ├─ analyze / ingest       Run the engine over a JSONL session
 │   ├─ sessions / session     List / show stored sessions
+│   ├─ trail <action>         verify · show · checkpoint — signed audit trail
 │   ├─ status --all           Terminal overview of all workspaces
 │   └─ dashboard              Local web dashboard (127.0.0.1:7070, opens browser)
 │
@@ -136,6 +137,9 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a session and store it in the local DB. |
 | `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json` | List stored sessions, optionally only flagged ones, optionally across all workspaces. |
 | `prismor session <id>` | `--json` | Drill into one session's tool-call trace + findings. |
+| `prismor trail verify` | `--pubkey`, `--json` | Verify the signed audit trail end-to-end: recompute hashes, prev-hash linkage, seq gaps, Ed25519 signatures. Exit non-zero on anything but a clean chain. See [Signed Audit Trail](audit-trail.md). |
+| `prismor trail show` | `--last N` | Render recent audit-trail records (verdict, agent, tool, input). |
+| `prismor trail checkpoint` | `--out FILE` | Export a signed chain-head checkpoint for anchoring outside the machine. |
 | `prismor status --all` | `--days N` | Terminal overview of every registered workspace. See [Dashboard](dashboard.md). |
 | `prismor dashboard` | `--port`, `--host`, `--no-open` | Local web dashboard at `http://127.0.0.1:7070` (opens a browser tab). See [Dashboard](dashboard.md). |
 | `prismor serve` | `--port`, `--host`, `--no-open` | _Deprecated_ alias of `dashboard --no-open` (headless server only). |

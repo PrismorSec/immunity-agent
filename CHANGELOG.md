@@ -1,3 +1,11 @@
+## [1.22.0] — 2026-07-11
+
+### Added
+
+- **Tamper-evident, Ed25519-signed audit trail of every agent action.** The session store records tool calls as mutable SQLite/JSONL; the telemetry chain + receipt signatures covered only cloud-uploaded findings. Now every evaluated call — allowed, warned, blocked, or step-up — appends a hash-chained, Ed25519-signed record to `~/.prismor/audit/trail.jsonl`, capturing timestamp, device/agent/human identity + versions, secret-scrubbed inputs (`input_summary`, `evidence_hash`), the agent's stated intent, and the policy decision in human-readable terms (`verdict`, `rules`, `reason`). Human-approval outcomes from the headless step-up path are first-class `approval` records. Unlike the telemetry chain, `ts` and all fields are inside the hash (verification is local — no server round-trip constraint). New module `prismor/runtime/enterprise/audit_trail.py`, wired at the single chokepoint in `runtime.evaluate_tool_call`. Best-effort by default (a failed append is a verifiable seq gap); `PRISMOR_AUDIT_STRICT=1` fails the action closed, `PRISMOR_AUDIT_TRAIL=0` disables. Signing requires the `prismor[signing]` extra; without it records are chained but unsigned. Docs: `docs/audit-trail.md`; coverage in `tests/test_audit_trail.py`.
+- **`prismor trail` CLI.** `verify` re-walks the chain (hashes, prev-hash linkage, seq monotonicity, signatures pinned to the device key — reporting `ok` / `gaps` / `tampered`, exit non-zero otherwise), `show` renders recent records, and `checkpoint` emits a signed chain head for anchoring outside the machine — which is what makes a trail+state rewind provable.
+- **`audit-trail-tampering` policy rule (CRITICAL, non-overridable).** Blocks agent commands and file writes touching `~/.prismor/audit/`, `receipt_signing_key.pem`, or `telemetry_chain.json`. Added to the `_NON_OVERRIDABLE_RULE_IDS` floor so no project or remote override can disable it — the trail is evidence, and an agent must not be able to erase its own history.
+
 ## [1.21.1] — 2026-07-10
 
 ### Fixed

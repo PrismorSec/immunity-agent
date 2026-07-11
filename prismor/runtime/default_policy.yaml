@@ -769,6 +769,27 @@ rules:
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
     action: block
 
+  # ── CRITICAL: Audit-trail tampering ────────────────────────────────
+  # The signed audit trail (~/.prismor/audit/) is only trustworthy if the
+  # agent cannot rewrite it, reset its chain state, or read the Ed25519
+  # signing key and re-sign a forged history. Non-overridable (see
+  # _NON_OVERRIDABLE_RULE_IDS in policy_engine.py). Reads of the trail
+  # itself go through `prismor trail show` / `prismor trail verify`.
+  - id: audit-trail-tampering
+    severity: CRITICAL
+    category: security_bypass
+    title: Blocks tampering with the signed audit trail and its signing key
+    event_types: [shell, file_write]
+    fields: [command, path]
+    # Any mention of these paths in a command is blocked — there is no
+    # legitimate agent operation on them (prismor's own writes don't go
+    # through hook dispatch).
+    patterns:
+      - '\.prismor/audit\b'
+      - 'receipt_signing_key\.pem\b'
+      - 'telemetry_chain\.json\b'
+    action: block
+
   # ── HIGH: Agent instruction-file tampering ────────────────────────
   # Rewriting CLAUDE.md / .cursorrules / AGENTS.md silently redirects
   # every future session. Lower severity than hook-config tampering

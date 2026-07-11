@@ -44,6 +44,9 @@ _NON_OVERRIDABLE_RULE_IDS = frozenset({
     "rce-canary",
     "privilege-escalation",
     "dos-resource-exhaustion",
+    # The signed audit trail is evidence — a policy override that disables
+    # this rule would let an agent erase its own history undetected.
+    "audit-trail-tampering",
 })
 
 # Categories that must stay in settings.block_categories no matter what an
