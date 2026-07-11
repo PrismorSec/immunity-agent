@@ -1,49 +1,72 @@
-<h1 align="center">Prismor</h1>
+# Prismor
 
-<p align="center"><sub>formerly <strong>Immunity Agent</strong></sub></p>
+> Runtime security hooks for AI coding agents.
 
-<h3 align="center">Runtime security hooks for Claude Code, Cursor, and other AI coding agents.<br>Blocks dangerous commands, prevents secret leaks, and stops prompt injection in real time.</h3>
+Blocks dangerous commands, prevents secret leaks, and stops prompt injection in real time before anything risky executes.
 
-<p align="center">
+<p>
   <a href="https://pypi.org/project/prismor/"><img src="https://img.shields.io/pypi/v/prismor" alt="PyPI"/></a>
   <a href="https://github.com/PrismorSec/prismor/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
   <a href="https://github.com/PrismorSec/prismor"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
   <a href="https://x.com/prismor_dev"><img src="https://img.shields.io/badge/@prismor__dev-black?logo=x&logoColor=white" alt="X" /></a>
-  <a href="https://deepwiki.com/PrismorSec/prismor"><img src="https://img.shields.io/badge/DeepWiki-prismor-blue?logo=bookstack&logoColor=white" alt="DeepWiki" /></a>
   <a href="https://discord.gg/FH2PRX754c"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
-<h3 align="center">
-  <a href="https://prismor.dev"><b>Website</b></a> &bull;
-  <a href="SKILL.md"><b>Onboard with Skill</b></a> &bull;
-  <a href="docs/cli-reference.md"><b>CLI Reference</b></a> &bull;
-  <a href="docs/supply-chain.md"><b>Supply Chain</b></a> &bull;
-  <a href="docs/sweep-and-cloak.md"><b>Sweep & Cloak</b></a>
-</h3>
-
-<p align="center">
-  <img src="assets/warden-runtime-monitor.gif" width="90%" alt="Prismor Warden runtime monitor"/>
-</p>
+[Website](https://prismor.dev) · [Quickstart](#quickstart) · [CLI Reference](docs/cli-reference.md) · [Docs](https://docs.prismor.dev) · [Discord](https://discord.gg/FH2PRX754c) · [Roadmap](https://github.com/PrismorSec/prismor/issues)
 
 ---
 
-## Table of Contents
+## ⚡ What is Prismor?
 
-- [The Problem](#the-problem)
-- [Capabilities](#capabilities)
-- [Quick Start](#quick-start)
-- [Disabling Prismor](#disabling-prismor)
-- [Benchmarks](#benchmarks)
-- [Hybrid Semantic Prompt-Injection Defense](#hybrid-semantic-prompt-injection-defense)
-- [Self-Hosted Dashboard](#self-hosted-dashboard)
-- [How It Works](#how-it-works)
-- [Supply Chain Enforcement](#supply-chain-enforcement)
-- [Contributing](#contributing)
-- [Contributors](#contributors)
+Prismor is a runtime security control plane for AI coding agents like Claude Code, Cursor, Codex, and others. It intercepts tool calls, enforces your policies, and gives you a complete audit trail without slowing developers down.
 
 ---
 
-## The Problem<a name="the-problem" />
+## ⚙️ How it works
+
+| 💻 1. Agent acts | → | 🔷 2. Prismor evaluates | → | 🛡️ 3. Policy decides | → | 📄 4. Action is logged |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| The agent requests a command or tool call | | Prismor intercepts it before execution | | Allow, block, or modify | | You retain a searchable audit trail |
+
+---
+
+## 🚀 Quickstart
+
+Get protected in under a minute:
+
+```bash
+pip install prismor
+prismor setup
+```
+
+The setup wizard detects your coding agents, installs their security hooks, and helps you choose an enforcement posture. You’re now protected. 🚀
+
+Prefer a one-line installer? Use `curl -sSL https://prismor.dev/install | sh`. See [installation and configuration](#installation-and-configuration) for every setup option.
+
+---
+
+## 📦 What’s inside
+
+Prismor is modular. Enable only what you need.
+
+- 🛡️ **[Core Engine](docs/prismor-runtime.md)**: policy enforcement, session logs, audit trail, and CLI
+- 📦 **[Supply Chain](docs/supply-chain.md)**: IOC matching, package risk scoring, and install-time enforcement
+- 🌐 **[Network Isolation](docs/network-isolation.md)**: egress allowlists, raw IP detection, and tunnel blocking
+- 🔍 **[Skill Scanner](docs/skill-scanner.md)**: MCP server and agent-skill risk scanning
+- 🔐 **[Sweep & Cloak](docs/sweep-and-cloak.md)**: secret prevention, cleanup, and in-flight cloaking
+- 🧠 **[Semantic Guard](docs/semantic-guard.md)**: LLM-assisted detection of paraphrased prompt injection
+- 🪤 **[Canary](docs/canary.md)**: honeytoken credentials that reveal sensitive-file reconnaissance
+- 🪪 **[IAM](docs/iam.md)**: named agent identities and least-privilege profiles
+- 🎯 **[Scoped Agent](docs/scoped-agent.md)**: minimal, task-specific rules that block off-task pivots
+- 🧬 **[Learning](docs/learning.md)**: session mining for stronger rules and fewer false positives
+- ⚖️ **[Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md)**: policy floors, per-rule modes, and time-boxed exemptions
+- 📡 **[Live Telemetry (Enterprise)](docs/live-telemetry.md)**: device enrollment, signed policy, and redacted telemetry
+
+Run `prismor --help` to explore all commands.
+
+---
+
+## Why agent-layer security<a name="the-problem" />
 
 AI coding agents execute shell commands, read and write files, access credentials, and call external APIs. They do this autonomously, often across many steps, with limited checkpoints.
 
@@ -60,7 +83,7 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 
 ---
 
-## Capabilities<a name="capabilities" />
+## Capabilities in depth<a name="capabilities" />
 
 ![Prismor Architecture](assets/immunity-highlevel.png)
 
@@ -76,7 +99,7 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 - 🎯 [Scoped Agent](docs/scoped-agent.md) synthesizes minimal, task-specific rules per session so an injected pivot off-task gets blocked
 - 🧬 [Learning](docs/learning.md) mines session history to propose new rules, flag false positives, and detect evasion
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
-- 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
+- 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link: device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
 - 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
 - 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
 
@@ -86,7 +109,7 @@ These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.
 
 ---
 
-## Quick Start<a name="quick-start" />
+## Installation and configuration<a name="quick-start" />
 
 ### Platform-specific Install
 
@@ -144,7 +167,7 @@ python3 ~/.prismor/bin/prismor status
 That path forces imports to resolve to the checked-out runtime instead of a
 stale package earlier on `sys.path`.
 
-> On externally-managed Pythons (PEP 668 — Ubuntu 23.04+, Homebrew) `pip3 install` refuses to run; install PyYAML from your system package manager instead (`sudo apt install python3-yaml`, `brew install pyyaml`, …). `init.sh` will tell you if it's missing.
+> On externally-managed Pythons (PEP 668, including Ubuntu 23.04+ and Homebrew) `pip3 install` refuses to run; install PyYAML from your system package manager instead (`sudo apt install python3-yaml`, `brew install pyyaml`, etc.). `init.sh` will tell you if it's missing.
 
 This installs enforce-mode Prismor hooks and the Cloak prevention layer. To register a secret, run `prismor cloak add stripe_key` and enter the value when prompted. To import an entire dotenv file at once, run `prismor cloak add --env-file .env`. Claude/Hermes can auto-decloak placeholders at the tool boundary. Codex hooks are block-only, so run placeholder commands through `prismor cloak run -- <command>`.
 
@@ -167,7 +190,7 @@ Enforcement is decided **per rule by your policy**, not by a single global switc
 | `observe` (default) | Logs the tool call and the finding. Never blocks. Safe for onboarding and auditing. |
 | `enforce` | Blocks the action in real time before the agent executes it. |
 
-Out of the box **everything observes** — nothing is blocked until you flip rules (or `default_mode`) to `enforce` in your policy:
+Out of the box **everything observes**. Nothing is blocked until you flip rules (or `default_mode`) to `enforce` in your policy:
 
 ```yaml
 # .prismor/policy.yaml
@@ -187,13 +210,13 @@ prismor install-hooks --agent all --mode observe    # start in observe everywher
 prismor install-hooks --agent all --mode enforce    # honor policy enforce rules
 ```
 
-> **Upgrading from a pre-`mode` release?** Backward compatibility is preserved: a policy that predates per-rule modes (it sets `settings.block_categories` but no `default_mode` and no rule-level `mode`) keeps its original behavior — those categories still block when installed with `--mode enforce`. The moment your policy adopts the per-rule model (any `mode`/`default_mode`), it becomes fully policy-authoritative as described above.
+> **Upgrading from a pre-`mode` release?** Backward compatibility is preserved: a policy that predates per-rule modes (it sets `settings.block_categories` but no `default_mode` and no rule-level `mode`) keeps its original behavior. Those categories still block when installed with `--mode enforce`. The moment your policy adopts the per-rule model (any `mode`/`default_mode`), it becomes fully policy-authoritative as described above.
 
 ---
 
 ## Disabling Prismor<a name="disabling-prismor" />
 
-There are three independent layers that can each restrict an agent session. Disabling one does not disable the others — pick the layer that matches what you're actually trying to turn off.
+There are three independent layers that can each restrict an agent session. Disabling one does not disable the others, so pick the layer that matches what you're actually trying to turn off.
 
 ### 1. Uninstall hooks entirely
 
@@ -205,7 +228,7 @@ prismor uninstall-hooks --agent claude --scope user      # global (all workspace
 prismor uninstall-hooks --agent all --scope project      # every supported agent, this workspace
 ```
 
-`--scope` defaults to `project`. **Project and user scope edit different files** — running only `--scope user` does *not* touch a workspace's local hooks, and vice versa:
+`--scope` defaults to `project`. **Project and user scope edit different files**. Running only `--scope user` does *not* touch a workspace's local hooks, and vice versa:
 
 | Agent | Project scope | User scope |
 |---|---|---|
@@ -219,9 +242,9 @@ prismor uninstall-hooks --agent all --scope project      # every supported agent
 
 If you only run one scope, the other one's hooks (if installed) keep firing. Run both if you want Prismor fully out of the picture for an agent.
 
-A running session has already loaded its hook config — uninstalling mid-session won't take effect until you start a new session.
+A running session has already loaded its hook config. Uninstalling mid-session won't take effect until you start a new session.
 
-If `prismor uninstall-hooks` reports success but hooks are still firing, you're likely running a stale install — e.g. a `pipx`-installed copy that's an out-of-date snapshot of a dev checkout. Check `which immunity` and, if it resolves into a `pipx` venv, reinstall from the current source (`pipx install --force <path-or-package>`) before re-running the uninstall. As a last resort, hand-edit the hooks config file directly.
+If `prismor uninstall-hooks` reports success but hooks are still firing, you're likely running a stale install, such as a `pipx`-installed copy that's an out-of-date snapshot of a dev checkout. Check `which immunity` and, if it resolves into a `pipx` venv, reinstall from the current source (`pipx install --force <path-or-package>`) before re-running the uninstall. As a last resort, hand-edit the hooks config file directly.
 
 ### 2. Soft-disable: observe mode + dry-run
 
@@ -234,11 +257,11 @@ PRISMOR_LOCAL_DRY_RUN=1   # set in your shell/session env
 
 `--mode observe` logs findings without blocking. `PRISMOR_LOCAL_DRY_RUN=1` additionally suppresses blocking for any finding that would otherwise block under observe-installed hooks (`prismor/runtime/cli.py`, checked when `args.mode == "observe"`). This is the right lever if you want Prismor's telemetry/logging to keep working while you temporarily stop enforcement.
 
-This does **not** affect policy rules set to `mode: enforce` in `.prismor/policy.yaml` — those remain policy-authoritative regardless of how the hook was installed (see [Observe / Enforce](#observe--enforce-per-rule-policy-authoritative) above).
+This does **not** affect policy rules set to `mode: enforce` in `.prismor/policy.yaml`. Those remain policy-authoritative regardless of how the hook was installed (see [Observe / Enforce](#observe--enforce-per-rule-policy-authoritative) above).
 
 ### 3. Clear a session's scoped-agent rules
 
-[Scoped Agent](docs/scoped-agent.md) synthesizes a per-session `allowed_tools`/`deny_tools` list at `.prismor/scoped/{session_id}.json`. **This check is independent of hook `--mode`** — a tool in `deny_tools` is hardcoded to `action: block` / `mode: enforce` in `prismor/runtime/scoped_agent.py`, so it blocks even when hooks are installed with `--mode observe`. Uninstalling hooks or switching to observe mode will not lift a scoped denial.
+[Scoped Agent](docs/scoped-agent.md) synthesizes a per-session `allowed_tools`/`deny_tools` list at `.prismor/scoped/{session_id}.json`. **This check is independent of hook `--mode`**. A tool in `deny_tools` is hardcoded to `action: block` / `mode: enforce` in `prismor/runtime/scoped_agent.py`, so it blocks even when hooks are installed with `--mode observe`. Uninstalling hooks or switching to observe mode will not lift a scoped denial.
 
 ```bash
 prismor scope list                    # find the session ID
@@ -247,7 +270,7 @@ prismor scope clear ID                # remove the scoped rules for that session
 prismor scope edit ID                 # or hand-edit deny_tools in $EDITOR
 ```
 
-There's no bulk-clear — each session is cleared by ID individually. If a session was scoped before you ran `scope clear`, the cleanest fix is usually to start a fresh session rather than chase the existing one's cached state.
+There's no bulk-clear. Each session is cleared by ID individually. If a session was scoped before you ran `scope clear`, the cleanest fix is usually to start a fresh session rather than chase the existing one's cached state.
 
 ---
 
@@ -263,7 +286,7 @@ See [benchmark.md](benchmark.md) for the full methodology, per-category breakdow
 
 ## Hybrid Semantic Prompt-Injection Defense<a name="hybrid-semantic-prompt-injection-defense" />
 
-Regex rules catch known injection shapes. The opt-in semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to a local Claude Code subagent for an LLM verdict. Tested across 800+ cases — **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex.
+Regex rules catch known injection shapes. The opt-in semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to a local Claude Code subagent for an LLM verdict. Tests across 800+ cases show **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex.
 
 ![Semantic Guard Results](assets/semantic-guard-results.png)
 
@@ -293,7 +316,7 @@ prismor dashboard --port 8080
 prismor dashboard --no-open  # headless server only (was: prismor serve)
 ```
 
-Sessions, findings, threat categories, agent breakdowns, and a live event feed — all from local workspace DBs. No cloud.
+Sessions, findings, threat categories, agent breakdowns, and a live event feed all come from local workspace DBs. No cloud.
 
 ![Self-Hosted Dashboard](assets/self-serve-img.png)
 
@@ -346,7 +369,7 @@ flowchart TD
 
 ## Supply Chain Enforcement<a name="supply-chain-enforcement" />
 
-`prismor` wraps your package manager and scores every install against live threat intelligence before it runs — age, maintainer count, install scripts, and known IOCs. Ships with coverage for **mini-shai-hulud** (May 2026) and the **AntV hijacked-maintainer** attack (May 2026).
+`prismor` wraps your package manager and scores every install against live threat intelligence before it runs, including age, maintainer count, install scripts, and known IOCs. It ships with coverage for **mini-shai-hulud** (May 2026) and the **AntV hijacked-maintainer** attack (May 2026).
 
 ```bash
 prismor supplychain npm install express                    # passes, runs npm
