@@ -1,3 +1,9 @@
+## [1.24.0] — 2026-07-11
+
+### Changed
+
+- **DENY-wins precedence when multiple enforce findings fire on one event.** `should_block` returned whichever enforce finding the engine surfaced first, so a rule-ordering accident could let a `step_up`/`modify`/`defer` verdict mask a hard `block` on the same action. It now selects the strongest verdict — block > step_up > defer > modify, with enforce `warn`/`log`/unset ranking as block (enforce means "stop") and ties preserving first-surfaced order. Coverage in `tests/test_deny_precedence.py`.
+
 ## [1.23.0] — 2026-07-11
 
 ### Added

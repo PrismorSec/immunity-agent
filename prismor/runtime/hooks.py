@@ -264,6 +264,13 @@ def should_block(
     # rule's mode, else the policy's default_mode — both default to "observe").
     # A finding blocks only when its effective mode is "enforce". block_categories
     # no longer gates this (every category is observe-by-default until enforced).
+    # DENY-wins precedence: when several enforce findings fire on one event
+    # with mixed actions, the strongest verdict wins (block > step_up > defer
+    # > modify) rather than whichever the engine surfaced first. Unknown
+    # actions (warn/log/unset on an enforce finding) rank as block — enforce
+    # means "stop". Ties keep first-surfaced order (min() is stable).
+    _ACTION_RANK = {"block": 0, "step_up": 1, "defer": 2, "modify": 3}
+    eligible: List[Dict[str, Any]] = []
     for finding in findings:
         if str(finding.get("mode", "observe")).lower() == "enforce":
             # Reads are generally safe, so they only block for secret access —
@@ -274,8 +281,10 @@ def should_block(
                 and finding.get("category") not in ("secret_access", "iam")
             ):
                 continue
-            return finding
-    return None
+            eligible.append(finding)
+    if not eligible:
+        return None
+    return min(eligible, key=lambda f: _ACTION_RANK.get(str(f.get("action") or "block").lower(), 0))
 
 
 def legacy_should_block(
