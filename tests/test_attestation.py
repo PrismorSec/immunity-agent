@@ -54,9 +54,13 @@ def test_bundle_shape(attest, workspace):
     b = attest.build_bundle(workspace)
     assert b["schema"] == attest.SCHEMA
     assert b["generated_at"] and "content_hash" in b
-    for key in ("agents", "audit_findings", "trail_checkpoint", "prismor_version"):
+    for key in ("agents", "discovery", "audit_findings", "framework_coverage",
+                "trail_checkpoint", "prismor_version"):
         assert key in b
     assert isinstance(b["agents"], list) and isinstance(b["audit_findings"], list)
+    # discovery + coverage are dicts with summaries, folded into the signed body
+    assert isinstance(b["discovery"]["summary"], dict)
+    assert isinstance(b["framework_coverage"]["summary"], dict)
 
 
 def test_clean_bundle_verifies(attest, workspace):

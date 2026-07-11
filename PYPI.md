@@ -15,7 +15,8 @@ AI coding agents execute shell commands, read files, call APIs, and install pack
 - **Prevent secrets from reaching the model** — register a secret under a placeholder name; Prismor resolves it locally through supported hooks or `prismor cloak run`
 - **Log every tool call** to a local SQLite store for session review and auditing
 - **Keep a tamper-evident audit trail** where every action is hash-chained and Ed25519-signed, so `prismor trail verify` catches edited, deleted, or rewritten history
-- **Hand auditors a signed evidence bundle** with `prismor attest`, packaging posture, agent inventory, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one file anyone re-verifies with `prismor attest verify`
+- **Find shadow AI on the host** with `prismor discover`, flagging any agent installed on the machine that runs without Prismor hooks
+- **Hand auditors a signed evidence bundle** with `prismor attest`, packaging posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one file anyone re-verifies with `prismor attest verify`
 
 Supports Claude Code, Cursor, Windsurf, and more.
 

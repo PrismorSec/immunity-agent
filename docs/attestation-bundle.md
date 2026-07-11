@@ -1,13 +1,16 @@
 # Attestation Bundle
 
 An attestation bundle is one signed JSON file that captures this machine's
-governance posture at a moment in time. It bundles three things Prismor already
-tracks:
+governance posture at a moment in time. It bundles what Prismor already tracks:
 
 - **Agent inventory**: every agent Prismor governs on this host (name,
   framework, enforce/observe mode, last seen)
+- **Host discovery**: agents found on the machine and whether each one runs
+  under Prismor hooks (see [Host discovery](#host-discovery))
 - **Posture findings**: the full `prismor audit` sweep across hooks, policy,
   cloaking, permissions, feed signature, egress, network, and sandbox
+- **Framework coverage**: which compliance-framework controls the active policy
+  covers (see [Framework coverage](#framework-coverage))
 - **Audit-trail anchor**: the signed head of the [signed audit
   trail](audit-trail.md), tying the bundle to the tamper-evident action log
 
@@ -31,6 +34,7 @@ Without it the bundle is still assembled and hashed, just unsigned.
 | `generated_at` | ISO-8601 UTC timestamp |
 | `device_id`, `prismor_version` | which machine and which Prismor built it |
 | `agents` | the governed-agent inventory |
+| `discovery` | host sweep: agents present and whether each is governed |
 | `audit_findings` | posture findings from `prismor audit` |
 | `framework_coverage` | which compliance-framework controls the active policy covers |
 | `trail_checkpoint` | signed audit-trail head (`seq`, `hash`) |
@@ -56,6 +60,35 @@ prismor attest coverage               # framework-control coverage of active pol
 Building a bundle is read-only. It runs the audit, reads the inventory, grabs
 the current trail head, and signs the result. Nothing on disk changes except the
 file you asked for with `--out`.
+
+## Host discovery
+
+`prismor discover` sweeps this machine for AI agents and flags any that run
+without Prismor hooks. Those are the shadow ones: a Claude Code or Codex install
+making tool calls that never pass through policy.
+
+```
+  PRISMOR  host discovery  (4 present · 2 governed · 2 ungoverned)
+
+    ✓ claude     governed
+    ✓ codex      governed
+    ✗ hermes     UNGOVERNED
+    ✗ openclaw   UNGOVERNED
+
+  2 agent(s) run without Prismor hooks. Wire them in with:
+    prismor install-hooks --agent <name>
+```
+
+The sweep reads config files and agent directories already on disk. An agent
+counts as **governed** when Prismor's hook dispatcher is wired into its config,
+and **present** when its config or install directory exists at all. The same
+result lands in every bundle under `discovery`, so an auditor sees not just what
+Prismor governs but what it doesn't.
+
+This is host-local and read-only. It doesn't scan the network or probe other
+machines. Finding AI across a fleet is a bigger job for a separate tool; here
+the question is narrower and answerable from local files: on this box, is
+anything running outside Prismor's reach?
 
 ## Framework coverage
 

@@ -278,6 +278,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         _run_attest(args, workspace, repo_root)
         return
 
+    if args.command == "discover":
+        _run_discover(args, workspace)
+        return
+
     if args.command == "logout":
         from prismor.runtime.enterprise import identity as _identity, remote_policy as _remote
         had = _identity.clear_identity()
@@ -2068,6 +2072,16 @@ def build_parser() -> argparse.ArgumentParser:
         "coverage", help="Show framework-control coverage of the active policy")
     attest_coverage.add_argument("--json", action="store_true", help="Machine-readable report")
 
+    # ── discover ───────────────────────────────────────────────────────
+    discover_parser = subparsers.add_parser(
+        "discover",
+        help="Sweep this host for AI agents Prismor doesn't govern (shadow AI)",
+        description="Find AI agents installed on this machine and flag any that "
+                    "run without Prismor hooks. Host-local and read-only.",
+    )
+    discover_parser.add_argument("--workspace", help="Workspace path")
+    discover_parser.add_argument("--json", action="store_true", help="Machine-readable report")
+
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
         "sandbox",
@@ -2802,6 +2816,36 @@ def _run_trail(args) -> None:
 
     print("Usage: prismor trail {verify|show|checkpoint}")
     raise SystemExit(2)
+
+
+def _run_discover(args, workspace: Path) -> None:
+    """`prismor discover` — sweep this host for AI agents, flagging any that
+    run without Prismor hooks (shadow AI)."""
+    from prismor.runtime.enterprise import discovery as _discovery
+    report = _discovery.discover(workspace)
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+        return
+
+    s = report["summary"]
+    print(f"\n  {_color('PRISMOR', _BOLD)}  host discovery  "
+          f"({s['present']} present · {s['governed']} governed · "
+          f"{_color(str(s['ungoverned']) + ' ungoverned', _BOLD)})\n")
+    for a in report["agents"]:
+        if not a["present"]:
+            continue
+        if a["governed"]:
+            mark, label = "✓", "governed"
+        else:
+            mark, label = "✗", "UNGOVERNED"
+        seen = " · seen running" if a["seen"] else ""
+        print(f"    {mark} {a['agent']:<10} {label}{seen}")
+    if s["ungoverned"]:
+        print(f"\n  {s['ungoverned']} agent(s) run without Prismor hooks. "
+              f"Wire them in with:\n    prismor install-hooks --agent <name>\n")
+    else:
+        print("\n  Every agent found on this host is governed by Prismor.\n")
 
 
 def _run_attest(args, workspace: Path, repo_root: Path) -> None:

@@ -95,7 +95,8 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 - 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
 - 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
 - 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
-- 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
+- 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
+- 🔦 [Host Discovery](docs/attestation-bundle.md#host-discovery) sweeps the machine with `prismor discover` and flags any AI agent running without Prismor hooks (shadow AI)
 - 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
 
 Full command map across every capability: [CLI Reference](docs/cli-reference.md).
