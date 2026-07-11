@@ -61,11 +61,8 @@ const fetch_url = tool({
   execute: async ({ url }) => { /* your implementation */ },
 });
 
-// Wrap all tools — every execute() is now policy-checked before it runs
-const tools = prismorTools(
-  { run_shell, fetch_url },
-  { subject: `user:${userId}` }
-);
+// Wrap all tools once, at module scope — every execute() is now policy-checked
+const tools = prismorTools({ run_shell, fetch_url });
 
 const result = await generateText({ model: openai("gpt-4o-mini"), tools, prompt });
 ```
@@ -75,15 +72,18 @@ const result = await generateText({ model: openai("gpt-4o-mini"), tools, prompt 
 A denied call in enforce mode throws `PrismorBlocked`:
 
 ```typescript
-import { PrismorBlocked, prismorTools } from "prismor-warden";
+import { PrismorBlocked, prismorTools, useSubject } from "prismor-warden";
+
+const tools = prismorTools(myTools); // once, at module scope
 
 // In a Next.js API route:
 export async function POST(req: Request) {
-  const { prompt, userId } = await req.json();
-  const tools = prismorTools(myTools, { subject: `user:${userId}` });
+  const { prompt } = await req.json();
+  const session = await getSession(req);
 
   try {
-    const result = await generateText({ model, tools, prompt });
+    const result = await useSubject(`user:${session.userId}`, () =>
+      generateText({ model, tools, prompt }));
     return Response.json({ text: result.text });
   } catch (e) {
     if (e instanceof PrismorBlocked) {
@@ -96,17 +96,25 @@ export async function POST(req: Request) {
 
 ## Per-user (multi-tenant)
 
-Pass `subject` per request. The subject is forwarded to the eval-server where
-it is resolved to per-user IAM policies and attributed in telemetry:
+Wrap each request handler in `useSubject()` — the TypeScript equivalent of the
+Python adapters' `use_subject()`. Every guarded tool call inside the wrapped
+scope is attributed to that user, forwarded to the eval-server, resolved to
+per-user IAM policies, and recorded in telemetry:
 
 ```typescript
-// Each incoming request gets its own subject — no shared state
-const tools = prismorTools(myTools, {
-  subject: `user:${session.userId}`,
-  mode: "enforce",
-  workspace: "/path/to/project",
-});
+const tools = prismorTools(myTools); // guard once — no per-request rebuilding
+
+export async function POST(req: Request) {
+  const session = await getSession(req);
+  return useSubject(`user:${session.userId}`, () => handleAgentTurn(tools, req));
+}
 ```
+
+The subject rides on `AsyncLocalStorage`, so concurrent requests with different
+users cannot bleed into each other. Resolution per call, highest priority
+first: the `subject` option on `prismorTools()`, the ambient `useSubject()`
+context, then the `PRISMOR_SUBJECT` environment variable — the same order as
+the Python runtime's `resolve_subject()`.
 
 Subjects are `"user:<id>"` or the structured form `"user=alice;team=data"`.
 Users without an explicit IAM profile fall through to org-wide defaults.
@@ -116,10 +124,13 @@ Users without an explicit IAM profile fall through to org-wide defaults.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `evalUrl` | `string` | `http://127.0.0.1:7071` | Eval-server URL |
-| `subject` | `string` | `""` | End-user identity: `"user:alice"` |
+| `subject` | `string` | `""` | End-user identity: `"user:alice"` (overrides `useSubject()`) |
 | `mode` | `"enforce"\|"observe"` | `"enforce"` | Enforce blocks; observe logs only |
+| `failMode` | `"open"\|"closed"` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |
+| `timeoutMs` | `number` | `10000` | Max wait for the eval-server per call |
 | `workspace` | `string` | `process.cwd()` | Project path for policy + IAM lookup |
 | `agent` | `string` | `"vercel-ai"` | Agent label in telemetry |
+| `agentName` | `string` | same as `agent` | Per-instance name for kill-switch / per-agent controls |
 | `eventType` | `string` | `"shell"` | `shell`, `network`, `file_write`, `file_read` |
 
 ## Event type mapping
@@ -148,18 +159,32 @@ Or set a default for all tools when using `prismorTools`:
 const tools = prismorTools(myTools, { eventType: "network" });
 ```
 
-## Fail-open design
+## Fail mode
 
-If the eval-server is unreachable (down, not yet started, crashed), the adapter
-**warns and allows** — it never breaks the agent because of infrastructure
-issues. Run `prismor eval-server` as a long-lived sidecar process or a Docker
-container to minimise downtime.
+If the eval-server cannot answer (down, not yet started, crashed, or slower
+than `timeoutMs`), the adapter follows `failMode`:
+
+- **Enforce mode fails closed** (default): the call is blocked with
+  `PrismorBlocked`. Enforcement — e.g. a suspended user or a per-user tool
+  deny — keeps holding even when the sidecar is down.
+- **Observe mode fails open** (default): monitoring never breaks the agent.
+- Override either default with `failMode: "open"` or `"closed"`.
 
 ```typescript
-// Adapter behaviour when eval-server is down:
-// console.warn("[prismor] eval-server returned 503 — failing open")
+// Enforce mode, eval-server down:
+// console.error("[prismor] eval-server unavailable (fetch failed) — failing closed")
+// → throw PrismorBlocked; tool.execute() never runs
+
+// Observe mode (or failMode: "open"), eval-server down:
+// console.warn("[prismor] eval-server unavailable (fetch failed) — failing open")
 // → tool.execute() is called normally
 ```
+
+Run `prismor eval-server` as a long-lived sidecar process or a Docker container
+to minimise downtime.
+
+> **Changed in 0.3.0:** enforce mode previously failed open. Pass
+> `failMode: "open"` to restore the old behavior.
 
 ## Modes
 

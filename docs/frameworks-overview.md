@@ -12,18 +12,20 @@ on your existing agent or controller object, with no changes to your tool logic.
 | LangChain / LangGraph | Python | `pip install "prismor[langchain]"` | `guard_tools([...])` | `use_subject("user:alice")` |
 | CrewAI | Python | `pip install "prismor[crewai]"` | `guard_tools([...])` | `use_subject("user:alice")` |
 | browser-use | Python | `pip install "prismor[browser-use]"` | `guard_controller(controller)` | `use_subject("user:alice")` |
-| Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools, opts)` | `{ subject: "user:alice" }` |
+| Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
+| Any language | Any | — (HTTP client only) | `POST /v1/evaluate` | `X-Prismor-Subject` header |
 
 > The Python adapters ship inside the `prismor` package (needs `>= 1.14.2`) —
 > the extra just pulls the framework itself. `prismor[frameworks]` installs all
-> four. On npm it is `prismor` (the registry blocks bare `prismor` as too similar to `prisma`).
-| Any language | Any | — (HTTP client only) | `POST /v1/evaluate` | `X-Prismor-Subject` header |
+> four. On npm the package is `prismor-warden`.
 
-The Python multi-tenant pattern: guard once at startup with no bound subject,
-then wrap each request with `use_subject`. A context var threads the subject
-through the evaluation pipeline — thread-safe and async-safe.
+The multi-tenant pattern is the same in every language: guard once at startup
+with no bound subject, then wrap each request with `use_subject` (Python) or
+`useSubject` (TypeScript). A context variable (`ContextVar` / `AsyncLocalStorage`)
+threads the subject through the evaluation pipeline — thread-safe and
+async-safe, so concurrent requests for different users cannot bleed.
 
-For non-Python languages: pass `subject` per call in the request body or
+For raw HTTP callers: pass `subject` per call in the request body or
 `X-Prismor-Subject` header. The eval-server resolves it identically.
 
 ## What "guard" does
@@ -73,8 +75,10 @@ POST /v1/evaluate
 
 The Python policy engine, IAM, and telemetry run inside the sidecar. Adapters
 in other languages are ~25 lines of HTTP client code with no Python dependency.
-The adapter **fails open** if the eval-server is down — agents are never broken
-by infrastructure issues.
+If the eval-server is down, the shipped TypeScript adapter **fails closed in
+enforce mode** (a suspension or deny keeps holding) and **open in observe mode**
+(monitoring never breaks the agent), overridable via `failMode`. Raw HTTP
+callers choose their own failure behavior — match these defaults.
 
 Validated live on an Ubuntu EC2 instance with real OpenAI function calls:
 
@@ -138,15 +142,26 @@ Add `user:<id>` or `team:<id>` keys to `.prismor/iam.yaml`:
 
 ```yaml
 agents:
+  # bob keeps every tool except shell + network
   user:bob:
+    allowed_tools: ["*"]
     deny_tools: [Bash]
+    deny_network: true
+    allowed_paths: ["**"]
+
+  # suspend a user entirely: empty allowlist blocks every tool call
+  user:mallory:
+    allowed_tools: []
+    deny_tools: []
     deny_network: true
     allowed_paths: ["**"]
 ```
 
 When a request runs under `use_subject("user:bob")`, bob's profile is selected
-automatically — no env var, no code change. Users without a profile get the
-org-wide defaults.
+automatically — no env var, no code change, and no per-user re-guarding of
+tools. Users without a profile get the org-wide defaults. Tool names match
+what the framework sees (the wrapped function or tool's name, e.g.
+`fetch_url`), so one profile applies across every framework the user reaches.
 
 ## Per-framework guides
 
