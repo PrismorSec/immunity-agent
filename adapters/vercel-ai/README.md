@@ -63,23 +63,45 @@ try {
 
 ## Per-user (multi-tenant)
 
-Pass `subject` per request — no need to rebuild tool objects:
+Guard the tools once at module scope, then wrap each request handler in
+`useSubject()` — every guarded tool call inside is attributed to that user,
+matching the Python adapters' `use_subject()`:
 
 ```typescript
+import { prismorTools, useSubject } from "prismor-warden";
+
+const tools = prismorTools(myTools); // once, at module scope
+
 // Next.js API route
 export async function POST(req: Request) {
   const { prompt } = await req.json();
   const session = await getSession(req);
 
-  const tools = prismorTools(myTools, {
-    subject: `user:${session.userId}`,
-    mode: "enforce",
-  });
-
-  const result = await generateText({ model, tools, prompt });
+  const result = await useSubject(`user:${session.userId}`, () =>
+    generateText({ model, tools, prompt }));
   return Response.json({ text: result.text });
 }
 ```
+
+The subject propagates via `AsyncLocalStorage`, so concurrent requests with
+different users cannot bleed into each other. Per-call resolution priority:
+the `subject` option, then the ambient `useSubject()` context, then the
+`PRISMOR_SUBJECT` environment variable. (Passing `subject` per
+`prismorTools()` call still works and takes precedence.)
+
+## Fail mode
+
+If the eval-server cannot answer (not running, crashed, timeout), the adapter
+follows `failMode`:
+
+- `mode: "enforce"` (default) **fails closed** — the tool call is blocked with
+  `PrismorBlocked`. An enforced policy (e.g. a suspended user) holds even when
+  the sidecar is down.
+- `mode: "observe"` fails open — monitoring never breaks the app.
+- Set `failMode: "open"` or `"closed"` explicitly to override either default.
+
+> **Changed in 0.3.0:** enforce mode previously failed open. Pass
+> `failMode: "open"` to restore the old behavior.
 
 ## Options
 
@@ -88,6 +110,9 @@ export async function POST(req: Request) {
 | `evalUrl` | `string` | `http://127.0.0.1:7071` | Eval-server URL |
 | `subject` | `string` | `""` | End-user: `"user:alice"` or `"user=alice;team=data"` |
 | `mode` | `"enforce"\|"observe"` | `"enforce"` | Enforce blocks; observe logs only |
+| `failMode` | `"open"\|"closed"` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |
+| `timeoutMs` | `number` | `10000` | Max wait for the eval-server per call |
 | `workspace` | `string` | `process.cwd()` | Project path for policy/IAM lookup |
 | `agent` | `string` | `"vercel-ai"` | Agent identifier in telemetry |
+| `agentName` | `string` | same as `agent` | Per-instance name for kill-switch / per-agent controls |
 | `eventType` | `string` | `"shell"` | Event type: `shell`, `network`, `file_write`, … |
