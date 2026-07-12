@@ -108,6 +108,19 @@ agents:
     normalizer: _normalize_copilot
     sources: ["https://docs.github.com/en/copilot/reference/hooks-configuration"]
 
+  - id: grok
+    name: Grok Build (xAI)
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".grok/hooks/prismor.json", user: "~/.grok/hooks/prismor.json" }
+    events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    blocking: exit-2
+    normalizer: _normalize_grok
+    sweep_dir: "~/.grok/"
+    notes: "Also natively reads .claude/settings.json and .cursor/hooks.json. Tool-name matchers assume Claude-Code-compatible tool names (Bash/Read/Edit/Write/...) by analogy; not yet verified against a live grok binary."
+    sources: ["https://docs.x.ai/build/features/hooks", "https://docs.x.ai/build/overview"]
+
   # ── Coding agents — roadmap (hook surface exists, adapter not built) ──────
   - id: gemini
     name: Gemini CLI (Google)

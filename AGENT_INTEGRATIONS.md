@@ -2,7 +2,7 @@
 
 How Prismor integrates with each major AI coding agent — what ships today, what's planned, and what mechanism each agent exposes for runtime security monitoring.
 
-_Last updated: 2026-06-17._
+_Last updated: 2026-07-11._
 
 ---
 
@@ -28,6 +28,7 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Hermes (NousResearch gateway) | coding-agent | hook-config | ✅ | `throw` |
 | Codex (OpenAI) | coding-agent | hook-config | ✅ | `exit-2` |
 | GitHub Copilot CLI | coding-agent | hook-config | ✅ | `json-permission` |
+| Grok Build (xAI) | coding-agent | hook-config | ✅ | `exit-2` |
 | Gemini CLI (Google) | coding-agent | hook-config | 🟡 | `exit-2` |
 | OpenCode | coding-agent | sdk | 🟡 | `throw` |
 | Kiro (AWS) | coding-agent | hook-config | 🟡 | `exit-2` |
@@ -126,6 +127,17 @@ Prismor integrates with Hermes at two complementary layers:
 - **Minimum version: `codex-cli` ≥ `0.141.0-alpha.1`.** Earlier versions, including the `0.140.0` stable release, have an upstream bug ([openai/codex#26383](https://github.com/openai/codex/issues/26383), [#26452](https://github.com/openai/codex/issues/26452)) where `codex exec` never dispatches *any* hook — not because of config shape, matcher syntax, or hook trust, but because `--dangerously-bypass-hook-trust` silently failed to propagate to the exec thread, so hooks (which require persisted trust) were dropped before dispatch even without `exec` printing an error. Fixed in [openai/codex#26434](https://github.com/openai/codex/pull/26434), merged 2026-06-16, first shipped in `rust-v0.141.0-alpha.1`. As of this writing that fix has not yet reached a stable release tag — pin to an alpha ≥ that build if you need working Codex hooks today, and watch for the next `0.141.x` (or later) stable release.
 - **Required feature flag:** Codex's hook dispatcher additionally requires `[features].hooks = true` (previously `codex_hooks`, deprecated in current stable) in the **user-level** `~/.codex/config.toml` — read from nowhere else, not even a project-scoped `.codex/config.toml`. Without it, hooks are silent no-ops: no error, no warning, every tool call passes straight through. `install_hooks()` now sets/migrates this automatically as of PrismorSec/prismor#149 (verified live against `codex-cli 0.142.5`: a destructive command that should have been blocked instead ran and deleted its target file before this fix).
 - **Code:** `prismor/runtime/hooks.py` `_merge_codex()`, `_strip_codex()`, `_normalize_codex()`, `_ensure_codex_hooks_feature_enabled()`.
+
+### Grok Build (xAI)
+
+- **Config:** `~/.grok/hooks/prismor.json` (user) or `<repo>/.grok/hooks/prismor.json` (project). Grok reads a directory of independent hook files (`~/.grok/hooks/*.json` / `<repo>/.grok/hooks/*.json`), so Prismor owns a dedicated file instead of merging into a shared one.
+- **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PostToolUse`. `PreToolUse` is Grok's only blocking event.
+- **Matchers installed:** `Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*`, following Claude Code's tool-name taxonomy — Grok Build natively reads `.claude/settings.json` and `.cursor/hooks.json` as a convenience, which strongly implies (but does not itself confirm) that its own built-in tool names match Claude Code's.
+- **Blocking:** exit 2 from hook → block; stdout `{"decision": "deny", "reason": "..."}` supplies the reason shown to the user. Exit 0 → allow. Any other exit code, a crash, or a timeout fails **open** on Grok's side (documented behavior, not a Prismor choice).
+- **Sweep target:** `~/.grok/`.
+- **Not yet verified against a live `grok` install.** This integration is built entirely from [docs.x.ai/build/features/hooks](https://docs.x.ai/build/features/hooks) and [docs.x.ai/build/overview](https://docs.x.ai/build/overview) — no `grok` binary was available to smoke-test against at implementation time. Before relying on this in `enforce` mode, run `grok inspect` to confirm the real built-in tool names, and verify a deliberately blocked command is actually denied end to end (the same live check done for Codex above).
+- **Project-hook trust:** Grok requires trust before running project-level hooks (`/hooks-trust` or `--trust` inside `grok`, recorded in `~/.grok/trusted_folders.toml`). This is a one-time manual step Prismor does not automate.
+- **Code:** `prismor/runtime/hooks.py` `_merge_grok()`, `_strip_grok()`, `_normalize_grok()`.
 
 ---
 

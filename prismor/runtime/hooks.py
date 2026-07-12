@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from prismor.runtime.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot"]
+_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok"]
 
 
 def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
@@ -28,6 +28,8 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
         return _strip_codex(config, marker)
     if agent == "copilot":
         return _strip_copilot(config, marker)
+    if agent == "grok":
+        return _strip_grok(config, marker)
     return _strip_windsurf(config, marker)
 
 
@@ -54,6 +56,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_codex(config, command)
         elif current_agent == "copilot":
             config = _merge_copilot(config, command)
+        elif current_agent == "grok":
+            config = _merge_grok(config, command)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -222,6 +226,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_codex(payload, session_id, workspace)
     elif agent == "copilot":
         event = _normalize_copilot(payload, session_id)
+    elif agent == "grok":
+        event = _normalize_grok(payload, session_id, workspace)
     else:
         event = _normalize_cursor(payload, session_id)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
@@ -328,6 +334,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".codex" / "hooks.json"
         if agent == "copilot":
             return workspace / ".github" / "copilot" / "hooks.json"
+        if agent == "grok":
+            return workspace / ".grok" / "hooks" / "prismor.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -342,6 +350,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".codex" / "hooks.json"
     if agent == "copilot":
         return home / ".copilot" / "hooks.json"
+    if agent == "grok":
+        return home / ".grok" / "hooks" / "prismor.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -770,6 +780,23 @@ def _merge_codex(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     return {**config, "hooks": hooks}
 
 
+def _merge_grok(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    hooks = dict(config.get("hooks", {}))
+    hooks["UserPromptSubmit"] = _merge_claude_entries(
+        hooks.get("UserPromptSubmit", []),
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+    )
+    for event_name in ["PreToolUse", "PostToolUse"]:
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {
+                "matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
+                "hooks": [{"type": "command", "command": command}],
+            },
+        )
+    return {**config, "hooks": hooks}
+
+
 def _strip_copilot(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
     hooks = dict(config.get("hooks", {}))
     removed = False
@@ -785,6 +812,25 @@ def _strip_copilot(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any],
 
 
 def _strip_codex(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_grok(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
     hooks = dict(config.get("hooks", {}))
     removed = False
     for event_name in list(hooks.keys()):
@@ -881,6 +927,55 @@ def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) 
         tool_name=tool_name,
         tool_input=tool_input,
         response=payload.get("tool_response", payload.get("response")),
+        is_post=(hook_event == "PostToolUse"),
+        workspace=workspace,
+    )
+    if mcp_event is not None:
+        return mcp_event
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    hook_event = payload.get("hookEventName") or payload.get("hook_event_name") or "unknown"
+    tool_name = payload.get("toolName") or payload.get("tool_name") or ""
+    tool_input = payload.get("toolInput") or payload.get("tool_input") or {}
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "grok",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "UserPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if tool_name == "Bash":
+        return {
+            **base,
+            "type": "shell",
+            "command": tool_input.get("command", ""),
+            "stdout": payload.get("stdout", ""),
+            "stderr": payload.get("stderr", ""),
+        }
+    if tool_name == "Read":
+        return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
+    if tool_name in {"Edit", "MultiEdit", "Write"}:
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("file_path") or tool_input.get("path", ""),
+            "content": (
+                _join_edits(tool_input.get("edits", []))
+                or tool_input.get("content", "")
+                or tool_input.get("new_string", "")
+            ),
+        }
+    if tool_name in {"WebFetch", "WebSearch"}:
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "response": payload.get("response", "")}
+    mcp_event = _classify_mcp_event(
+        base=base,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        response=payload.get("toolResponse", payload.get("response")),
         is_post=(hook_event == "PostToolUse"),
         workspace=workspace,
     )

@@ -15,6 +15,7 @@ from prismor.runtime.hooks import (
     _strip_claude,
     _strip_codex,
     _strip_cursor,
+    _strip_grok,
     _strip_windsurf,
     install_hooks,
     normalize_payload,
@@ -137,6 +138,36 @@ class TestStripCodex(unittest.TestCase):
         self.assertFalse(removed)
 
 
+class TestStripGrok(unittest.TestCase):
+    """Test _strip_grok removes Prismor entries."""
+
+    def test_removes_prismor_hooks(self):
+        marker = "/repo/prismor/runtime/cli.py"
+        config = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
+                        "hooks": [
+                            {"type": "command", "command": f'python3 "{marker}" hook-dispatch --agent grok'},
+                            {"type": "command", "command": "other-tool --check"},
+                        ],
+                    }
+                ]
+            }
+        }
+        result, removed = _strip_grok(config, marker)
+        self.assertTrue(removed)
+        self.assertEqual(len(result["hooks"]["PreToolUse"]), 1)
+        self.assertEqual(len(result["hooks"]["PreToolUse"][0]["hooks"]), 1)
+        self.assertEqual(result["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "other-tool --check")
+
+    def test_no_change(self):
+        config = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "unrelated"}]}]}}
+        result, removed = _strip_grok(config, "/repo/prismor/runtime/cli.py")
+        self.assertFalse(removed)
+
+
 class TestStripWindsurf(unittest.TestCase):
     """Test _strip_windsurf removes Prismor entries."""
 
@@ -195,6 +226,8 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
             config_path = self.workspace / ".cursor" / "hooks.json"
         elif agent == "codex":
             config_path = self.workspace / ".codex" / "hooks.json"
+        elif agent == "grok":
+            config_path = self.workspace / ".grok" / "hooks" / "prismor.json"
         else:
             config_path = self.workspace / ".windsurf" / "hooks.json"
         self.assertTrue(config_path.exists())
@@ -230,6 +263,9 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
 
     def test_codex_roundtrip(self):
         self._roundtrip("codex")
+
+    def test_grok_roundtrip(self):
+        self._roundtrip("grok")
 
     def test_codex_install_enables_hooks_feature_flag_on_fresh_config(self):
         # Regression for PrismorSec/prismor#149: without [features].hooks set
@@ -656,6 +692,50 @@ class TestNormalizePayloadCodex(unittest.TestCase):
             },
         }
         result = normalize_payload(agent="codex", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "file_write")
+        self.assertIn("lodash", event["content"])
+
+
+class TestNormalizePayloadGrok(unittest.TestCase):
+    """Test Grok Build payload normalization (camelCase field names per docs.x.ai/build/features/hooks)."""
+
+    def test_user_prompt(self):
+        payload = {
+            "hookEventName": "UserPromptSubmit",
+            "sessionId": "grok-1",
+            "prompt": "Review this change",
+        }
+        result = normalize_payload(agent="grok", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "prompt")
+        self.assertEqual(event["prompt"], "Review this change")
+        self.assertEqual(event["agent"], "grok")
+
+    def test_bash_tool(self):
+        payload = {
+            "hookEventName": "PreToolUse",
+            "sessionId": "grok-2",
+            "toolName": "Bash",
+            "toolInput": {"command": "git status"},
+        }
+        result = normalize_payload(agent="grok", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "git status")
+
+    def test_edit_tool_maps_to_file_write(self):
+        payload = {
+            "hookEventName": "PreToolUse",
+            "sessionId": "grok-3",
+            "toolName": "Edit",
+            "toolInput": {
+                "file_path": "/src/package.json",
+                "old_string": '"dependencies": {}',
+                "new_string": '"dependencies": {"lodash": "4.17.4"}',
+            },
+        }
+        result = normalize_payload(agent="grok", payload=payload, workspace=Path("/tmp"))
         event = result["event"]
         self.assertEqual(event["type"], "file_write")
         self.assertIn("lodash", event["content"])
