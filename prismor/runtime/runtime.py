@@ -307,6 +307,7 @@ def evaluate_tool_call(
             session_id=session_id,
             subject=subject,
             agent_profile=_control.iam_profile if _control else None,
+            remote_controls=getattr(engine, "subject_controls", None),
         )
         if iam_finding:
             findings.append(iam_finding)

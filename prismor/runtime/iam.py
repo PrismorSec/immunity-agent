@@ -202,12 +202,58 @@ def _resolve_identity(
     return None
 
 
+def _merge_remote_subject_controls(
+    config: Dict[str, Any], remote: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Overlay org subject controls (the verified signed policy's
+    ``settings.subject_controls``) onto the local IAM agents map.
+
+    ``remote`` is keyed ``user:<id>`` / ``team:<id>`` with values
+    ``{suspended: bool, deny_tools: [...]}``. Tighten-only, mirroring
+    agents.resolve_agent_control: a suspension always wins (deny-all profile
+    regardless of any local entry), remote deny_tools union with a local
+    profile's, and a remote entry never widens what a local profile allows.
+    A subject with no local profile gets an allow-all-except-denied base, so
+    an org deny doesn't accidentally turn into a full allowlist.
+    """
+    if not isinstance(remote, dict) or not remote:
+        return config
+    agents = dict((config or {}).get("agents") or {})
+    changed = False
+    for key, ctl in remote.items():
+        if not isinstance(ctl, dict) or not isinstance(key, str):
+            continue
+        if not (key.startswith("user:") or key.startswith("team:")):
+            continue
+        local = agents.get(key)
+        local = dict(local) if isinstance(local, dict) else None
+        if ctl.get("suspended"):
+            merged: Dict[str, Any] = {
+                "allowed_tools": [], "deny_tools": [], "deny_network": True,
+                "allowed_paths": ["**"], "__suspended__": True,
+            }
+        else:
+            base = local or {
+                "allowed_tools": ["*"], "deny_tools": [],
+                "deny_network": False, "allowed_paths": ["**"],
+            }
+            remote_denies = [t for t in (ctl.get("deny_tools") or []) if isinstance(t, str)]
+            deny = list(dict.fromkeys(list(base.get("deny_tools") or []) + remote_denies))
+            merged = {**base, "deny_tools": deny}
+        agents[key] = merged
+        changed = True
+    if not changed:
+        return config
+    return {**(config or {}), "agents": agents}
+
+
 def check_iam(
     workspace: Optional[Path] = None,
     event: Optional[Dict[str, Any]] = None,
     session_id: str = "",
     subject: Optional[Any] = None,
     agent_profile: Optional[str] = None,
+    remote_controls: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check an event against the IAM profile for the active identity.
 
@@ -227,7 +273,7 @@ def check_iam(
     if event is None:
         return None
 
-    config = load_iam_config(workspace)
+    config = _merge_remote_subject_controls(load_iam_config(workspace), remote_controls)
     agent_id = _resolve_identity(config, subject)
     # Fall back to the per-agent IAM profile assigned in agents.yaml
     if not agent_id and agent_profile:
@@ -267,6 +313,12 @@ def check_iam(
         for key in ("title", "evidence"):
             if isinstance(finding.get(key), str):
                 finding[key] = finding[key].replace("for this session", scope)
+        # An org suspension deserves its own copy — "not in scope" undersells
+        # "an admin turned this principal off".
+        if profile.get("__suspended__"):
+            who = scope[4:]  # strip the "for " prefix → "user 'alice'"
+            finding["title"] = f"[iam:{agent_id}] {who} is suspended by org policy"
+            finding["evidence"] = f"{who} is suspended by org policy (subject_controls)"
     return finding
 
 

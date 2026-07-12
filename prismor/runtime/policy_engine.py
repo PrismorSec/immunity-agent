@@ -595,6 +595,14 @@ class PolicyEngine:
         # org/agent/session entries apply fleet-wide. Managed workspaces only.
         _td = settings.get("tool_denies")
         self.tool_denies: List[Dict[str, Any]] = _td if isinstance(_td, list) else []
+        # Per-subject controls (suspend / tool denies for an end user or a
+        # client team) from the verified signed policy — keyed ``user:<id>`` /
+        # ``team:<id>``. Enforced through the IAM path: the runtime passes this
+        # into iam.check_iam, which merges it tighten-only with any local
+        # iam.yaml profile (see iam._merge_remote_subject_controls). Managed
+        # workspaces only.
+        _sc = settings.get("subject_controls")
+        self.subject_controls: Dict[str, Any] = _sc if isinstance(_sc, dict) else {}
         # Global observe/enforce default for rules that don't set their own mode.
         # Defaults to "observe" — a fresh policy blocks nothing until an admin
         # flips rules (or this) to enforce.

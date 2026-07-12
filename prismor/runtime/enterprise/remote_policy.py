@@ -219,9 +219,18 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_tool_denies_sig is not None
         and str(latest_tool_denies_sig) != str(_current_tool_denies_sig())
     )
+    # Per-subject controls (suspend / deny for an end user or client team,
+    # settings.subject_controls) also live in the resolved policy without a
+    # version bump — compare their signature so an admin's suspension reaches
+    # every device within one debounce interval.
+    latest_subject_sig = body.get("subjectControlsSig")
+    subject_controls_changed = (
+        latest_subject_sig is not None
+        and str(latest_subject_sig) != str(_current_subject_controls_sig())
+    )
     if (version_changed or profile_changed or capture_changed
             or repos_changed or controls_changed or rule_ex_changed
-            or tool_denies_changed):
+            or tool_denies_changed or subject_controls_changed):
         return fetch(force=True)
     return False
 
@@ -285,6 +294,28 @@ def _current_agent_controls_sig() -> str:
         lines = sorted(
             f"{name}:{'1' if c.get('enabled', True) else '0'}:{c.get('mode') or ''}:{c.get('iam_profile') or ''}"
             for name, c in controls.items() if isinstance(c, dict)
+        )
+        if not lines:
+            return ""
+        import hashlib
+        return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _current_subject_controls_sig() -> str:
+    """Signature of the cached policy's per-subject controls, matching the
+    server's subjectControlsSig format (sorted ``key:suspended:deny-csv``
+    lines → sha256 → 16 hex chars; empty when none) so the device re-pulls
+    the moment an org admin suspends or reconfigures an end user / client."""
+    try:
+        pol = verify_and_load()
+        controls = ((pol or {}).get("settings") or {}).get("subject_controls") or {}
+        if not isinstance(controls, dict) or not controls:
+            return ""
+        lines = sorted(
+            f"{key}:{'1' if c.get('suspended') else '0'}:{','.join(sorted(str(t) for t in (c.get('deny_tools') or [])))}"
+            for key, c in controls.items() if isinstance(c, dict)
         )
         if not lines:
             return ""
