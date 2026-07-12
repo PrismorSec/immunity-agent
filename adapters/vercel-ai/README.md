@@ -89,6 +89,29 @@ the `subject` option, then the ambient `useSubject()` context, then the
 `PRISMOR_SUBJECT` environment variable. (Passing `subject` per
 `prismorTools()` call still works and takes precedence.)
 
+## LangChain JS / LangGraph JS
+
+The same package guards LangChain JS tools — and therefore LangGraph agents
+(`ToolNode`, `createReactAgent`), which execute those tools. Guard the tool
+objects once; graphs already holding a reference are covered because `invoke`
+is wrapped in place:
+
+```typescript
+import { tool } from "@langchain/core/tools";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { prismorLangChainTools, useSubject } from "prismor-warden";
+
+const tools = prismorLangChainTools([run_shell, fetch_url]);
+const agent = createReactAgent({ llm, tools });
+
+await useSubject(`user:${userId}`, () => agent.invoke({ messages }));
+```
+
+A denied call throws `PrismorBlocked`; LangGraph's `ToolNode` catches tool
+errors by default and returns the message to the model as a `ToolMessage`, so
+the run recovers gracefully. All options (`failMode`, `timeoutMs`, `subject`,
+`eventType`, …) work identically.
+
 ## Fail mode
 
 If the eval-server cannot answer (not running, crashed, timeout), the adapter

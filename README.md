@@ -89,7 +89,7 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 - 🧠 [Semantic Guard](docs/semantic-guard.md): opt-in hybrid layer that adds an LLM-assisted intent check for paraphrased prompt-injection attempts the regex rules cannot catch
 - 🪤 [Canary](docs/canary.md) plants honeytoken credential files that trip a CRITICAL finding the moment an agent reads them, catching recon behavior
 - 🪪 [IAM](docs/iam.md) gives each agent a named identity and least-privilege permission profile when several agents share a workspace
-- 🧩 [Framework Agents](docs/frameworks-overview.md) guards production agents (OpenAI Agents SDK, LangChain, CrewAI, browser-use, Vercel AI SDK) with one call — wrap each request in `use_subject("user:alice")` and a multi-tenant agent gets per-user attribution, per-user IAM profiles, and per-user suspension
+- 🧩 [Framework Agents](docs/frameworks-overview.md) guards production agents (OpenAI Agents SDK, LangChain/LangGraph in Python and JS, CrewAI, browser-use, Vercel AI SDK) with one call — wrap each request in `use_subject("user:alice")` and a multi-tenant agent gets per-user attribution, per-user IAM profiles, and per-user suspension
 - 🎯 [Scoped Agent](docs/scoped-agent.md) synthesizes minimal, task-specific rules per session so an injected pivot off-task gets blocked
 - 🧬 [Learning](docs/learning.md) mines session history to propose new rules, flag false positives, and detect evasion
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers

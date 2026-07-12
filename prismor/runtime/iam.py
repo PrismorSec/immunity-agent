@@ -255,6 +255,18 @@ def check_iam(
         finding["title"] = finding["title"].replace(
             "[scoped agent]", f"[iam:{agent_id}]"
         )
+        # The shared scoped-rules copy says "for this session", which misleads
+        # for identity-keyed profiles: a user:<id> deny follows the user across
+        # every session and agent. Name the actual scope in user-facing text.
+        if agent_id.startswith("user:"):
+            scope = f"for user '{agent_id[5:]}'"
+        elif agent_id.startswith("team:"):
+            scope = f"for team '{agent_id[5:]}'"
+        else:
+            scope = f"for agent identity '{agent_id}'"
+        for key in ("title", "evidence"):
+            if isinstance(finding.get(key), str):
+                finding[key] = finding[key].replace("for this session", scope)
     return finding
 
 

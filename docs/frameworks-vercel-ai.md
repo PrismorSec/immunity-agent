@@ -200,6 +200,25 @@ Start in `observe` to understand your agent's blast radius without disrupting
 users. Switch to `enforce` once confident. Policy is YAML — change it without
 redeploying TypeScript code.
 
+## LangChain JS / LangGraph JS
+
+`prismor-warden` also guards LangChain JS tools in place — and therefore
+LangGraph agents, whose `ToolNode` / `createReactAgent` execute those tools:
+
+```typescript
+import { prismorLangChainTools, useSubject } from "prismor-warden";
+
+const tools = prismorLangChainTools([run_shell, fetch_url]);
+const agent = createReactAgent({ llm, tools });
+await useSubject(`user:${userId}`, () => agent.invoke({ messages }));
+```
+
+`prismorLangChainTool(s)` wraps the tool's `invoke()` (handling both raw args
+and LangGraph's ToolCall-shaped input) and returns the same object, so
+existing references stay guarded. Denied calls throw `PrismorBlocked`;
+LangGraph's `ToolNode` feeds the error back to the model as a `ToolMessage`
+by default, so runs recover gracefully. All options in the table above apply.
+
 ## Other languages
 
 The eval-server speaks plain JSON over HTTP, so any language can act as an

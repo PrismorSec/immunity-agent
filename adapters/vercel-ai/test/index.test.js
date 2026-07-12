@@ -248,3 +248,69 @@ test("a tool with no execute() is returned unchanged", () => {
   const wrapped = prismorTool("noop", noop);
   assert.equal(wrapped, noop);
 });
+
+// ── LangChain JS / LangGraph JS ─────────────────────────────────────────────
+
+const { prismorLangChainTool, prismorLangChainTools } = require("../dist/index.js");
+
+function fakeLcTool(name) {
+  return {
+    name,
+    async invoke(input, _config) {
+      const args = input && input.type === "tool_call" ? input.args : input;
+      return `ran ${name}: ${JSON.stringify(args)}`;
+    },
+  };
+}
+
+test("langchain: guarded invoke() sends tool name and args to the eval-server", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const [tool] = prismorLangChainTools([fakeLcTool("fetch_url")]);
+    const out = await tool.invoke({ url: "https://example.com" });
+    assert.equal(out, 'ran fetch_url: {"url":"https://example.com"}');
+    assert.equal(requests[0].body.tool_name, "fetch_url");
+    assert.deepEqual(requests[0].body.arguments, { url: "https://example.com" });
+  });
+});
+
+test("langchain: ToolCall-shaped input (LangGraph ToolNode) unwraps args for evaluation", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tool = prismorLangChainTool(fakeLcTool("run_shell"));
+    const call = { name: "run_shell", args: { command: "echo hi" }, id: "1", type: "tool_call" };
+    await tool.invoke(call);
+    assert.deepEqual(requests[0].body.arguments, { command: "echo hi" });
+  });
+});
+
+test("langchain: denied invoke() throws PrismorBlocked and never runs the tool", async () => {
+  await withMockFetch(
+    async () => ({ ok: true, json: async () => ({ allow: false, reason: "nope", findings: [], blocking: null, subject: null }) }),
+    async () => {
+      let ran = false;
+      const tool = prismorLangChainTool({ name: "run_shell", invoke: async () => { ran = true; } });
+      await assert.rejects(() => tool.invoke({ command: "rm -rf /" }), PrismorBlocked);
+      assert.equal(ran, false);
+    },
+  );
+});
+
+test("langchain: useSubject() attributes guarded invoke() calls", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tool = prismorLangChainTool(fakeLcTool("fetch_url"));
+    await useSubject("user:alice", () => tool.invoke({ url: "https://a.com" }));
+    await useSubject("user:bob", () => tool.invoke({ url: "https://b.com" }));
+    assert.deepEqual(requests.map((r) => r.body.subject), ["user:alice", "user:bob"]);
+  });
+});
+
+test("langchain: guarding twice is a no-op", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tool = prismorLangChainTool(prismorLangChainTool(fakeLcTool("fetch_url")));
+    await tool.invoke({ url: "https://a.com" });
+    assert.equal(requests.length, 1);
+  });
+});

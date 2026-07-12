@@ -13,6 +13,7 @@ on your existing agent or controller object, with no changes to your tool logic.
 | CrewAI | Python | `pip install "prismor[crewai]"` | `guard_tools([...])` | `use_subject("user:alice")` |
 | browser-use | Python | `pip install "prismor[browser-use]"` | `guard_controller(controller)` | `use_subject("user:alice")` |
 | Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
+| LangChain JS / LangGraph JS | TypeScript | `npm install prismor-warden` | `prismorLangChainTools([...])` | `useSubject("user:alice", fn)` |
 | Any language | Any | — (HTTP client only) | `POST /v1/evaluate` | `X-Prismor-Subject` header |
 
 > The Python adapters ship inside the `prismor` package (needs `>= 1.14.2`) —
@@ -49,6 +50,7 @@ Regardless of framework, every adapter does the same three things:
 | CrewAI | `tool.func` → `tool._run` → `tool.run` (first found) | before the tool implementation runs |
 | browser-use | `Registry.execute_action` | before Playwright executes any browser action |
 | Vercel AI SDK | `tool.execute` | before the tool body runs, after the LLM emits the tool call |
+| LangChain JS / LangGraph JS | `tool.invoke` (StructuredTool) | before the tool runs — covers LangGraph's `ToolNode` / `createReactAgent` |
 | HTTP (any language) | caller-side `POST /v1/evaluate` | before calling the tool implementation |
 
 ## Eval-server (non-Python languages)
