@@ -48,3 +48,4 @@ prismor/runtime/hermes-plugin/
 assets/*
 experiments/*
 .agents/*node_modules/
+node_modules/
