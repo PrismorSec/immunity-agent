@@ -165,6 +165,49 @@ tools. Users without a profile get the org-wide defaults. Tool names match
 what the framework sees (the wrapped function or tool's name, e.g.
 `fetch_url`), so one profile applies across every framework the user reaches.
 
+## Per-client (multi-client organizations)
+
+If your agent serves several **clients** — your customers, each with many of
+their own users — attribute each request with both dimensions using the
+structured subject form:
+
+```python
+with use_subject("user=alice;team=client-acme"):
+    Runner.run_sync(agent, prompt)
+```
+
+```typescript
+await useSubject("user=alice;team=client-acme", () =>
+  generateText({ model, tools, prompt }));
+```
+
+`team` is the client dimension: it selects `team:<id>` IAM profiles and is
+recorded on every telemetry event, so activity, findings, and blocks can be
+sliced per client. One profile then governs every user of that client:
+
+```yaml
+agents:
+  # tighter rules for one client's tenancy
+  team:client-acme:
+    allowed_tools: ["*"]
+    deny_tools: [run_shell]
+    deny_network: true
+    allowed_paths: ["**"]
+
+  # offboard / suspend an entire client
+  team:client-globex:
+    allowed_tools: []
+    deny_tools: []
+    deny_network: true
+    allowed_paths: ["**"]
+```
+
+Precedence: a `user:<id>` profile wins over the user's `team:<id>` profile, so
+you can suspend one misbehaving user inside an otherwise-healthy client, or
+grant one power user more than their client's baseline. Subjects are labels
+asserted by your backend — Prismor clamps them to your org server-side, but
+choosing which client a request belongs to is your app's authentication job.
+
 ## Per-framework guides
 
 - [OpenAI Agents SDK](frameworks-openai-agents.md) — `guard_agent`, `prismor_guard`, FunctionTool patching
