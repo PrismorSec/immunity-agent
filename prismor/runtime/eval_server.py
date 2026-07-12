@@ -38,6 +38,7 @@ Non-2xx on server errors only. Policy denials are always 200 with allow=false.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 from datetime import datetime, timezone
@@ -94,6 +95,10 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 class EvalHandler(BaseHTTPRequestHandler):
     workspace: Path = Path.cwd()
+    # When set, /v1/evaluate requires `Authorization: Bearer <api_key>` — the
+    # hosted/exposed mode. /health stays open (liveness probes). Compared
+    # constant-time. None (default) preserves the open localhost behavior.
+    api_key: Optional[str] = None
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # silence per-request logs; server startup message is printed separately
@@ -111,7 +116,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prismor-Subject, X-Warden-Subject")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -124,6 +129,13 @@ class EvalHandler(BaseHTTPRequestHandler):
         if self.path != "/v1/evaluate":
             self._send_json({"error": "not found"}, 404)
             return
+
+        if self.api_key:
+            auth = self.headers.get("Authorization", "")
+            presented = auth[7:] if auth.startswith("Bearer ") else ""
+            if not presented or not hmac.compare_digest(presented, self.api_key):
+                self._send_json({"error": "unauthorized: missing or invalid API key"}, 401)
+                return
 
         length = int(self.headers.get("Content-Length", 0))
         try:
@@ -200,13 +212,24 @@ def run_eval_server(
     host: str = "127.0.0.1",
     port: int = 7071,
     workspace: Optional[Path] = None,
+    api_key: Optional[str] = None,
 ) -> None:
-    """Start the evaluation HTTP server (blocking)."""
+    """Start the evaluation HTTP server (blocking).
+
+    ``api_key`` (or the PRISMOR_EVAL_KEY env var) turns on bearer-token auth
+    for /v1/evaluate so the server can be exposed beyond localhost.
+    """
     ws = workspace or Path.cwd()
     EvalHandler.workspace = ws
+    EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
 
     server = _ThreadingHTTPServer((host, port), EvalHandler)
-    print(f"[prismor] eval-server listening on http://{host}:{port}")
+    if host not in ("127.0.0.1", "localhost", "::1") and not EvalHandler.api_key:
+        print("[prismor] WARNING: binding beyond localhost with NO API key — "
+              "anyone who can reach this port can evaluate against your policy. "
+              "Pass --api-key or set PRISMOR_EVAL_KEY.")
+    print(f"[prismor] eval-server listening on http://{host}:{port}"
+          + (" (bearer auth ON)" if EvalHandler.api_key else ""))
     print(f"[prismor] workspace: {ws}")
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
@@ -222,6 +245,9 @@ if __name__ == "__main__":
     _p.add_argument("--port", type=int, default=7071)
     _p.add_argument("--host", default="127.0.0.1")
     _p.add_argument("--workspace", default=None)
+    _p.add_argument("--api-key", default=None,
+                    help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY)")
     _a = _p.parse_args()
     run_eval_server(host=_a.host, port=_a.port,
-                    workspace=Path(_a.workspace) if _a.workspace else None)
+                    workspace=Path(_a.workspace) if _a.workspace else None,
+                    api_key=_a.api_key)

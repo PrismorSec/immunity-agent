@@ -243,6 +243,26 @@ test("concurrent requests with different subjects do not bleed", async () => {
   );
 });
 
+test("apiKey option sends Authorization header", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const run_shell = { execute: async () => "ok" };
+    const tools = prismorTools({ run_shell }, { apiKey: "prism_eval_secret" });
+    await tools.run_shell.execute({ command: "a" });
+    assert.equal(requests[0].headers["Authorization"], "Bearer prism_eval_secret");
+  });
+});
+
+test("no apiKey → no Authorization header", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const run_shell = { execute: async () => "ok" };
+    const tools = prismorTools({ run_shell });
+    await tools.run_shell.execute({ command: "a" });
+    assert.equal("Authorization" in requests[0].headers, false);
+  });
+});
+
 test("a tool with no execute() is returned unchanged", () => {
   const noop = {};
   const wrapped = prismorTool("noop", noop);

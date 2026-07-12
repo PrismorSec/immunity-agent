@@ -159,6 +159,32 @@ Or set a default for all tools when using `prismorTools`:
 const tools = prismorTools(myTools, { eventType: "network" });
 ```
 
+## Hosted / exposed eval-server (bearer auth)
+
+By default the eval-server binds localhost with no auth. To run it as a shared
+service (one sidecar for a fleet, or exposed beyond localhost), require a
+bearer token:
+
+```bash
+prismor eval-server --host 0.0.0.0 --port 7071 --api-key "$PRISMOR_EVAL_KEY"
+# or just set PRISMOR_EVAL_KEY in the server's environment
+```
+
+`POST /v1/evaluate` then returns 401 without `Authorization: Bearer <key>`;
+`GET /health` stays open for liveness probes. On the adapter side pass the
+key (defaults to the client's own `PRISMOR_EVAL_KEY` env var):
+
+```typescript
+const tools = prismorTools(myTools, {
+  evalUrl: "https://prismor-eval.internal.example.com",
+  apiKey: process.env.PRISMOR_EVAL_KEY,
+});
+```
+
+A 401 (wrong or missing key) follows `failMode` like any other eval-server
+failure — blocked in enforce mode. Binding beyond localhost with no key
+prints a loud warning.
+
 ## Fail mode
 
 If the eval-server cannot answer (down, not yet started, crashed, or slower

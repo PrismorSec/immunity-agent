@@ -16,6 +16,12 @@ export interface PrismorOptions {
   /** URL of the running eval-server. Default: http://127.0.0.1:7071 */
   evalUrl?: string;
   /**
+   * Bearer token sent as `Authorization` to the eval-server — required when
+   * the server runs with --api-key / PRISMOR_EVAL_KEY (hosted / non-localhost
+   * mode). Default: the PRISMOR_EVAL_KEY environment variable.
+   */
+  apiKey?: string;
+  /**
    * Subject for per-user attribution: "user:alice" or "user=alice;team=data".
    * Resolved per call, in priority order: this option, then the ambient
    * useSubject() context, then the PRISMOR_SUBJECT environment variable —
@@ -176,6 +182,7 @@ async function evaluate(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}),
         ...(subject ? { "X-Prismor-Subject": subject } : {}),
         ...(opts.agentName ? { "X-Prismor-Agent-Name": opts.agentName } : {}),
       },
@@ -210,6 +217,8 @@ function resolveOpts(opts: PrismorOptions): Required<PrismorOptions> {
   const mode = opts.mode ?? "enforce";
   return {
     evalUrl: opts.evalUrl ?? "http://127.0.0.1:7071",
+    apiKey: opts.apiKey
+      ?? (typeof process !== "undefined" && process.env ? process.env.PRISMOR_EVAL_KEY ?? "" : ""),
     subject: opts.subject ?? "",
     mode,
     failMode: opts.failMode ?? (mode === "enforce" ? "closed" : "open"),

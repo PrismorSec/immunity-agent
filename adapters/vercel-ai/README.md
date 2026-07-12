@@ -131,6 +131,7 @@ follows `failMode`:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `evalUrl` | `string` | `http://127.0.0.1:7071` | Eval-server URL |
+| `apiKey` | `string` | `$PRISMOR_EVAL_KEY` | Bearer token for an auth-enabled eval-server |
 | `subject` | `string` | `""` | End-user: `"user:alice"` or `"user=alice;team=data"` |
 | `mode` | `"enforce"\|"observe"` | `"enforce"` | Enforce blocks; observe logs only |
 | `failMode` | `"open"\|"closed"` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |

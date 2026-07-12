@@ -164,6 +164,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             host=args.host,
             port=args.port,
             workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+            api_key=getattr(args, "api_key", None),
         )
         return
 
@@ -1989,6 +1990,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--port", type=int, default=7071, help="Port to listen on (default: 7071)")
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
+    _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
 
     # ── check ──────────────────────────────────────────────────────────
     check_parser = subparsers.add_parser("check", help="Quick pre-check a command or file path")
