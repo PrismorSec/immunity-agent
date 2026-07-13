@@ -1133,6 +1133,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('Backend:', _GREEN)}      {report['backend']}")
             print(f"  {_color('Image:', _GREEN)}        {report['image']}")
             print(f"  {_color('Network:', _GREEN)}      {report['network']}")
+            if report.get("ring") is not None:
+                print(f"  {_color('Ring:', _GREEN)}        {report['ring']} ({report.get('ring_label')})")
             docker = report["docker"]
             if docker.get("cli_found") and docker.get("server_reachable"):
                 print(f"  {_color('Docker:', _GREEN)}       available ({docker.get('server_version', 'unknown')})")

@@ -38,10 +38,77 @@ DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
 _VALID_NETWORKS = {"none", "bridge", "host", "allowlist"}
 _VALID_MOUNTS = {"ro", "rw"}
 
+# ── Privilege rings ───────────────────────────────────────────────────────
+#
+# A ring is a named bundle of (network, workspace_mount, resource_limits)
+# defaults — coarse, pre-reviewed profiles instead of hand-tuning every
+# field. Explicit config always wins: a workspace that sets `ring: "1"` and
+# also sets `network: "host"` gets "host", the ring only supplies defaults.
+#
+# "host" network is intentionally never a ring default — a ring that wants
+# it must be configured explicitly outside the presets, on purpose. cap-drop
+# ALL + no-new-privileges (see build_docker_argv) applies unconditionally
+# at every ring; rings tune the outer blast radius (network/mounts/limits),
+# not the process-capability floor.
+_RING_PRESETS: Dict[str, Dict[str, Any]] = {
+    "0": {  # read-only: inspect only, nothing can be written, no network
+        "network": "none",
+        "workspace_mount": "ro",
+        "resource_limits": {"cpus": "0.5", "memory": "512m", "pids_limit": 128, "timeout_seconds": 120},
+    },
+    "1": {  # default: workspace-write, still no network (matches the prior single-tier default)
+        "network": "none",
+        "workspace_mount": "rw",
+        "resource_limits": {"cpus": "1.0", "memory": "1g", "pids_limit": 256, "timeout_seconds": 300},
+    },
+    "2": {  # network-allowlisted: workspace-write + egress restricted to the policy allowlist
+        "network": "allowlist",
+        "workspace_mount": "rw",
+        "resource_limits": {"cpus": "2.0", "memory": "2g", "pids_limit": 512, "timeout_seconds": 600},
+    },
+    "3": {  # broadest: bridged network, still isolated from the host network stack
+        "network": "bridge",
+        "workspace_mount": "rw",
+        "resource_limits": {"cpus": "4.0", "memory": "4g", "pids_limit": 1024, "timeout_seconds": 1200},
+    },
+}
+
+_RING_LABELS: Dict[str, str] = {
+    "0": "read-only (no writes, no network)",
+    "1": "workspace-write, no network",
+    "2": "workspace-write, allowlisted network",
+    "3": "workspace-write, bridged network",
+}
+
+
+def ring_names() -> List[str]:
+    """Valid ring identifiers, in ascending privilege order."""
+    return sorted(_RING_PRESETS, key=int)
+
+
+def ring_label(ring: Optional[str]) -> Optional[str]:
+    return _RING_LABELS.get(str(ring)) if ring is not None else None
+
 
 def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Return sandbox config with safe defaults applied."""
-    cfg = _deep_merge(DEFAULT_SANDBOX_CONFIG, raw or {})
+    """Return sandbox config with safe defaults applied.
+
+    If ``raw["ring"]`` names a known privilege ring, that ring's preset
+    supplies the network/mount/resource_limits defaults before the rest of
+    ``raw`` is layered on top — so an explicit field in ``raw`` still wins
+    over the ring's default for that field.
+    """
+    raw = raw or {}
+    ring_value = raw.get("ring")
+    ring_key = str(ring_value) if ring_value is not None else None
+    base = DEFAULT_SANDBOX_CONFIG
+    if ring_key in _RING_PRESETS:
+        base = _deep_merge(DEFAULT_SANDBOX_CONFIG, _RING_PRESETS[ring_key])
+    else:
+        ring_key = None  # unknown ring value — ignore rather than silently misconfigure
+
+    cfg = _deep_merge(base, raw)
+    cfg["ring"] = ring_key
     cfg["backend"] = str(cfg.get("backend") or "docker").lower()
     cfg["mode"] = str(cfg.get("mode") or "observe").lower()
     cfg["network"] = str(cfg.get("network") or "none").lower()
@@ -226,6 +293,9 @@ def status_report(config: Dict[str, Any]) -> Dict[str, Any]:
         "network": cfg.get("network"),
         "workspace_mount": cfg.get("workspace_mount"),
         "read_only_root": bool(cfg.get("read_only_root")),
+        "ring": cfg.get("ring"),
+        "ring_label": ring_label(cfg.get("ring")),
+        "resource_limits": cfg.get("resource_limits"),
         "docker": docker_status(),
     }
 

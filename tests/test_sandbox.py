@@ -115,5 +115,100 @@ class TestSandboxCommandHandling(unittest.TestCase):
         self.assertEqual(args.encoded, "abc")
 
 
+class TestPrivilegeRings(unittest.TestCase):
+    def test_no_ring_set_is_fully_backward_compatible(self):
+        """Omitting `ring` must reproduce the pre-ring single-tier defaults
+        exactly — existing workspace configs must not change behavior."""
+        cfg = sandbox.effective_config({"enabled": True})
+        self.assertIsNone(cfg["ring"])
+        self.assertEqual(cfg["network"], "none")
+        self.assertEqual(cfg["workspace_mount"], "rw")
+        self.assertEqual(cfg["resource_limits"]["cpus"], "1.0")
+
+    def test_ring_0_is_read_only_and_networkless(self):
+        cfg = sandbox.effective_config({"enabled": True, "ring": "0"})
+        self.assertEqual(cfg["ring"], "0")
+        self.assertEqual(cfg["network"], "none")
+        self.assertEqual(cfg["workspace_mount"], "ro")
+
+    def test_ring_2_is_allowlisted_network(self):
+        cfg = sandbox.effective_config({"enabled": True, "ring": "2"})
+        self.assertEqual(cfg["network"], "allowlist")
+        self.assertEqual(cfg["workspace_mount"], "rw")
+
+    def test_ring_3_uses_bridge_not_host(self):
+        """No ring preset ever defaults to `host` networking — that's the
+        one mode a ring can't hand out automatically."""
+        cfg = sandbox.effective_config({"enabled": True, "ring": "3"})
+        self.assertEqual(cfg["network"], "bridge")
+
+    def test_rings_are_strictly_increasing_in_resource_ceiling(self):
+        limits = [
+            sandbox.effective_config({"ring": r})["resource_limits"]
+            for r in sandbox.ring_names()
+        ]
+        cpus = [float(l["cpus"]) for l in limits]
+        self.assertEqual(cpus, sorted(cpus))
+        self.assertTrue(all(a < b for a, b in zip(cpus, cpus[1:])))
+
+    def test_explicit_field_overrides_ring_default(self):
+        """A ring only supplies defaults — an explicitly set field in the
+        same config always wins, even a more permissive one than the ring."""
+        cfg = sandbox.effective_config({"ring": "0", "network": "bridge"})
+        self.assertEqual(cfg["network"], "bridge")
+        self.assertEqual(cfg["ring"], "0")
+
+    def test_unknown_ring_value_is_ignored_not_fatal(self):
+        cfg = sandbox.effective_config({"ring": "does-not-exist"})
+        self.assertIsNone(cfg["ring"])
+        self.assertEqual(cfg["network"], "none")  # falls back to plain defaults
+
+    def test_ring_names_are_ascending(self):
+        self.assertEqual(sandbox.ring_names(), ["0", "1", "2", "3"])
+
+    def test_ring_label_for_known_and_unknown_ring(self):
+        self.assertIn("read-only", sandbox.ring_label("0"))
+        self.assertIsNone(sandbox.ring_label(None))
+        self.assertIsNone(sandbox.ring_label("nope"))
+
+    def test_status_report_surfaces_ring_and_label(self):
+        report = sandbox.status_report({"ring": "1"})
+        self.assertEqual(report["ring"], "1")
+        self.assertIsNotNone(report["ring_label"])
+
+    def test_policy_engine_loads_ring_from_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "policy.yaml"
+            p.write_text(
+                'version: "1.0"\n'
+                "settings:\n"
+                "  sandbox:\n"
+                "    enabled: true\n"
+                "    ring: \"2\"\n"
+                "rules: []\n",
+                encoding="utf-8",
+            )
+            engine = PolicyEngine(policy_path=p)
+            cfg = sandbox.effective_config(engine.sandbox_config)
+            self.assertEqual(cfg["ring"], "2")
+            self.assertEqual(cfg["network"], "allowlist")
+
+    def test_schema_accepts_ring_in_sandbox_settings(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write(
+                'version: "1.0"\n'
+                "settings:\n"
+                "  sandbox:\n"
+                "    enabled: true\n"
+                "    ring: \"1\"\n"
+                "rules: []\n"
+            )
+            path = Path(f.name)
+        try:
+            self.assertEqual(validate_policy(path), [])
+        finally:
+            path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()
