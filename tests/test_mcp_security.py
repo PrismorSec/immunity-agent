@@ -12,6 +12,7 @@ Run:  python3 tests/test_mcp_security.py
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -197,6 +198,96 @@ fc2 = PolicyEngine(workspace=tmp).evaluate(ev_c2, index=0, session_id="sess-C2")
 # version, but routing MCP output through injection scanning is the guarantee.
 check("HTML-hidden injection in MCP output is flagged",
       "prompt_injection" in categories(fc2), rule_ids(fc2))
+
+
+# ── D. MCP server name typosquat detection ───────────────────────────────────
+print("\n[D] MCP server name typosquat detection")
+
+exact_known = {"name": "github", "config": {"command": "npx", "args": ["mcp-server-github"]}}
+check("exact match to a known server name is not flagged",
+      "mcp-typosquat-name" not in rule_ids(audit_mcp_schema(exact_known)))
+
+near_miss = {"name": "githu", "config": {"command": "npx", "args": ["evil"]}}
+ids_typo = rule_ids(audit_mcp_schema(near_miss))
+check("single-character near-miss of 'github' is flagged as a typosquat",
+      "mcp-typosquat-name" in ids_typo, ids_typo)
+
+near_miss_hyphen = {"name": "git-hub", "config": {"command": "npx", "args": ["evil"]}}
+ids_typo2 = rule_ids(audit_mcp_schema(near_miss_hyphen))
+check("hyphenated near-miss of 'github' is flagged as a typosquat",
+      "mcp-typosquat-name" in ids_typo2, ids_typo2)
+
+unrelated = {"name": "totally-custom-internal-server", "config": {"command": "npx", "args": ["x"]}}
+check("a name unrelated to any known server is not flagged",
+      "mcp-typosquat-name" not in rule_ids(audit_mcp_schema(unrelated)))
+
+
+# ── E. MCP schema-drift monitoring ────────────────────────────────────────────
+print("\n[E] MCP schema-drift monitoring (rug-pull detection)")
+
+base_entry = {
+    "name": "driftbot",
+    "agent": "claude",
+    "source": "/tmp/drift-test/.mcp.json",
+    "config": {"command": "node", "args": ["index.js"], "tools": [
+        {"name": "read_file", "inputSchema": {"properties": {"path": {"type": "string"}}}},
+    ]},
+}
+drift_state_d = {}
+first_scan = audit_mcp_schema(base_entry, drift_state=drift_state_d)
+check("first scan of a server records a fingerprint but flags no drift",
+      "mcp-schema-drift" not in rule_ids(first_scan), rule_ids(first_scan))
+
+unchanged_entry = json.loads(json.dumps(base_entry))
+second_scan_same = audit_mcp_schema(unchanged_entry, drift_state=drift_state_d)
+check("an unchanged config on the next scan flags no drift",
+      "mcp-schema-drift" not in rule_ids(second_scan_same), rule_ids(second_scan_same))
+
+changed_entry = json.loads(json.dumps(base_entry))
+changed_entry["config"]["tools"].append(
+    {"name": "exec_shell", "inputSchema": {"properties": {"cmd": {"type": "string"}}}}
+)
+third_scan_changed = audit_mcp_schema(changed_entry, drift_state=drift_state_d)
+check("a tool added after the server was already trusted flags schema drift",
+      "mcp-schema-drift" in rule_ids(third_scan_changed), rule_ids(third_scan_changed))
+
+check("audit_mcp_schema() with no drift_state (default None) performs no drift check",
+      "mcp-schema-drift" not in rule_ids(audit_mcp_schema(changed_entry)))
+
+# End-to-end through scan_skills(): drift state persists across two scans of
+# the same workspace, isolated to a throwaway PRISMOR_HOME so this never
+# touches the developer's real ~/.prismor state.
+from prismor.runtime.scanner import scan_skills
+
+drift_home = Path(tempfile.mkdtemp(prefix="mcp-drift-home-"))
+drift_ws = Path(tempfile.mkdtemp(prefix="mcp-drift-ws-"))
+(drift_ws / ".mcp.json").write_text(json.dumps({
+    "mcpServers": {"driftbot": {"command": "node", "args": ["index.js"], "tools": [
+        {"name": "read_file", "inputSchema": {"properties": {"path": {"type": "string"}}}},
+    ]}}
+}), encoding="utf-8")
+
+old_home = os.environ.get("PRISMOR_HOME")
+os.environ["PRISMOR_HOME"] = str(drift_home)
+try:
+    result1 = scan_skills(workspace=drift_ws, agent="claude")
+    check("scan_skills(): first scan of a workspace flags no drift",
+          "mcp-schema-drift" not in rule_ids(result1["findings"]), rule_ids(result1["findings"]))
+
+    (drift_ws / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {"driftbot": {"command": "node", "args": ["index.js"], "tools": [
+            {"name": "read_file", "inputSchema": {"properties": {"path": {"type": "string"}}}},
+            {"name": "exec_shell", "inputSchema": {"properties": {"cmd": {"type": "string"}}}},
+        ]}}
+    }), encoding="utf-8")
+    result2 = scan_skills(workspace=drift_ws, agent="claude")
+    check("scan_skills(): second scan after a schema change flags drift",
+          "mcp-schema-drift" in rule_ids(result2["findings"]), rule_ids(result2["findings"]))
+finally:
+    if old_home is None:
+        os.environ.pop("PRISMOR_HOME", None)
+    else:
+        os.environ["PRISMOR_HOME"] = old_home
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ Usage (from CLI):
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import shlex
@@ -690,10 +691,158 @@ def _truncate_url(url: str, limit: int = 120) -> str:
     return base if len(base) <= limit else base[: limit - 3] + "..."
 
 
+# ── Typosquat detection ──────────────────────────────────────────────────────
+#
+# Well-known / official MCP server names. A server whose name is a close-but-
+# not-exact match to one of these (edit distance 1-2) is riding on the
+# reputation of a trusted name without actually being it.
+_KNOWN_MCP_SERVERS = frozenset({
+    "github", "gitlab", "filesystem", "fetch", "memory", "puppeteer",
+    "playwright", "brave-search", "google-drive", "gdrive", "slack",
+    "postgres", "postgresql", "sqlite", "redis", "docker", "kubernetes",
+    "aws", "gcp", "azure", "sentry", "notion", "linear", "jira",
+    "confluence", "figma", "stripe", "twilio", "sendgrid", "everything",
+})
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Edit distance between two strings. No external dependency."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev = cur
+    return prev[-1]
+
+
+def _check_typosquat(name: str) -> Optional[Dict[str, Any]]:
+    """Flag a server name that closely resembles a well-known MCP server.
+
+    Exact matches to a known name are legitimate and never flagged; only a
+    close-but-wrong name is (``githu``, `git-hub`, `githib`) — the shape a
+    typosquat takes when it wants to be mistaken for the real thing.
+    """
+    candidate = (name or "").strip().lower()
+    if not candidate or candidate in _KNOWN_MCP_SERVERS or len(candidate) < 4:
+        return None
+    best_match: Optional[str] = None
+    best_distance: Optional[int] = None
+    for known in _KNOWN_MCP_SERVERS:
+        if abs(len(candidate) - len(known)) > 2:
+            continue  # cheap pre-filter before the O(n*m) edit-distance pass
+        distance = _levenshtein(candidate, known)
+        if best_distance is None or distance < best_distance:
+            best_match, best_distance = known, distance
+    if best_match and best_distance is not None and 0 < best_distance <= 2:
+        return {
+            "id": f"mcp-typosquat-{name}",
+            "severity": "HIGH",
+            "category": "skill_risk",
+            "title": f"MCP server name '{name}' closely resembles well-known server '{best_match}' (possible typosquat)",
+            "evidence": f"name={name!r} nearest_known={best_match!r} edit_distance={best_distance}",
+            "eventIndex": 0,
+            "ruleId": "mcp-typosquat-name",
+            "action": "warn",
+            "skillName": name,
+        }
+    return None
+
+
+# ── Schema-drift monitoring ───────────────────────────────────────────────────
+#
+# A "rug pull" MCP server passes review with a benign schema, then the
+# maintainer (or a compromised registry) swaps in new tools / a new endpoint
+# after the agent has been configured to trust it. Config edits are otherwise
+# invisible between scans, so this compares each scan's fingerprint of the
+# security-relevant fields against the last one seen and flags a change.
+
+def _drift_state_path() -> Path:
+    from prismor.runtime.store import prismor_home
+    return prismor_home() / "mcp_schema_snapshots.json"
+
+
+def _load_drift_state() -> Dict[str, Any]:
+    path = _drift_state_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_drift_state(state: Dict[str, Any]) -> None:
+    path = _drift_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass  # best-effort; drift detection just degrades to "no prior snapshot"
+
+
+def _schema_fingerprint(cfg: Dict[str, Any]) -> str:
+    """Stable hash of the fields an attacker would change post-approval:
+    the declared tool set + schemas, the remote endpoint, and the stdio
+    command/args."""
+    tools = cfg.get("tools") or []
+    tool_shape = sorted(
+        (
+            str(t.get("name", "")),
+            json.dumps(t.get("inputSchema") or t.get("input_schema") or {}, sort_keys=True),
+        )
+        for t in tools if isinstance(t, dict)
+    )
+    material = {
+        "tools": tool_shape,
+        "url": next((cfg.get(k) for k in _URL_KEYS if cfg.get(k)), None),
+        "command": cfg.get("command"),
+        "args": cfg.get("args"),
+    }
+    blob = json.dumps(material, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _check_drift(entry: Dict[str, Any], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Compare this scan's fingerprint against the last one recorded for the
+    same (agent, source file, server name). Updates ``state`` in place."""
+    name = entry.get("name", "unnamed")
+    source = entry.get("source", "")
+    cfg = entry.get("config") or {}
+    if not isinstance(cfg, dict):
+        return None
+    key = f"{entry.get('agent', 'unknown')}:{source}:{name}"
+    fingerprint = _schema_fingerprint(cfg)
+    prior = state.get(key)
+    state[key] = {"fingerprint": fingerprint, "name": name, "source": source}
+    if prior and prior.get("fingerprint") and prior["fingerprint"] != fingerprint:
+        return {
+            "id": f"mcp-drift-{name}",
+            "severity": "HIGH",
+            "category": "skill_risk",
+            "title": f"MCP server '{name}' schema changed since the last scan (possible rug pull)",
+            "evidence": (
+                f"server={name!r} source={source!r} "
+                f"prior_fingerprint={prior['fingerprint'][:12]} current_fingerprint={fingerprint[:12]}"
+            ),
+            "eventIndex": 0,
+            "ruleId": "mcp-schema-drift",
+            "action": "warn",
+            "skillName": name,
+        }
+    return None
+
+
 def audit_mcp_schema(
     entry: Dict[str, Any],
     egress_allowlist: Optional[List[str]] = None,
     mcp_action: str = "warn",
+    drift_state: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Static analysis of an MCP server / skill config.
 
@@ -719,6 +868,18 @@ def audit_mcp_schema(
 
     # Remote-transport hygiene (HTTP/SSE/streamable-HTTP MCP servers).
     findings.extend(_audit_remote_transport(name, cfg, egress_allowlist, mcp_action))
+
+    # Typosquat check — name similarity to a well-known MCP server.
+    typosquat_finding = _check_typosquat(name)
+    if typosquat_finding:
+        findings.append(typosquat_finding)
+
+    # Schema-drift check against the last scan (opt-in via drift_state; the
+    # standalone audit_mcp_schema() callers in tests get none unless they ask).
+    if drift_state is not None:
+        drift_finding = _check_drift(entry, drift_state)
+        if drift_finding:
+            findings.append(drift_finding)
 
     # Unicode-confusable checks — homoglyph spoofing in server/tool names and
     # invisible characters embedded in tool descriptions (hidden instructions).
@@ -912,6 +1073,7 @@ def _synthesize_event(entry: Dict[str, Any]) -> Dict[str, Any]:
 def scan_skills(
     workspace: Optional[Path] = None,
     agent: Optional[str] = None,
+    track_drift: bool = True,
 ) -> Dict[str, Any]:
     """Scan all discovered skill/MCP configs and return findings.
 
@@ -925,6 +1087,10 @@ def scan_skills(
     """
     engine = PolicyEngine(workspace=workspace)
     configs = discover_configs(agent=agent, workspace=workspace)
+
+    # Loaded once per scan and saved once at the end, so drift is compared
+    # against the previous *scan*, not the previous entry within this one.
+    drift_state = _load_drift_state() if track_drift else None
 
     all_entries: List[Dict[str, Any]] = []
     for cfg in configs:
@@ -947,6 +1113,7 @@ def scan_skills(
             entry,
             egress_allowlist=engine.egress_allowlist,
             mcp_action=engine.mcp_transport_action,
+            drift_state=drift_state,
         ):
             sf["skillSource"] = entry.get("source", "")
             sf["agent"] = entry.get("agent", "unknown")
@@ -960,6 +1127,9 @@ def scan_skills(
                 af["skillSource"] = entry.get("source", "")
                 af["agent"] = entry.get("agent", "unknown")
                 findings.append(af)
+
+    if drift_state is not None:
+        _save_drift_state(drift_state)
 
     # Sort by severity: CRITICAL first, then HIGH, MEDIUM, LOW
     findings.sort(key=lambda f: _SEVERITY_ORDER.get(f.get("severity", "UNKNOWN"), 99))
