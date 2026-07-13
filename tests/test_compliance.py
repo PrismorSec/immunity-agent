@@ -23,7 +23,8 @@ from prismor.runtime.enterprise import compliance
 def test_frameworks_and_crosswalk_load():
     frameworks = compliance._load_frameworks()
     assert set(frameworks) >= {
-        "owasp-llm-top10", "owasp-agentic-t10", "nist-ai-rmf", "eu-ai-act"
+        "owasp-llm-top10", "owasp-agentic-t10", "nist-ai-rmf", "eu-ai-act",
+        "soc2", "iso-42001",
     }
     crosswalk = compliance._load_crosswalk()
     assert crosswalk and "destructive-command" in crosswalk
@@ -33,9 +34,22 @@ def test_default_policy_covers_all_controls(tmp_path):
     """The bundled default policy activates a rule for every mapped control."""
     cov = compliance.coverage(tmp_path)
     s = cov["summary"]
-    assert s["frameworks"] == 4
+    assert s["frameworks"] == 6
     assert s["controls_total"] > 0
     assert s["controls_covered"] == s["controls_total"]
+
+
+def test_soc2_and_iso42001_controls_are_covered(tmp_path):
+    """The two frameworks added alongside NIST/EU AI Act are fully mapped
+    under the default policy, same guarantee as the original four."""
+    cov = compliance.coverage(tmp_path)
+    soc2 = next(f for f in cov["frameworks"] if f["framework"] == "soc2")
+    iso = next(f for f in cov["frameworks"] if f["framework"] == "iso-42001")
+    assert soc2["covered"] == soc2["total"] and soc2["total"] >= 5
+    assert iso["covered"] == iso["total"] and iso["total"] >= 3
+
+    cc72 = next(c for c in soc2["controls"] if c["id"] == "CC7.2")
+    assert cc72["covered"] and "subsystem:audit-trail" in cc72["by"]
 
 
 def test_coverage_attributes_controls_to_real_rules(tmp_path):

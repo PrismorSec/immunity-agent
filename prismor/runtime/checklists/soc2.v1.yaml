@@ -1,0 +1,22 @@
+# SOC 2 Trust Services Criteria — Common Criteria (Security)
+# https://www.aicpa-cima.com/resources/landing/system-and-organization-controls-soc-suite-of-services
+#
+# The CC6 (logical/physical access, boundary protection, malicious software)
+# and CC7 (monitoring, incident evaluation) criteria a runtime guardrail with
+# a signed audit trail contributes evidence for. SOC 2 is an attestation over
+# an organization's controls as a whole; this pack scopes to the subset a
+# tool like Prismor can produce technical evidence for.
+framework: soc2
+title: "SOC 2 Trust Services Criteria (Security — Common Criteria)"
+version: "2017 (with 2022 revisions)"
+controls:
+  - id: CC6.1
+    title: Logical access security measures restrict access to authorized users and processes
+  - id: CC6.6
+    title: The entity implements boundary protection to restrict unauthorized external access
+  - id: CC6.8
+    title: The entity prevents or detects and acts upon the introduction of unauthorized or malicious software
+  - id: CC7.2
+    title: The entity monitors system components for anomalies indicative of security events
+  - id: CC7.3
+    title: The entity evaluates security events to determine whether they require an incident response

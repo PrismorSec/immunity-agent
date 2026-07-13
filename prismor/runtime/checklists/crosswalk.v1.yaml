@@ -18,6 +18,7 @@ map:
     - owasp-llm-top10:LLM01
     - owasp-agentic-t10:ASI06
     - nist-ai-rmf:MEASURE-2.6
+    - iso-42001:6.1
   prompt-injection-hidden:
     - owasp-llm-top10:LLM01
     - owasp-agentic-t10:ASI06
@@ -27,11 +28,13 @@ map:
   model-manipulation:
     - owasp-llm-top10:LLM05
     - owasp-agentic-t10:ASI06
+    - iso-42001:6.1
 
   # ── Sensitive information disclosure ────────────────────────────────
   secret-exfiltration:
     - owasp-llm-top10:LLM02
     - nist-ai-rmf:MEASURE-2.7
+    - soc2:CC6.1
   bulk-pii-exfiltration:
     - owasp-llm-top10:LLM02
   secret-in-url-params:
@@ -40,6 +43,7 @@ map:
     - owasp-llm-top10:LLM02
   secret-access:
     - owasp-llm-top10:LLM02
+    - soc2:CC6.1
   pii-exposure:
     - owasp-llm-top10:LLM02
 
@@ -47,15 +51,19 @@ map:
   pkg-install-from-url:
     - owasp-llm-top10:LLM03
     - owasp-agentic-t10:ASI04
+    - soc2:CC6.8
   pkg-suspicious-name:
     - owasp-llm-top10:LLM03
     - owasp-agentic-t10:ASI04
+    - soc2:CC6.8
   dependency-confusion:
     - owasp-llm-top10:LLM03
     - owasp-agentic-t10:ASI04
+    - soc2:CC6.8
   package-registry-poisoning:
     - owasp-llm-top10:LLM03
     - owasp-agentic-t10:ASI04
+    - soc2:CC6.8
   lockfile-direct-edit:
     - owasp-llm-top10:LLM03
 
@@ -64,16 +72,23 @@ map:
     - owasp-llm-top10:LLM06
     - owasp-agentic-t10:T02
     - nist-ai-rmf:MEASURE-2.6
+    - soc2:CC7.3
+    - iso-42001:8.1
   remote-execution:
     - owasp-llm-top10:LLM06
     - owasp-agentic-t10:T02
+    - soc2:CC6.6
+    - iso-42001:8.1
   privilege-escalation:
     - owasp-agentic-t10:T03
     - nist-ai-rmf:MEASURE-2.7
     - eu-ai-act:ART15
+    - soc2:CC6.1
   container-escape:
     - owasp-agentic-t10:T03
     - eu-ai-act:ART15
+    - soc2:CC6.6
+    - iso-42001:8.1
   disable-security-controls:
     - owasp-agentic-t10:T03
     - eu-ai-act:ART15
@@ -93,7 +108,10 @@ map:
     - nist-ai-rmf:MANAGE-4.1
     - nist-ai-rmf:GOVERN-1.4
     - eu-ai-act:ART12
+    - soc2:CC7.2
+    - iso-42001:9.1
   # Step-up (human approval) is the human-oversight control.
   subsystem:step-up-approval:
     - nist-ai-rmf:MANAGE-2.1
     - eu-ai-act:ART14
+    - soc2:CC7.3

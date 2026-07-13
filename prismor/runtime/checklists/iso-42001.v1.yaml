@@ -1,0 +1,18 @@
+# ISO/IEC 42001:2023 — AI management system
+# https://www.iso.org/standard/81230.html
+#
+# ISO 42001 shares the Annex SL management-system structure with ISO
+# 27001/9001 (Plan-Do-Check-Act). This pack scopes to the top-level clauses
+# a runtime guardrail contributes operational evidence for — risk treatment,
+# operational control, and monitoring/evaluation. Certification requires a
+# full AI management system; Prismor is one control within it.
+framework: iso-42001
+title: "ISO/IEC 42001 (AI Management System)"
+version: "2023"
+controls:
+  - id: "6.1"
+    title: Actions to address AI-related risks and opportunities are planned
+  - id: "8.1"
+    title: Operational planning and control of the AI management system
+  - id: "9.1"
+    title: Monitoring, measurement, analysis and evaluation of the AI management system
