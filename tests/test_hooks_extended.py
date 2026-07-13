@@ -16,6 +16,7 @@ from prismor.runtime.hooks import (
     _strip_codex,
     _strip_cursor,
     _strip_grok,
+    _strip_kiro,
     _strip_windsurf,
     install_hooks,
     normalize_payload,
@@ -168,6 +169,33 @@ class TestStripGrok(unittest.TestCase):
         self.assertFalse(removed)
 
 
+class TestStripKiro(unittest.TestCase):
+    """Test _strip_kiro removes Prismor entries."""
+
+    def test_removes_prismor_hooks(self):
+        marker = "/repo/prismor/runtime/cli.py"
+        config = {
+            "name": "kiro_default",
+            "hooks": {
+                "preToolUse": [
+                    {"command": f'python3 "{marker}" hook-dispatch --agent kiro'},
+                    {"command": "other-tool --check"},
+                ]
+            },
+        }
+        result, removed = _strip_kiro(config, marker)
+        self.assertTrue(removed)
+        self.assertEqual(len(result["hooks"]["preToolUse"]), 1)
+        self.assertEqual(result["hooks"]["preToolUse"][0]["command"], "other-tool --check")
+        # Non-hooks fields (name, tools, ...) survive stripping untouched.
+        self.assertEqual(result["name"], "kiro_default")
+
+    def test_no_change(self):
+        config = {"hooks": {"preToolUse": [{"command": "unrelated"}]}}
+        result, removed = _strip_kiro(config, "/repo/prismor/runtime/cli.py")
+        self.assertFalse(removed)
+
+
 class TestStripWindsurf(unittest.TestCase):
     """Test _strip_windsurf removes Prismor entries."""
 
@@ -228,6 +256,8 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
             config_path = self.workspace / ".codex" / "hooks.json"
         elif agent == "grok":
             config_path = self.workspace / ".grok" / "hooks" / "prismor.json"
+        elif agent == "kiro":
+            config_path = self.workspace / ".kiro" / "agents" / "kiro_default.json"
         else:
             config_path = self.workspace / ".windsurf" / "hooks.json"
         self.assertTrue(config_path.exists())
@@ -266,6 +296,47 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
 
     def test_grok_roundtrip(self):
         self._roundtrip("grok")
+
+    def test_kiro_roundtrip(self):
+        self._roundtrip("kiro")
+
+    def test_kiro_install_seeds_full_tools_list_on_fresh_config(self):
+        # Kiro's merge-vs-replace semantics for a partial kiro_default.json
+        # override are undocumented, so a fresh install must be a
+        # self-contained agent config (explicit tools included) rather than
+        # a hooks-only fragment -- otherwise a full-replace-on-load Kiro
+        # would silently strip every default-agent tool the moment Prismor
+        # installs hooks.
+        install_hooks(
+            repo_root=self.repo_root, workspace=self.workspace,
+            agent="kiro", scope="project", mode="observe",
+        )
+        config_path = self.workspace / ".kiro" / "agents" / "kiro_default.json"
+        config = json.loads(config_path.read_text())
+        self.assertEqual(config["name"], "kiro_default")
+        self.assertIn("shell", config["tools"])
+        self.assertIn("read", config["tools"])
+        self.assertIn("write", config["tools"])
+
+    def test_kiro_install_preserves_existing_agent_config_fields(self):
+        # An existing kiro_default.json (the user's own customization, or a
+        # prior Prismor install) must not be clobbered -- only "hooks" gets
+        # merged in.
+        config_path = self.workspace / ".kiro" / "agents" / "kiro_default.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "name": "kiro_default",
+            "model": "claude-opus-4",
+            "tools": ["read", "write"],
+        }))
+        install_hooks(
+            repo_root=self.repo_root, workspace=self.workspace,
+            agent="kiro", scope="project", mode="observe",
+        )
+        config = json.loads(config_path.read_text())
+        self.assertEqual(config["model"], "claude-opus-4")
+        self.assertEqual(config["tools"], ["read", "write"])
+        self.assertIn("preToolUse", config["hooks"])
 
     def test_codex_install_enables_hooks_feature_flag_on_fresh_config(self):
         # Regression for PrismorSec/prismor#149: without [features].hooks set
@@ -738,6 +809,61 @@ class TestNormalizePayloadGrok(unittest.TestCase):
         result = normalize_payload(agent="grok", payload=payload, workspace=Path("/tmp"))
         event = result["event"]
         self.assertEqual(event["type"], "file_write")
+        self.assertIn("lodash", event["content"])
+
+
+class TestNormalizePayloadKiro(unittest.TestCase):
+    """Test Kiro CLI payload normalization (lowerCamelCase event names, snake_case/alias tool names)."""
+
+    def test_user_prompt(self):
+        payload = {
+            "hook_event_name": "userPromptSubmit",
+            "session_id": "kiro-1",
+            "prompt": "Review this change",
+        }
+        result = normalize_payload(agent="kiro", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "prompt")
+        self.assertEqual(event["prompt"], "Review this change")
+        self.assertEqual(event["agent"], "kiro")
+
+    def test_shell_tool_canonical_name(self):
+        payload = {
+            "hook_event_name": "preToolUse",
+            "session_id": "kiro-2",
+            "tool_name": "execute_bash",
+            "tool_input": {"command": "git status"},
+        }
+        result = normalize_payload(agent="kiro", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "git status")
+
+    def test_shell_tool_alias_name(self):
+        payload = {
+            "hook_event_name": "preToolUse",
+            "session_id": "kiro-3",
+            "tool_name": "shell",
+            "tool_input": {"command": "rm -rf /"},
+        }
+        result = normalize_payload(agent="kiro", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "rm -rf /")
+
+    def test_fs_write_tool_maps_to_file_write(self):
+        payload = {
+            "hook_event_name": "preToolUse",
+            "session_id": "kiro-4",
+            "tool_name": "fs_write",
+            "tool_input": {
+                "operations": [{"mode": "Line", "path": "/repo/package.json", "text": "lodash"}],
+            },
+        }
+        result = normalize_payload(agent="kiro", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "file_write")
+        self.assertEqual(event["path"], "/repo/package.json")
         self.assertIn("lodash", event["content"])
 
 

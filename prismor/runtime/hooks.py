@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from prismor.runtime.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok"]
+_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro"]
 
 
 def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
@@ -30,6 +30,8 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
         return _strip_copilot(config, marker)
     if agent == "grok":
         return _strip_grok(config, marker)
+    if agent == "kiro":
+        return _strip_kiro(config, marker)
     return _strip_windsurf(config, marker)
 
 
@@ -58,6 +60,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_copilot(config, command)
         elif current_agent == "grok":
             config = _merge_grok(config, command)
+        elif current_agent == "kiro":
+            config = _merge_kiro(config, command)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -228,6 +232,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_copilot(payload, session_id)
     elif agent == "grok":
         event = _normalize_grok(payload, session_id, workspace)
+    elif agent == "kiro":
+        event = _normalize_kiro(payload, session_id, workspace)
     else:
         event = _normalize_cursor(payload, session_id)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
@@ -336,6 +342,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".github" / "copilot" / "hooks.json"
         if agent == "grok":
             return workspace / ".grok" / "hooks" / "prismor.json"
+        if agent == "kiro":
+            return workspace / ".kiro" / "agents" / "kiro_default.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -352,6 +360,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".copilot" / "hooks.json"
     if agent == "grok":
         return home / ".grok" / "hooks" / "prismor.json"
+    if agent == "kiro":
+        return home / ".kiro" / "agents" / "kiro_default.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -797,6 +807,34 @@ def _merge_grok(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     return {**config, "hooks": hooks}
 
 
+# Kiro CLI's built-in default agent ("kiro_default") has no on-disk config
+# until one is created; whether Kiro merges a partial override with the
+# built-in tool list or replaces it outright is undocumented (kiro.dev has
+# no example of overriding kiro_default, only creating new named agents).
+# So a *fresh* file is seeded as a fully self-contained agent -- explicit
+# tools list included -- rather than a hooks-only fragment, so that even in
+# a full-replace scenario the user does not silently lose default-agent
+# tools the moment Prismor installs hooks. An existing file (the user's own
+# customized kiro_default, or a prior Prismor install) is left otherwise
+# untouched; only "hooks" is merged into it.
+_KIRO_DEFAULT_TOOLS = [
+    "read", "glob", "grep", "write", "shell", "aws", "web_search", "web_fetch",
+    "code", "introspect", "tool_search", "delegate", "subagent", "report",
+    "session", "goal", "knowledge", "thinking", "todo",
+]
+
+
+def _merge_kiro(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    if "name" not in config:
+        config = {**config, "name": "kiro_default", "tools": list(_KIRO_DEFAULT_TOOLS)}
+    hooks = dict(config.get("hooks", {}))
+    # No "matcher" field on an entry means Kiro applies it to every tool --
+    # the broadest coverage, matching the other agents' "*"/mcp__.* matchers.
+    for event_name in ["userPromptSubmit", "preToolUse", "postToolUse"]:
+        hooks[event_name] = _merge_simple_command_entries(hooks.get(event_name, []), command)
+    return {**config, "hooks": hooks}
+
+
 def _strip_copilot(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
     hooks = dict(config.get("hooks", {}))
     removed = False
@@ -846,6 +884,20 @@ def _strip_grok(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bo
             if filtered:
                 cleaned.append({**entry, "hooks": filtered})
         hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_kiro(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        filtered = [e for e in entries if marker not in e.get("command", "")]
+        if len(filtered) < len(entries):
+            removed = True
+        hooks[event_name] = filtered
     return {**config, "hooks": hooks}, removed
 
 
@@ -981,6 +1033,47 @@ def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -
     )
     if mcp_event is not None:
         return mcp_event
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_kiro(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    hook_event = payload.get("hook_event_name", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "kiro",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "userPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    # Kiro's canonical tool names are snake_case (execute_bash, fs_read,
+    # fs_write, use_aws); it also accepts camelCase/short aliases (shell,
+    # read, write, aws) depending on how the calling agent config lists
+    # its tools, so match on either form.
+    if tool_name in {"shell", "execute_bash", "execute_cmd"}:
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name in {"read", "fs_read", "fsRead"}:
+        return {**base, "type": "file_read", "path": tool_input.get("path", "")}
+    if tool_name in {"write", "fs_write", "fsWrite"}:
+        # fs_write's documented shape is {"operations": [{"mode": ..., "path": ...}]}
+        # rather than a flat {path, content} -- the exact per-mode content field
+        # is not documented, so this is a best-effort extraction from the first
+        # operation with several fallback field names.
+        ops = tool_input.get("operations") or []
+        first_op = ops[0] if ops and isinstance(ops[0], dict) else {}
+        path = tool_input.get("path") or first_op.get("path", "")
+        content = (
+            tool_input.get("content")
+            or first_op.get("content")
+            or first_op.get("text")
+            or first_op.get("newText", "")
+        )
+        return {**base, "type": "file_write", "path": path, "content": content}
+    if tool_name in {"web_fetch", "web_search"}:
+        return {**base, "type": "network", "url": tool_input.get("url", "")}
     return {**base, "type": "tool_result", "response": json.dumps(payload)}
 
 

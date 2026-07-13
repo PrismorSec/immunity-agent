@@ -2,7 +2,7 @@
 
 How Prismor integrates with each major AI coding agent — what ships today, what's planned, and what mechanism each agent exposes for runtime security monitoring.
 
-_Last updated: 2026-07-11._
+_Last updated: 2026-07-13._
 
 ---
 
@@ -29,9 +29,9 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Codex (OpenAI) | coding-agent | hook-config | ✅ | `exit-2` |
 | GitHub Copilot CLI | coding-agent | hook-config | ✅ | `json-permission` |
 | Grok Build (xAI) | coding-agent | hook-config | ✅ | `exit-2` |
+| Kiro CLI (AWS) | coding-agent | hook-config | ✅ | `exit-2` |
 | Gemini CLI (Google) | coding-agent | hook-config | 🟡 | `exit-2` |
 | OpenCode | coding-agent | sdk | 🟡 | `throw` |
-| Kiro (AWS) | coding-agent | hook-config | 🟡 | `exit-2` |
 | Factory Droid | coding-agent | hook-config | 🟡 | `json-permission` |
 | Google Antigravity | coding-agent | rules-only | — | — |
 | Aider | coding-agent | rules-only | — | — |
@@ -138,6 +138,18 @@ Prismor integrates with Hermes at two complementary layers:
 - **Not yet verified against a live `grok` install.** This integration is built entirely from [docs.x.ai/build/features/hooks](https://docs.x.ai/build/features/hooks) and [docs.x.ai/build/overview](https://docs.x.ai/build/overview) — no `grok` binary was available to smoke-test against at implementation time. Before relying on this in `enforce` mode, run `grok inspect` to confirm the real built-in tool names, and verify a deliberately blocked command is actually denied end to end (the same live check done for Codex above).
 - **Project-hook trust:** Grok requires trust before running project-level hooks (`/hooks-trust` or `--trust` inside `grok`, recorded in `~/.grok/trusted_folders.toml`). This is a one-time manual step Prismor does not automate.
 - **Code:** `prismor/runtime/hooks.py` `_merge_grok()`, `_strip_grok()`, `_normalize_grok()`.
+
+### Kiro CLI (AWS)
+
+- **Config:** `~/.kiro/agents/kiro_default.json` (user) or `<repo>/.kiro/agents/kiro_default.json` (project). Unlike every other shipped agent, Kiro's hooks are not a dedicated hooks file — they're a `"hooks"` field inside a *named agent config*, and the one that runs by default (`kiro_default`) has no on-disk file until one is created.
+- **Events hooked:** `userPromptSubmit`, `preToolUse`, `postToolUse` (lowerCamelCase — Kiro's own convention, distinct from every other agent's PascalCase event names). `preToolUse` is the only blocking event; a `stop` hook also exists (can block session termination via JSON) but is intentionally not wired, same precedent as skipping Claude's `Stop` hook.
+- **Matcher:** entries omit the `matcher` field entirely, which Kiro documents as applying the hook to every tool — the broadest coverage, equivalent to the `"*"`/`mcp__.*` matchers used elsewhere.
+- **Blocking:** exit 2 from the `preToolUse` hook blocks the tool call, with stderr surfaced back to the model as context. No structured stdout JSON response is required (unlike Grok/Copilot) — this fits the same fail-closed `else` branch already used for Cursor/Windsurf/Codex.
+- **Self-contained install, not a hooks-only fragment.** Whether Kiro merges a partial `kiro_default.json` override with its built-in tool list, or replaces it outright, is undocumented — kiro.dev has no example of overriding the built-in default agent, only creating new named ones. To avoid silently stripping a user's default tools (`read`, `write`, `shell`, ...) the moment Prismor installs hooks, a *fresh* file is seeded with an explicit tools list (`_KIRO_DEFAULT_TOOLS`) alongside the hooks. An existing file — the user's own customized `kiro_default`, or a prior Prismor install — is left otherwise untouched; only `"hooks"` is merged into it.
+- **Tool-name taxonomy:** canonical snake_case (`execute_bash`, `fs_read`, `fs_write`, `use_aws`) plus short aliases (`shell`, `read`, `write`, `aws`) — normalization matches on both forms. `fs_write`'s `tool_input` shape (`{"operations": [{"mode": ..., "path": ...}]}`) is not fully documented past the `path` field; content extraction from the first operation is best-effort with several fallback field names.
+- **Sweep target:** `~/.kiro/`.
+- **Not yet verified against a live `kiro-cli` binary.** Built from [kiro.dev/docs/cli/hooks](https://kiro.dev/docs/cli/hooks/), the [agent configuration reference](https://kiro.dev/docs/cli/custom-agents/configuration-reference/), and community documentation at [Ar9av/agent-manual](https://github.com/Ar9av/agent-manual/blob/main/tools/kiro/README.md). Before relying on this in `enforce` mode, confirm live whether a partial `kiro_default.json` is merged or replaces built-in defaults, and verify a deliberately blocked command is actually denied end to end.
+- **Code:** `prismor/runtime/hooks.py` `_merge_kiro()`, `_strip_kiro()`, `_normalize_kiro()`.
 
 ---
 

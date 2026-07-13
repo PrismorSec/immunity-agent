@@ -121,6 +121,19 @@ agents:
     notes: "Also natively reads .claude/settings.json and .cursor/hooks.json. Tool-name matchers assume Claude-Code-compatible tool names (Bash/Read/Edit/Write/...) by analogy; not yet verified against a live grok binary."
     sources: ["https://docs.x.ai/build/features/hooks", "https://docs.x.ai/build/overview"]
 
+  - id: kiro
+    name: Kiro CLI (AWS)
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".kiro/agents/kiro_default.json", user: "~/.kiro/agents/kiro_default.json" }
+    events: [userPromptSubmit, preToolUse, postToolUse]
+    blocking: exit-2
+    normalizer: _normalize_kiro
+    sweep_dir: "~/.kiro/"
+    notes: "Hooks live inside a named agent config, not a dedicated hooks file. Kiro's merge-vs-replace semantics for a partial kiro_default.json override are undocumented, so a fresh install seeds a self-contained config (explicit tools list included) rather than a hooks-only fragment. Not yet verified against a live kiro-cli binary."
+    sources: ["https://kiro.dev/docs/cli/hooks/", "https://kiro.dev/docs/cli/custom-agents/configuration-reference/", "https://github.com/Ar9av/agent-manual/blob/main/tools/kiro/README.md"]
+
   # ── Coding agents — roadmap (hook surface exists, adapter not built) ──────
   - id: gemini
     name: Gemini CLI (Google)
@@ -143,17 +156,6 @@ agents:
     blocking: throw
     normalizer: null
     sources: ["https://opencode.ai/docs/plugins/"]
-
-  - id: kiro
-    name: Kiro (AWS)
-    kind: coding-agent
-    surface: hook-config
-    status: roadmap
-    config_paths: { project: ".kiro/hooks/", user: "~/.kiro/" }
-    events: [preToolUse, postToolUse]
-    blocking: exit-2
-    normalizer: null
-    sources: ["https://kiro.dev/docs/cli/hooks/"]
 
   - id: factory-droid
     name: Factory Droid

@@ -54,6 +54,7 @@ TOOL_DIRS: dict[str, Path] = {
     "trae": Path.home() / ".trae",
     "kilocode": Path.home() / ".kilocode",
     "grok": Path.home() / ".grok",
+    "kiro": Path.home() / ".kiro",
 }
 
 # Config files that should NEVER be redacted (they hold keys the tools need)

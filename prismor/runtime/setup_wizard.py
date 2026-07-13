@@ -237,6 +237,7 @@ def _detect_agents(target: Path) -> dict:
         "hermes":   shutil.which("hermes") is not None or (target / ".hermes").exists(),
         "codex":    shutil.which("codex") is not None or (target / ".codex").exists() or (home / ".codex").exists(),
         "grok":     shutil.which("grok") is not None or (target / ".grok").exists() or (home / ".grok").exists(),
+        "kiro":     shutil.which("kiro-cli") is not None or shutil.which("kiro") is not None or (target / ".kiro").exists() or (home / ".kiro").exists(),
     }
 
 
@@ -309,6 +310,7 @@ def _step_agents(target: Path) -> list:
         {"name": "hermes",   "label": "Hermes",      "on": detected.get("hermes", False)},
         {"name": "codex",    "label": "Codex",       "on": detected.get("codex", False)},
         {"name": "grok",     "label": "Grok Build",  "on": detected.get("grok", False)},
+        {"name": "kiro",     "label": "Kiro CLI",    "on": detected.get("kiro", False)},
     ]
     if not any(a["on"] for a in agents):
         agents[0]["on"] = True
