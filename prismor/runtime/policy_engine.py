@@ -44,6 +44,7 @@ _NON_OVERRIDABLE_RULE_IDS = frozenset({
     "rce-canary",
     "privilege-escalation",
     "dos-resource-exhaustion",
+    "tool-category-crossover",
 })
 
 # Categories that must stay in settings.block_categories no matter what an
@@ -57,6 +58,7 @@ _CORE_BLOCK_CATEGORIES = frozenset({
     "rce_canary",
     "privilege_escalation",
     "dos_resource_exhaustion",
+    "lethal_trifecta",
 })
 
 # Canonical field for each event type when 'fields' is not specified in the rule.
@@ -592,6 +594,9 @@ class PolicyEngine:
         # org/agent/session entries apply fleet-wide. Managed workspaces only.
         _td = settings.get("tool_denies")
         self.tool_denies: List[Dict[str, Any]] = _td if isinstance(_td, list) else []
+        # Lethal-trifecta red/blue crossover config (settings.tool_categories).
+        _tc = settings.get("tool_categories")
+        self.tool_categories: Dict[str, Any] = _tc if isinstance(_tc, dict) else {}
         # Global observe/enforce default for rules that don't set their own mode.
         # Defaults to "observe" — a fresh policy blocks nothing until an admin
         # flips rules (or this) to enforce.
@@ -1111,6 +1116,50 @@ class PolicyEngine:
                     _domain = _extract_domain(url)
                     if _domain:
                         taint.add_domain(_domain)
+
+        # ── Lethal-trifecta red/blue category crossover ───────────────────
+        # If this session has already used one tool category (red = untrusted
+        # content, blue = critical action), the FIRST call from the other
+        # category is a dangerous crossover — block it before it executes.
+        # Detection lives in trifecta.py (swappable); enforcement is here.
+        if self.tool_categories.get("enabled") and session_id and self.workspace is not None:
+            try:
+                from prismor.runtime.trifecta import classify_tool_category, CategoryLedger
+                _tc_tool = str((event.get("metadata") or {}).get("tool_name") or "")
+                _cat = classify_tool_category(
+                    event, event_type,
+                    {f.get("category") for f in findings},
+                    self.tool_categories,
+                )
+                if _cat:
+                    _ledger = CategoryLedger(self.workspace, session_id)
+                    _partner = _ledger.crosses(_cat)
+                    if _partner is not None:
+                        _other = "blue" if _cat == "red" else "red"
+                        _tc_mode = str(self.tool_categories.get("mode", "observe")).lower()
+                        _fid = f"tool-category-crossover-{index}"
+                        _pfx = f"{session_id}:{_fid}" if session_id else _fid
+                        findings.append({
+                            "id": _pfx,
+                            "severity": "CRITICAL",
+                            "category": "lethal_trifecta",
+                            "title": (
+                                f"Lethal-trifecta crossover: {_cat} tool '{_tc_tool}' "
+                                f"after {_other} tool '{_partner.get('tool', '?')}' "
+                                f"(call #{_partner.get('index', '?')}) in this session"
+                            ),
+                            "evidence": (
+                                f"session combined red+blue categories "
+                                f"({_other}:{_partner.get('tool', '?')} -> {_cat}:{_tc_tool})"
+                            ),
+                            "eventIndex": index,
+                            "ruleId": "tool-category-crossover",
+                            "action": "block",
+                            "mode": _tc_mode,
+                        })
+                    _ledger.record(_cat, index, _tc_tool)
+            except Exception:
+                pass
 
         # Normalize enforcement for code-authored (synthetic) findings: canary /
         # vault / cloaked-secret-exfil / taint / html-injection carry
