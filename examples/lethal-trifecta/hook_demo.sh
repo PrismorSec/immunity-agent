@@ -18,12 +18,14 @@ mkdir -p "$WS/.prismor"
 cat > "$WS/.prismor/policy.yaml" <<'YAML'
 version: "1.0"
 settings:
-  tool_categories:
+  tool_tags:
     enabled: true
-    mode: enforce            # terminal, non-overridable crossover block
-    map:
-      mcp__Gmail__read_email: red
-      mcp__Gmail__send_email: blue
+    mode: enforce            # terminal, non-overridable block
+    tags:
+      mcp__Gmail__read_email: [untrusted_content]
+      mcp__Gmail__send_email: [critical_action]
+    incompatible:
+      - [untrusted_content, critical_action]
 YAML
 
 SID="hookdemo-$$-$RANDOM"

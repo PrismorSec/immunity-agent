@@ -73,34 +73,42 @@ settings:
   # .prismor/policy.yaml.
   mcp_transport_action: warn
 
-  # ── Lethal-trifecta red/blue tool-category crossover ──────────────────────
-  # Session-scoped control over how tools are *combined*. Tools are classified
-  # red (untrusted-content ingest: read_email, WebFetch, web search, shared
-  # docs) or blue (critical action: send_email, delete, PR create, outbound
-  # HTTP, file writes outside the sandbox). A session may make any number of
-  # same-category calls; the FIRST call from the second category — once the
-  # session has already used the first — is blocked BEFORE it executes, from the
-  # session's prior tool-use history. That stops an untrusted red read from
-  # driving a blue exfil/destructive action in the same session (prompt
-  # injection → consequential action).
+  # ── Tool-combination governance (customizable tags + forbidden sets) ──────
+  # Session-scoped control over how tools are *combined*. Each tool carries one
+  # or more customizable TAGS; a session may not COMPLETE a forbidden tag
+  # combination. The tool call that completes an `incompatible` set — once the
+  # session has already used the other tags in it — is blocked BEFORE it
+  # executes, from the session's prior tool-use history.
+  #
+  # The generalized "lethal trifecta": the default rule
+  # [untrusted_content, critical_action] stops an untrusted read from driving a
+  # critical action in the same session (prompt injection → consequential
+  # action). Define any tags and any N-tag combinations (e.g. a three-condition
+  # [untrusted_content, private_data, external_comms]).
   #
   # Opt-in and observe-first: disabled by default. Enable it, run in observe to
-  # tune the mapping (logs crossovers, blocks nothing), then flip mode to
-  # enforce — an enforce-mode crossover block is terminal and non-overridable.
-  # The tool→category map merges over built-in defaults; enterprise ships a
-  # curated signed catalog for it. Detection is swappable (strict_crossover now,
-  # risk_score later) without changing enforcement.
-  tool_categories:
+  # tune tags (logs, blocks nothing), then flip mode to enforce — an enforce
+  # block is terminal and non-overridable. `tags` merges over built-in defaults;
+  # enterprise ships a curated signed catalog. Detection is swappable
+  # (strict_combination now, risk_score later) without changing enforcement.
+  tool_tags:
     enabled: false          # opt-in; set true in .prismor/policy.yaml or org policy
     mode: observe           # observe (log only) | enforce (terminal block)
-    detector: strict_crossover
-    defaults_enabled: true  # apply built-in defaults for well-known tools
-    inference_enabled: true # infer red/blue for uncategorized tools from event type
-    map: {}                 # explicit tool -> red|blue overrides (merge over defaults)
+    detector: strict_combination
+    defaults_enabled: true  # apply built-in tags for well-known tools
+    inference_enabled: true # infer tags for uncategorized tools from event type
+    tags: {}                # explicit tool -> tag | [tags] (merge over defaults)
+    incompatible:           # forbidden co-occurrence tag sets; default = the trifecta pair
+      - [untrusted_content, critical_action]
     # Example:
-    #   map:
-    #     mcp__Gmail__read_email: red
-    #     mcp__Gmail__send_email: blue
+    #   tags:
+    #     mcp__Gmail__read_email: [untrusted_content]
+    #     WebFetch: [untrusted_content, network_read]
+    #     mcp__Gmail__send_email: [critical_action]
+    #     mcp__db__delete: [critical_action, destructive]
+    #   incompatible:
+    #     - [untrusted_content, critical_action]
+    #     - [untrusted_content, destructive]
 
   # Score every package-manager install command (npm/pnpm/yarn/bun/pip/uv/
   # cargo/go) against OSV.dev (CVEs + malicious-package IOCs), typosquat

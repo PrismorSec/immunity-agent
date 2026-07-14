@@ -594,9 +594,10 @@ class PolicyEngine:
         # org/agent/session entries apply fleet-wide. Managed workspaces only.
         _td = settings.get("tool_denies")
         self.tool_denies: List[Dict[str, Any]] = _td if isinstance(_td, list) else []
-        # Lethal-trifecta red/blue crossover config (settings.tool_categories).
-        _tc = settings.get("tool_categories")
-        self.tool_categories: Dict[str, Any] = _tc if isinstance(_tc, dict) else {}
+        # Tool-combination governance config (settings.tool_tags):
+        # customizable tags + forbidden combinations (generalized trifecta).
+        _tt = settings.get("tool_tags")
+        self.tool_tags: Dict[str, Any] = _tt if isinstance(_tt, dict) else {}
         # Global observe/enforce default for rules that don't set their own mode.
         # Defaults to "observe" — a fresh policy blocks nothing until an admin
         # flips rules (or this) to enforce.
@@ -1117,26 +1118,33 @@ class PolicyEngine:
                     if _domain:
                         taint.add_domain(_domain)
 
-        # ── Lethal-trifecta red/blue category crossover ───────────────────
-        # If this session has already used one tool category (red = untrusted
-        # content, blue = critical action), the FIRST call from the other
-        # category is a dangerous crossover — block it before it executes.
-        # Detection lives in trifecta.py (swappable); enforcement is here.
-        if self.tool_categories.get("enabled") and session_id and self.workspace is not None:
+        # ── Forbidden tool-tag combination (generalized lethal trifecta) ──
+        # Tools carry customizable tags; a session may not COMPLETE a forbidden
+        # tag set (default: untrusted_content + critical_action). Block the call
+        # that completes it, before it executes. Detection lives in trifecta.py
+        # (swappable); enforcement is here.
+        if self.tool_tags.get("enabled") and session_id and self.workspace is not None:
             try:
-                from prismor.runtime.trifecta import classify_tool_category, CategoryLedger
-                _tc_tool = str((event.get("metadata") or {}).get("tool_name") or "")
-                _cat = classify_tool_category(
+                from prismor.runtime.trifecta import (
+                    classify_tool_tags, TagLedger, normalize_incompatible,
+                )
+                _tt_tool = str((event.get("metadata") or {}).get("tool_name") or "")
+                _tags = classify_tool_tags(
                     event, event_type,
                     {f.get("category") for f in findings},
-                    self.tool_categories,
+                    self.tool_tags,
                 )
-                if _cat:
-                    _ledger = CategoryLedger(self.workspace, session_id)
-                    _partner = _ledger.crosses(_cat)
-                    if _partner is not None:
-                        _other = "blue" if _cat == "red" else "red"
-                        _tc_mode = str(self.tool_categories.get("mode", "observe")).lower()
+                if _tags:
+                    _incompat = normalize_incompatible(self.tool_tags.get("incompatible"))
+                    _ledger = TagLedger(self.workspace, session_id)
+                    _done = _ledger.completes(_tags, _incompat, index)
+                    if _done is not None:
+                        _tt_mode = str(self.tool_tags.get("mode", "observe")).lower()
+                        _intro = _done.get("introduced_by") or {}
+                        _prior = ", ".join(
+                            f"{_t} (by '{(_intro.get(_t) or {}).get('tool', '?')}')"
+                            for _t in _done["set"] if _t in _intro
+                        )
                         _fid = f"tool-category-crossover-{index}"
                         _pfx = f"{session_id}:{_fid}" if session_id else _fid
                         findings.append({
@@ -1144,20 +1152,19 @@ class PolicyEngine:
                             "severity": "CRITICAL",
                             "category": "lethal_trifecta",
                             "title": (
-                                f"Lethal-trifecta crossover: {_cat} tool '{_tc_tool}' "
-                                f"after {_other} tool '{_partner.get('tool', '?')}' "
-                                f"(call #{_partner.get('index', '?')}) in this session"
+                                f"Forbidden tool combination: '{_tt_tool}' completes "
+                                f"tag set [{', '.join(_done['set'])}] in this session"
                             ),
                             "evidence": (
-                                f"session combined red+blue categories "
-                                f"({_other}:{_partner.get('tool', '?')} -> {_cat}:{_tc_tool})"
+                                f"call adds tag(s) {_done['this_call_tags']}; "
+                                f"prior: {_prior or 'n/a'}"
                             ),
                             "eventIndex": index,
                             "ruleId": "tool-category-crossover",
                             "action": "block",
-                            "mode": _tc_mode,
+                            "mode": _tt_mode,
                         })
-                    _ledger.record(_cat, index, _tc_tool)
+                    _ledger.record(_tags, index, _tt_tool)
             except Exception:
                 pass
 
