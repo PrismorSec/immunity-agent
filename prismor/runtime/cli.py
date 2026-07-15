@@ -127,6 +127,14 @@ def _color(text: str, color: str) -> str:
     return f"{color}{text}{_NC}"
 
 
+def _block_header(finding: Dict[str, Any]) -> str:
+    """The first stderr line of a deny — carries the rule id every override needs."""
+    line = f"Prismor blocked this action: [{finding['severity']}] {finding['title']}"
+    if finding.get("ruleId"):
+        line += f" (rule: {finding['ruleId']})"
+    return line + "\n"
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -970,10 +978,34 @@ def main(argv: Optional[List[str]] = None) -> None:
             # (async approval queue); here they deny with a clear reason.
             verdict = str(blocking.get("action") or "block").lower()
             reason = f"[{blocking['severity']}] {blocking['title']}"
+            if blocking.get("ruleId"):
+                # The rule id is what every override — allowlist, mode, exemption
+                # — is keyed on. Without it here the human has to go hunting at
+                # exactly the moment they need it.
+                reason += f" (rule: {blocking['ruleId']})"
             if blocking.get("evidence"):
                 reason += f"\n{blocking['evidence']}"
             if blocking.get("remediation"):
                 reason += f"\nRecommended fix: {blocking['remediation']}"
+
+            # Narrowest-first unblock steps, so a false positive costs one
+            # allowlist entry rather than an uninstall.
+            unblock_text = ""
+            try:
+                from prismor.runtime import unblock as _unblock
+                from prismor.runtime.enterprise import identity as _identity
+                from prismor.runtime.enterprise import workspace_scope as _scope
+                unblock_text = _unblock.format_unblock(
+                    blocking,
+                    workspace=workspace,
+                    session_id=normalized["sessionId"],
+                    org_managed=_scope.is_managed(workspace),
+                    enrolled=_identity.is_enrolled(),
+                )
+            except Exception:
+                pass  # best-effort — a block must never depend on its own help text
+            if unblock_text:
+                reason += f"\n\n{unblock_text}"
 
             if verdict == "defer":
                 # DEFER: hold the ambiguous action and escalate to the deeper
@@ -1048,14 +1080,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # Grok Build reads {"decision": "deny", "reason": ...} from stdout
                     # AND requires exit code 2 (unlike Copilot, which ignores exit code).
                     sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
-                    sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
+                    sys.stderr.write(_block_header(blocking))
+                    if unblock_text:
+                        sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(2)
                 else:
-                    sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
+                    sys.stderr.write(_block_header(blocking))
                     if blocking.get("evidence"):
                         sys.stderr.write(f"{blocking['evidence']}\n")
                     if blocking.get("remediation"):
                         sys.stderr.write(f"Recommended fix: {blocking['remediation']}\n")
+                    if unblock_text:
+                        sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(2)
         elif current_findings:
             # Observe: surface all findings so agents know every package to fix.
