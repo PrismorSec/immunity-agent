@@ -318,6 +318,18 @@ def guard_agent(
             )
             guarded.append(getattr(tool, "name", "tool"))
     agent_obj.__prismor_guarded_tools__ = guarded  # type: ignore[attr-defined]
+    # Declare the complete SDK roster immediately; no tool needs to be invoked
+    # before it appears in the enterprise capability inventory.
+    try:
+        from prismor.runtime.agents import record_seen
+        record_seen(
+            name or agent, framework=agent,
+            workspace=Path(workspace) if workspace else Path.cwd(),
+            tools=[{"name": t, "source": "declared"} for t in guarded],
+            session_id=session_id or f"openai-agents-{os.getpid()}",
+        )
+    except Exception:
+        pass
     # Intent capture (R2/R3): synthesize the session's intent-scoped rules from
     # the agent's goal + its real tool names, so evaluate_tool_call enforces
     # "does this serve the task?" for this headless agent too. Best-effort.

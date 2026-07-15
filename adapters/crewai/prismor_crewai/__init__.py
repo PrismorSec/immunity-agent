@@ -144,10 +144,21 @@ def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
     """
     goal = kwargs.pop("goal", None)
     guarded = [prismor_guard_tool(t, **kwargs) for t in tools]
+    _names = [getattr(t, "name", None) or getattr(t, "__name__", None) for t in tools]
+    try:
+        from prismor.runtime.agents import record_seen
+        _framework = kwargs.get("agent", "crewai")
+        record_seen(
+            kwargs.get("name") or _framework, framework=_framework,
+            workspace=Path(kwargs["workspace"]) if kwargs.get("workspace") else Path.cwd(),
+            tools=[{"name": n, "source": "declared"} for n in _names if n],
+            session_id=kwargs.get("session_id") or f"crewai-{os.getpid()}",
+        )
+    except Exception:
+        pass
     if goal:
         try:
             from prismor.runtime.intent import capture_intent
-            _names = [getattr(t, "name", None) or getattr(t, "__name__", None) for t in tools]
             capture_intent(
                 goal,
                 workspace=Path(kwargs["workspace"]) if kwargs.get("workspace") else Path.cwd(),

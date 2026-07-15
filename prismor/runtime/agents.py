@@ -43,6 +43,7 @@ _PROJECT_AGENTS_FILE = "agents.yaml"
 # Module-level seen-set: throttle record_seen() so we only update the YAML
 # once per agent per process, not on every tool call.
 _SEEN_THIS_PROCESS: set = set()
+_TOOLS_SEEN_THIS_PROCESS: set = set()
 
 # On-disk debounce for control-plane registration: 1000 short-lived processes
 # must not turn into 1000 POSTs per agent per day.
@@ -247,7 +248,14 @@ def upsert_agent(name: str, workspace: Path, **fields: Any) -> AgentControl:
     return resolve_agent_control(name, workspace)
 
 
-def record_seen(name: str, framework: str, workspace: Optional[Path]) -> None:
+def record_seen(
+    name: str,
+    framework: str,
+    workspace: Optional[Path],
+    *,
+    tools: Optional[List[Any]] = None,
+    session_id: str = "",
+) -> None:
     """Auto-register a discovered agent; best-effort, once per process per agent.
 
     Registers locally (project agents.yaml) and, for enrolled devices working
@@ -258,19 +266,18 @@ def record_seen(name: str, framework: str, workspace: Optional[Path]) -> None:
     if not name or not workspace:
         return
     seen_key = (name, str(workspace))
-    if seen_key in _SEEN_THIS_PROCESS:
-        return
-    _SEEN_THIS_PROCESS.add(seen_key)
+    if seen_key not in _SEEN_THIS_PROCESS:
+        _SEEN_THIS_PROCESS.add(seen_key)
+        try:
+            upsert_agent(
+                name, workspace,
+                framework=framework,
+                last_seen=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:
+            sys.stderr.write(f"[prismor/runtime/agents] record_seen error: {exc}\n")
     try:
-        upsert_agent(
-            name, workspace,
-            framework=framework,
-            last_seen=datetime.now(timezone.utc).isoformat(),
-        )
-    except Exception as exc:
-        sys.stderr.write(f"[prismor/runtime/agents] record_seen error: {exc}\n")
-    try:
-        _register_remote(name, framework, workspace)
+        _register_remote(name, framework, workspace, tools=tools, session_id=session_id)
     except Exception:
         pass  # never let fleet bookkeeping affect the tool-call path
 
@@ -280,7 +287,14 @@ def _register_debounce_path() -> Path:
     return _identity.prismor_home() / "agent-register.json"
 
 
-def _register_remote(name: str, framework: str, workspace: Path) -> None:
+def _register_remote(
+    name: str,
+    framework: str,
+    workspace: Path,
+    *,
+    tools: Optional[List[Any]] = None,
+    session_id: str = "",
+) -> None:
     """Best-effort fleet registration with the org control plane.
 
     Guards (all must hold): device enrolled, no revoked-key backoff, workspace
@@ -300,7 +314,8 @@ def _register_remote(name: str, framework: str, workspace: Path) -> None:
 
     # On-disk debounce (optimistic: marked before the POST; a failed POST waits
     # out the window, which the ingest-side upsert covers).
-    key = f"{framework}|{name if name != framework else ''}"
+    remote_name = name if name != framework else ""
+    key = f"agent|{framework}|{remote_name}"
     now = time.time()
     path = _register_debounce_path()
     try:
@@ -309,9 +324,34 @@ def _register_remote(name: str, framework: str, workspace: Path) -> None:
             data = {}
     except (OSError, ValueError):
         data = {}
-    if now - float(data.get(key, 0) or 0) < _REGISTER_DEBOUNCE_SECONDS:
+    agent_due = now - float(data.get(key, 0) or 0) >= _REGISTER_DEBOUNCE_SECONDS
+    if agent_due:
+        data[key] = now
+
+    normalized_tools: List[Dict[str, str]] = []
+    for raw in tools or []:
+        if isinstance(raw, dict):
+            tool = str(raw.get("name") or "").strip()[:160]
+            source = str(raw.get("source") or "observed")
+        else:
+            tool = str(raw or "").strip()[:160]
+            source = "declared"
+        if not tool or tool == "*":
+            continue
+        if source not in {"observed", "scoped", "declared"}:
+            source = "observed"
+        process_key = (framework, remote_name, session_id, tool)
+        disk_key = f"tool|{framework}|{remote_name}|{session_id[:80]}|{tool}"
+        if process_key in _TOOLS_SEEN_THIS_PROCESS:
+            continue
+        if now - float(data.get(disk_key, 0) or 0) < _REGISTER_DEBOUNCE_SECONDS:
+            _TOOLS_SEEN_THIS_PROCESS.add(process_key)
+            continue
+        _TOOLS_SEEN_THIS_PROCESS.add(process_key)
+        data[disk_key] = now
+        normalized_tools.append({"name": tool, "source": source})
+    if not agent_due and not normalized_tools:
         return
-    data[key] = now
     # Keep the debounce file bounded: drop entries older than a day.
     data = {k: v for k, v in data.items() if now - float(v or 0) < 86400.0}
     try:
@@ -320,7 +360,12 @@ def _register_remote(name: str, framework: str, workspace: Path) -> None:
     except OSError:
         pass
 
-    payload = {"agents": [{"name": "" if name == framework else name, "framework": framework}]}
+    payload = {"agents": [{
+        "name": remote_name,
+        "framework": framework,
+        "sessionId": session_id[:80],
+        "tools": normalized_tools,
+    }]}
     threading.Thread(target=_post_registration, args=(dict(ident), payload), daemon=True).start()
 
 

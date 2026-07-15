@@ -201,8 +201,24 @@ def evaluate_tool_call(
             _agent_name, workspace,
             remote_controls=getattr(engine, "agent_controls", None),
         )
-        # Throttled auto-registration — once per agent per process.
-        record_seen(_agent_name, framework=agent, workspace=workspace)
+        # Throttled auto-registration.  The current tool is observed; an SDK
+        # may declare its full roster in metadata.available_tools; exact tools
+        # in a synthesized session scope are registered as scoped access.
+        from prismor.runtime.scoped_agent import _resolve_tool_name, load_scoped_rules
+        _capabilities = []
+        _current_tool = _resolve_tool_name(event)
+        if _current_tool:
+            _capabilities.append({"name": _current_tool, "source": "observed"})
+        for _tool in meta.get("available_tools") or []:
+            _capabilities.append({"name": str(_tool), "source": "declared"})
+        _scoped = load_scoped_rules(workspace, session_id) if session_id else None
+        for _tool in (_scoped or {}).get("allowed_tools") or []:
+            if _tool != "*":
+                _capabilities.append({"name": str(_tool), "source": "scoped"})
+        record_seen(
+            _agent_name, framework=agent, workspace=workspace,
+            tools=_capabilities, session_id=session_id,
+        )
         # Per-agent mode override: takes precedence over the caller's mode.
         if _control.mode:
             mode = _control.mode

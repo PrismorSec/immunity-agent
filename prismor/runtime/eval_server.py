@@ -67,6 +67,7 @@ def _build_event(
     agent: str,
     session_id: str,
     subject_str: Optional[str],
+    available_tools: Optional[list[str]] = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
     # Serialize arguments to a single value string (values only — for regex matching)
@@ -84,6 +85,7 @@ def _build_event(
             "args": list(arguments.values()),
             "kwargs": arguments,
             "subject": subject_str,
+            "available_tools": available_tools or [],
         },
     }
 
@@ -171,6 +173,8 @@ class EvalHandler(BaseHTTPRequestHandler):
             agent=agent,
             session_id=session_id,
             subject_str=subject_str,
+            available_tools=[str(t) for t in body.get("available_tools", []) if t][:200]
+            if isinstance(body.get("available_tools"), list) else [],
         )
 
         try:

@@ -30,6 +30,7 @@ class _SyncThread:
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / ".prismor"))
     agents._SEEN_THIS_PROCESS.clear()
+    agents._TOOLS_SEEN_THIS_PROCESS.clear()
     agents._CONFIG_CACHE.clear()
     monkeypatch.setattr(agents.threading, "Thread", _SyncThread)
     yield
@@ -56,7 +57,7 @@ def test_registers_named_agent_when_enrolled_and_managed(tmp_path, monkeypatch, 
     agents.record_seen("checkout-bot", framework="openai-agents", workspace=tmp_path)
     assert len(posts) == 1
     _, payload = posts[0]
-    assert payload == {"agents": [{"name": "checkout-bot", "framework": "openai-agents"}]}
+    assert payload == {"agents": [{"name": "checkout-bot", "framework": "openai-agents", "sessionId": "", "tools": []}]}
     # Local registry still written alongside.
     assert (tmp_path / ".prismor" / "agents.yaml").exists()
 
@@ -66,7 +67,27 @@ def test_unnamed_agent_registers_with_empty_name(tmp_path, monkeypatch, posts):
     monkeypatch.setattr("prismor.runtime.enterprise.workspace_scope.is_managed", lambda ws: True)
     # record_seen is called with name == framework for unnamed agents.
     agents.record_seen("claude", framework="claude", workspace=tmp_path)
-    assert posts[0][1] == {"agents": [{"name": "", "framework": "claude"}]}
+    assert posts[0][1] == {"agents": [{"name": "", "framework": "claude", "sessionId": "", "tools": []}]}
+
+
+def test_registers_internal_and_mcp_tools_for_session(tmp_path, monkeypatch, posts):
+    _enroll()
+    monkeypatch.setattr("prismor.runtime.enterprise.workspace_scope.is_managed", lambda ws: True)
+    agents.record_seen(
+        "claude", framework="claude", workspace=tmp_path,
+        session_id="session-1",
+        tools=[
+            {"name": "Read", "source": "scoped"},
+            {"name": "mcp__github__create_issue", "source": "declared"},
+        ],
+    )
+    assert posts[0][1]["agents"][0] == {
+        "name": "", "framework": "claude", "sessionId": "session-1",
+        "tools": [
+            {"name": "Read", "source": "scoped"},
+            {"name": "mcp__github__create_issue", "source": "declared"},
+        ],
+    }
 
 
 def test_noop_when_not_enrolled(tmp_path, monkeypatch, posts):
@@ -93,9 +114,9 @@ def test_once_per_process_and_disk_debounce(tmp_path, monkeypatch, posts):
     agents.record_seen("bot", framework="langchain", workspace=tmp_path)
     assert len(posts) == 1
     debounce = json.loads(agents._register_debounce_path().read_text())
-    assert "langchain|bot" in debounce
+    assert "agent|langchain|bot" in debounce
     # Expired debounce → registers again.
-    debounce["langchain|bot"] = 0
+    debounce["agent|langchain|bot"] = 0
     agents._register_debounce_path().write_text(json.dumps(debounce))
     agents._SEEN_THIS_PROCESS.clear()
     agents.record_seen("bot", framework="langchain", workspace=tmp_path)
