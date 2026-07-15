@@ -6,8 +6,40 @@ import os
 import re
 import shutil
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+try:  # POSIX advisory locks; absent on Windows.
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None  # type: ignore[assignment]
+
+
+@contextmanager
+def _locked(handle) -> Iterator[None]:
+    """Hold an exclusive advisory lock on an open file for the block.
+
+    Best effort: on a platform without fcntl, or a filesystem that refuses the
+    lock (some network mounts), the write still proceeds unserialized rather
+    than failing the caller. Logging an event must never break the tool call it
+    is recording.
+    """
+    if fcntl is None:
+        yield
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
 
 
 def prismor_home() -> Path:
@@ -363,16 +395,67 @@ def append_session_event(workspace: Path, session_id: str, event: Dict[str, Any]
     ensure_data_dirs(workspace)
     event = _recloak_event(event)
     log_path = session_log_path(workspace, session_id)
+    # One record = one write, under an exclusive lock.
+    #
+    # Several hook processes can fire for the same event (a hook registered in
+    # both user and project settings, parallel agents sharing a session id) and
+    # all append here at once. Writing the JSON and the "\n" as two calls let a
+    # second writer slip in between them, welding two records onto one line
+    # ({"a":1}{"b":2}) and corrupting the log for every later reader. Records
+    # routinely exceed the pipe-buffer size below which O_APPEND writes are
+    # atomic, so the payload alone can also tear. Build the line first, then
+    # take an advisory lock so cooperating writers serialize.
+    payload = json.dumps(event) + "\n"
     with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event))
-        handle.write("\n")
+        with _locked(handle):
+            handle.write(payload)
+            handle.flush()
     return log_path
+
+
+def _decode_welded_line(line: str) -> List[Dict[str, Any]]:
+    """Split a line holding several concatenated JSON objects.
+
+    Recovers logs written before appends were locked, where interleaved writes
+    produced `{"a":1}{"b":2}` on one line. Junk between objects is skipped
+    rather than raising: a torn record must not cost us the whole session.
+    """
+    decoder = json.JSONDecoder()
+    events: List[Dict[str, Any]] = []
+    idx, end = 0, len(line)
+    while idx < end:
+        try:
+            obj, idx = decoder.raw_decode(line, idx)
+        except json.JSONDecodeError:
+            nxt = line.find("{", idx + 1)
+            if nxt == -1:
+                break
+            idx = nxt
+            continue
+        if isinstance(obj, dict):
+            events.append(obj)
+        while idx < end and line[idx] in " \t\r\n":
+            idx += 1
+    return events
 
 
 def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]]:
     log_path = session_log_path(workspace, session_id)
     with log_path.open("r", encoding="utf-8") as handle:
-        return [json.loads(line) for line in handle.read().splitlines() if line.strip()]
+        raw = handle.read()
+    events: List[Dict[str, Any]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            # A pre-existing welded or truncated line. Salvage what parses:
+            # this runs inside the hook path, so raising here would fail the
+            # tool call and leave the agent unguarded for the rest of the
+            # session.
+            events.extend(_decode_welded_line(line))
+    return events
 
 
 # Expected column set per managed table. NOT NULL is intentionally omitted —
