@@ -121,17 +121,81 @@ Rules:
 """
 
 
+def _remote_scoped_rules(
+    goal: str,
+    available_tools: List[str],
+    context: Optional[List[Dict[str, str]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Ask the control plane to synthesize the scope. None = not available.
+
+    Only enrolled devices ask, and the org decides whether the request is
+    honoured at all (scopeSynthesis) and how much of the session may be sent
+    (scopeContextTurns, itself gated on full capture). The server is
+    authoritative on both — the device only offers what it has.
+
+    Returning None on ANY failure is the point. This runs inside the
+    UserPromptSubmit hook, in front of a developer: an unreachable or declining
+    control plane must mean "scope locally", never a hang or a traceback.
+    """
+    try:
+        from prismor.runtime.enterprise import identity as _identity
+        if not _identity.is_enrolled():
+            return None
+        ident = _identity.load_identity() or {}
+        key = ident.get("device_key")
+        if not key:
+            return None
+
+        import urllib.request
+        base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
+        payload: Dict[str, Any] = {"goal": goal, "availableTools": list(available_tools)}
+        if context:
+            payload["context"] = context
+        req = urllib.request.Request(
+            f"{base}/api/scope",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+        if not body.get("ok") or not isinstance(body.get("rules"), dict):
+            return None
+        rules = body["rules"]
+        if not isinstance(rules.get("allowed_tools"), list):
+            return None
+        return rules
+    except Exception:
+        return None
+
+
 def synthesize_scoped_rules(
     goal: str,
     available_tools: List[str],
     workspace: Path,
+    context: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Call the Anthropic API to generate scoped rules for a task.
+    """Generate scoped rules for a task.
 
-    Returns a parsed dict on success, or falls back to static heuristics
-    if the SDK is unavailable or the API call fails. Returns None only if
-    the static fallback also fails (should not happen).
+    An enrolled device asks the control plane first, so an org can standardise
+    scoping on one model and one key. Today every machine uses its own
+    ANTHROPIC_API_KEY and a machine without one silently drops to keyword
+    heuristics — the same prompt scopes differently per device, with nothing in
+    the console to say which. The org must opt in; by default this is a no-op
+    and nothing about the task leaves the machine.
+
+    Falls back in order: control plane -> local Anthropic -> static heuristics.
+    Returns None only if the static fallback also fails (should not happen).
     """
+    remote = _remote_scoped_rules(goal, available_tools, context)
+    if remote is not None:
+        # Re-applied locally: the server applies it too, but a local safety
+        # invariant must not rest on a remote promise.
+        return _apply_cloak_invariant(remote, goal)
+
     try:
         import anthropic  # noqa: F401
     except ImportError:
