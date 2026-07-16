@@ -160,7 +160,11 @@ def _remote_scoped_rules(
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=6) as resp:
+        # 18s: the server-side model is a reasoning model (measured 1.8-5s, and
+        # it must also fit the server's own 15s upstream ceiling). Still bounded
+        # because this blocks the developer's first prompt — a slow control
+        # plane falls back to local scoping rather than hanging.
+        with urllib.request.urlopen(req, timeout=18) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
         if not body.get("ok") or not isinstance(body.get("rules"), dict):
             return None

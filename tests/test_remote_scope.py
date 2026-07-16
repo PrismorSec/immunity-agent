@@ -149,7 +149,7 @@ def test_request_is_time_boxed(tmp_path, monkeypatch):
     _enrolled(monkeypatch)
     seen = _mock_http(monkeypatch, {"ok": True, "rules": RULES})
     scoped_agent.synthesize_scoped_rules(goal="g", available_tools=["Read"], workspace=tmp_path)
-    assert seen['timeout'] and seen['timeout'] <= 10
+    assert seen['timeout'] and seen['timeout'] <= 20
 
 
 # ── The invariant survives the round trip ──────────────────────────────────
