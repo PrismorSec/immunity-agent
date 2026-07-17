@@ -1529,6 +1529,38 @@
   </div>
 
   <div class="section">
+    <h2>Token Usage</h2><div class="rule"></div><span id="hintTokens" class="hint">last 24h · Claude Code</span>
+  </div>
+
+  <div class="grid grid-4">
+    <div class="card"><div class="card-title">Input Tokens</div><div id="tkInput" class="kpi-value">-</div></div>
+    <div class="card"><div class="card-title">Output Tokens</div><div id="tkOutput" class="kpi-value">-</div></div>
+    <div class="card"><div class="card-title">Cache Read</div><div id="tkCacheRead" class="kpi-value" style="color:var(--green-500)">-</div><div id="tkHitRate" class="hint">-</div></div>
+    <div class="card"><div class="card-title">Total Tokens</div><div id="tkTotal" class="kpi-value accent">-</div></div>
+  </div>
+
+  <div class="grid grid-1-2">
+    <div class="card">
+      <div class="card-title">Where It's Going — by Tool</div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Tool</th><th class="right">Approx. Tokens</th><th class="right">Calls</th></tr></thead>
+          <tbody id="tkByToolBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Biggest Individual Tool Calls</div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Tool</th><th>Detail</th><th class="right">Approx. Tokens</th></tr></thead>
+          <tbody id="tkOffendersBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Findings &amp; Events</h2><div class="rule"></div>
   </div>
 
@@ -3701,7 +3733,37 @@ async function loadSupplyChain(){
     ).join('');}
   }catch(e){console.error('[prismor] supply-chain:',e);}
 }
-document.getElementById('globalDays').addEventListener('change',()=>{loadStats();loadSupplyChain();});
+
+// ── Token usage ────────────────────────────────────────────────────────────
+async function loadTokens(){
+  try{
+    const days=document.getElementById('globalDays').value;
+    document.getElementById('hintTokens').textContent='last '+days+' day'+(days==1?'':'s')+' · Claude Code';
+    const data=await apiFetch('/api/tokens?days='+days);
+    document.getElementById('tkInput').textContent=fmtNum(data.inputTokens||0);
+    document.getElementById('tkOutput').textContent=fmtNum(data.outputTokens||0);
+    document.getElementById('tkCacheRead').textContent=fmtNum(data.cacheReadTokens||0);
+    document.getElementById('tkHitRate').textContent=(data.cacheHitRate||0)+'% cache-hit rate';
+    document.getElementById('tkTotal').textContent=fmtNum(data.totalTokens||0);
+    const byTool=data.byTool||[];
+    const tbody=document.getElementById('tkByToolBody');
+    if(!byTool.length){tbody.innerHTML='<tr><td colspan="3" class="empty">No tool activity yet</td></tr>';}
+    else{tbody.innerHTML=byTool.map(t=>
+      '<tr><td>'+safe(t.tool)+'</td>'+
+        '<td class="right" style="font-weight:500">'+fmtNum(t.approxTokens||0)+'</td>'+
+        '<td class="right" style="color:var(--gray-500)">'+(t.calls||0)+'</td></tr>'
+    ).join('');}
+    const offenders=data.topOffenders||[];
+    const obody=document.getElementById('tkOffendersBody');
+    if(!offenders.length){obody.innerHTML='<tr><td colspan="3" class="empty">No tool activity yet</td></tr>';}
+    else{obody.innerHTML=offenders.map(o=>
+      '<tr><td>'+safe(o.tool)+'</td>'+
+        '<td style="color:var(--gray-600);max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+safeAttr(o.label)+'">'+safe(o.label)+'</td>'+
+        '<td class="right" style="font-weight:600;color:var(--pink-600)">'+fmtNum(o.approxTokens||0)+'</td></tr>'
+    ).join('');}
+  }catch(e){console.error('[prismor] tokens:',e);}
+}
+document.getElementById('globalDays').addEventListener('change',()=>{loadStats();loadSupplyChain();loadTokens();});
 
 // ══════════════════════════════════════════════════════════════════════════
 // AGENTS TAB — per-agent kill switch, mode override, IAM profile
@@ -4313,7 +4375,7 @@ initCharts();
 const _loadFill = document.getElementById('loadingFill');
 const _loadLabel = document.getElementById('loadingLabel');
 let _loadDone = 0;
-const _loadTotal = 7;
+const _loadTotal = 8;
 function _loadTick(label) {
   _loadDone++;
   if (_loadFill) _loadFill.style.width = Math.min(100, Math.round(_loadDone / _loadTotal * 100)) + '%';
@@ -4334,6 +4396,7 @@ const _bootTasks = [
   loadFindings().then(()      => _loadTick('Findings loaded')),
   loadEvents().then(()        => _loadTick('Events loaded')),
   loadSupplyChain().then(()   => _loadTick('Supply chain loaded')),
+  loadTokens().then(()        => _loadTick('Token usage loaded')),
   loadAgents().then(()        => _loadTick('Agents loaded')),
   loadWorkspaces()
     .then(() => Promise.allSettled([loadSessionControl(), loadPolicy()]))
@@ -4345,6 +4408,7 @@ setInterval(() => {
   loadStats();
   loadSessions();
   loadSupplyChain();
+  loadTokens();
   loadSessionControl();
   loadPolicy();
   loadAgents();

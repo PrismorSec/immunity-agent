@@ -42,6 +42,7 @@ from prismor.runtime.store import (
     get_findings_page,
     get_events_page,
     get_supply_chain_stats,
+    get_token_stats,
     get_agents_overview,
     list_registered_workspaces,
     get_enrollment,
@@ -240,6 +241,16 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             try:
                 days = max(1, qint("days", 7))
                 data = get_supply_chain_stats(hours=days * 24)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self._send_json(data)
+            return
+
+        if path == "/api/tokens":
+            try:
+                days = max(1, qint("days", 1))
+                data = get_token_stats(hours=days * 24)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
                 return

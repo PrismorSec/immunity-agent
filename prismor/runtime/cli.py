@@ -89,6 +89,7 @@ from prismor.runtime.store import (
     get_db_path,
     get_sessions_dir,
     get_session,
+    get_token_stats,
     infer_default_workspace,
     initialize_database,
     list_registered_workspaces,
@@ -832,6 +833,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         emit(session, as_json=args.json, formatter=format_session)
         return
 
+    # ── tokens ─────────────────────────────────────────────────────────
+    if args.command == "tokens":
+        show_all = getattr(args, "all", False)
+        payload = get_token_stats(None if show_all else workspace, hours=args.hours)
+        payload.update(hours=args.hours, scope="all workspaces" if show_all else "this workspace")
+        emit(payload, as_json=args.json, formatter=format_tokens)
+        return
+
     # ── install-hooks ──────────────────────────────────────────────────
     if args.command == "install-hooks":
         results = install_hooks(
@@ -907,6 +916,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                         sys.stderr.write(_format_scoped_box(_scoped_rules) + "\n")
             except Exception as _scoped_exc:
                 sys.stderr.write(f"[prismor] scoped agent error: {_scoped_exc}\n")
+
+        # ── Token usage accounting (best-effort, never blocks) ──────────────
+        try:
+            from prismor.runtime.token_usage import record_from_event
+            record_from_event(workspace=workspace, session_id=normalized["sessionId"], agent=args.agent, event=event)
+        except Exception:
+            pass
 
         # Run the shared evaluation pipeline: persists the event, analyzes the
         # session, evaluates policy + scoped rules + IAM + cross-call learning,
@@ -2156,6 +2172,19 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--workspace", help="Workspace path")
     session_parser.add_argument("--session-id", help="Session ID to view")
     session_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # ── tokens ─────────────────────────────────────────────────────────
+    tokens_parser = subparsers.add_parser(
+        "tokens",
+        help="Show token usage and where it's going (Claude Code)",
+    )
+    tokens_parser.add_argument("--workspace", help="Workspace path")
+    tokens_parser.add_argument(
+        "--all", action="store_true",
+        help="Aggregate across all registered workspaces instead of just this one",
+    )
+    tokens_parser.add_argument("--hours", type=int, default=24, metavar="N", help="Look-back window in hours (default: 24)")
+    tokens_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── install-hooks ──────────────────────────────────────────────────
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
@@ -3790,6 +3819,49 @@ def format_session(session: Dict[str, Any]) -> str:
     for event in session["events"][-10:]:
         parts = [event.get("ts"), event.get("type"), event.get("path"), event.get("command"), event.get("url")]
         lines.append(f"- {' | '.join(part for part in parts if part)}")
+    return "\n".join(lines)
+
+
+def format_tokens(payload: Dict[str, Any]) -> str:
+    hours = payload.get("hours", 24)
+    lines = [
+        f"Token usage — last {hours}h ({payload.get('scope', 'this workspace')})",
+        "=" * 40,
+    ]
+    total_real = payload.get("totalTokens", 0)
+    if total_real:
+        hit_rate = payload.get("cacheHitRate", 0.0)
+        lines.extend([
+            f"Input tokens:   {payload['inputTokens']:>12,}",
+            f"Output tokens:  {payload['outputTokens']:>12,}",
+            f"Cache read:     {payload['cacheReadTokens']:>12,}  ({hit_rate}% cache-hit rate)",
+            f"Cache write:    {payload['cacheCreationTokens']:>12,}",
+            f"Total:          {total_real:>12,}",
+        ])
+        if hit_rate < 40:
+            lines.append("")
+            lines.append(
+                _color("Tip:", _YELLOW) + " cache-hit rate is low — frequent /clear or /compact resets the "
+                "prompt cache; batching related work in one session is cheaper."
+            )
+    else:
+        lines.append("No Claude Code token usage recorded yet for this window.")
+
+    by_tool = payload.get("byTool", [])
+    if by_tool:
+        lines.extend(["", "Where it's going", "-" * 16])
+        for row in by_tool:
+            lines.append(f"  {row['tool']:<12} {row['approxTokens']:>10,} tok   ({row['calls']} calls)")
+
+    offenders = payload.get("topOffenders", [])
+    if offenders:
+        lines.extend(["", "Biggest individual tool calls", "-" * 29])
+        for row in offenders:
+            label = row["label"]
+            if len(label) > 60:
+                label = label[:57] + "..."
+            lines.append(f"  {row['tool']:<12} {label:<60} {row['approxTokens']:>8,} tok")
+
     return "\n".join(lines)
 
 

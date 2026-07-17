@@ -600,6 +600,28 @@ def initialize_database(workspace: Path) -> Path:
                 recommended_version TEXT,
                 session_id TEXT
             );
+            CREATE TABLE IF NOT EXISTS token_usage (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                workspace_path TEXT,
+                ts TEXT,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_creation_tokens INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS tool_output_size (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                workspace_path TEXT,
+                ts TEXT,
+                agent TEXT,
+                tool_name TEXT,
+                label TEXT,
+                size_chars INTEGER,
+                approx_tokens INTEGER
+            );
             """
         )
         # Migrate before creating indexes — old DBs may be missing columns the
@@ -617,6 +639,10 @@ def initialize_database(workspace: Path) -> Path:
             CREATE INDEX IF NOT EXISTS idx_sc_ts ON supply_chain_events(ts);
             CREATE INDEX IF NOT EXISTS idx_sc_verdict ON supply_chain_events(verdict);
             CREATE INDEX IF NOT EXISTS idx_sc_session ON supply_chain_events(session_id);
+            CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(ts DESC);
+            CREATE INDEX IF NOT EXISTS idx_token_usage_workspace ON token_usage(workspace_path);
+            CREATE INDEX IF NOT EXISTS idx_tool_output_size_ts ON tool_output_size(ts DESC);
+            CREATE INDEX IF NOT EXISTS idx_tool_output_size_workspace ON tool_output_size(workspace_path);
             """
         )
         from prismor.runtime.learning import initialize_learning_tables
@@ -2210,6 +2236,135 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
         ],
         "recentBlocks": recent_blocks,
         "installsBySession": by_session,
+    }
+
+
+def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> None:
+    try:
+        connection = sqlite3.connect(initialize_database(workspace))
+        try:
+            connection.execute(sql, params)
+            connection.commit()
+        finally:
+            connection.close()
+    except Exception:
+        pass
+
+
+def record_token_usage(
+    *,
+    workspace: Path,
+    session_id: str,
+    ts: str,
+    message_id: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+) -> None:
+    """Record one assistant turn's real Anthropic token usage. Fail-open.
+
+    Deduped on ``message_id`` — a single assistant turn can trigger several
+    PostToolUse hooks (parallel tool calls), which would otherwise count the
+    same turn's usage multiple times.
+    """
+    if not message_id:
+        return
+    _insert_fail_open(
+        workspace,
+        """
+        INSERT OR IGNORE INTO token_usage (
+            message_id, session_id, workspace_path, ts, model,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            message_id, session_id, str(workspace), ts, model,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+        ),
+    )
+
+
+def record_tool_output_size(
+    *,
+    workspace: Path,
+    session_id: str,
+    ts: str,
+    agent: str,
+    tool_name: str,
+    label: str,
+    size_chars: int,
+) -> None:
+    """Record the size of one tool call's output, as a proxy for context cost.
+
+    Works for every agent — unlike real usage, this needs nothing beyond what
+    is already in the normalized hook event. Fail-open.
+    """
+    _insert_fail_open(
+        workspace,
+        """
+        INSERT INTO tool_output_size (
+            session_id, workspace_path, ts, agent, tool_name, label, size_chars, approx_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, str(workspace), ts, agent, tool_name, label, size_chars, size_chars // 4),
+    )
+
+
+def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: int = 8) -> Dict[str, Any]:
+    """Token-usage summary + tool-output breakdown, dashboard-shaped.
+
+    Every workspace writes to the single home DB, so scoping is just a
+    ``workspace_path`` filter — ``workspace=None`` aggregates everything.
+    """
+    db_path = get_db_path(workspace) if workspace else prismor_home() / "prismor.db"
+    conn = _connect_ro(db_path)
+    if conn is None:
+        return {
+            "inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0,
+            "cacheCreationTokens": 0, "cacheHitRate": 0.0, "totalTokens": 0,
+            "byTool": [], "topOffenders": [],
+        }
+    scope_sql = " AND workspace_path = ?" if workspace else ""
+    window_args = [f"-{hours} hours"] + ([str(workspace)] if workspace else [])
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(input_tokens),0) as inp,"
+            "       COALESCE(SUM(output_tokens),0) as out,"
+            "       COALESCE(SUM(cache_read_tokens),0) as cread,"
+            "       COALESCE(SUM(cache_creation_tokens),0) as ccreate"
+            "  FROM token_usage WHERE ts >= datetime('now', ?)" + scope_sql,
+            window_args,
+        ).fetchone()
+        by_tool = [
+            {"tool": r["tool_name"] or "unknown", "approxTokens": r["tok"] or 0, "calls": r["cnt"] or 0}
+            for r in conn.execute(
+                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"
+                "  FROM tool_output_size WHERE ts >= datetime('now', ?)" + scope_sql +
+                "  GROUP BY tool_name ORDER BY tok DESC LIMIT ?",
+                window_args + [limit],
+            )
+        ]
+        top_offenders = [
+            {"tool": r["tool_name"] or "unknown", "label": r["label"] or "", "approxTokens": r["approx_tokens"] or 0}
+            for r in conn.execute(
+                "SELECT tool_name, label, approx_tokens FROM tool_output_size"
+                "  WHERE ts >= datetime('now', ?) AND label != ''" + scope_sql +
+                "  ORDER BY approx_tokens DESC LIMIT ?",
+                window_args + [limit],
+            )
+        ]
+    finally:
+        conn.close()
+    inp, out, cread, ccreate = row["inp"], row["out"], row["cread"], row["ccreate"]
+    input_side = inp + cread + ccreate
+    return {
+        "inputTokens": inp, "outputTokens": out,
+        "cacheReadTokens": cread, "cacheCreationTokens": ccreate,
+        "cacheHitRate": round(cread / input_side * 100, 1) if input_side else 0.0,
+        "totalTokens": inp + out + cread + ccreate,
+        "byTool": by_tool, "topOffenders": top_offenders,
     }
 
 
