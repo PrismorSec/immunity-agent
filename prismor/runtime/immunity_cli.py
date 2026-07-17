@@ -73,11 +73,35 @@ def _deprecation_notice() -> None:
     )
 
 
+def _update_notice() -> None:
+    """Passive nag when a newer prismor is on PyPI. The actual PyPI check is
+    debounced (see version_check.latest_known_version — at most once/day), so
+    this adds no network latency to most invocations. Never called for
+    `hook-dispatch`, which fires on every tool call and cannot afford stderr
+    noise or a network hit on that path. Suppressable with
+    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI."""
+    if os.environ.get("PRISMOR_NO_UPDATE_CHECK"):
+        return
+    try:
+        from prismor.runtime.version_check import latest_known_version
+        latest = latest_known_version()
+    except Exception:
+        return
+    if not latest or latest == __version__:
+        return
+    sys.stderr.write(
+        f"\033[33mnote:\033[0m prismor {latest} is available (you're on {__version__}). "
+        "Run `prismor update` to upgrade.\n"
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
     _deprecation_notice()
+    if argv and argv[0] != "hook-dispatch":
+        _update_notice()
 
     if not argv or argv[0] in ("-h", "--help", "help"):
         _print_usage()

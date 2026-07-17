@@ -1927,17 +1927,12 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     if args.command == "update":
         import subprocess
-        import urllib.request
-        import urllib.error
         from prismor.runtime import __version__ as _current
+        from prismor.runtime.version_check import fetch_latest
         check_only = getattr(args, "check_only", False)
-        try:
-            with urllib.request.urlopen(
-                "https://pypi.org/pypi/immunity-agent/json", timeout=10
-            ) as resp:
-                latest = json.loads(resp.read())["info"]["version"]
-        except (urllib.error.URLError, KeyError, OSError) as exc:
-            sys.stderr.write(f"prismor update: could not reach PyPI — {exc}\n")
+        latest = fetch_latest(timeout=10)
+        if latest is None:
+            sys.stderr.write("prismor update: could not reach PyPI\n")
             raise SystemExit(1)
 
         if latest == _current:
