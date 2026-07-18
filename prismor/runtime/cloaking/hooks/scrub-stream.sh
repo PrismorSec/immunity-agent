@@ -44,26 +44,28 @@ _prismor_scrubbable() {
   return 1
 }
 
-# Build a single sed program: real value → placeholder, for each secret.
-# Escape sed's `s|...|...|` delimiters and metacharacters in the real value.
-sed_filter=""
+# Slurp stdin, then replace every registered secret value with its placeholder
+# using bash's literal substring substitution (${var//"needle"/repl}).
+#
+# We deliberately do NOT use sed here. sed treats the value as a regex, so a
+# secret containing regex metacharacters ([ ] ( ) { } . * + ? ^ $ |) either
+# made sed abort with "unterminated substitute pattern" — dropping the whole
+# command's output — or, worse, silently mangled the text. Quoting the needle
+# in ${var//"$real"/...} forces a literal match, immune to any byte a secret
+# key can contain, and it also spans newlines (sed only scrubs line-by-line).
+#
+# The `; printf x` / `%x` dance preserves trailing newlines that command
+# substitution would otherwise strip.
+data="$(cat; printf x)"
+data="${data%x}"
+
 shopt -s nullglob
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
   name="$(basename "$secret_file")"
   real="$(cat "$secret_file")"
   _prismor_scrubbable "$real" || continue
-  esc_real="$(printf '%s' "$real" | sed 's/[\/&|]/\\&/g')"
-  sed_filter+="s|$esc_real|@@SECRET:${name}@@|g;"
+  data="${data//"$real"/@@SECRET:${name}@@}"
 done
 
-if [[ -z "$sed_filter" ]]; then
-  exec cat
-fi
-
-# `sed -E` over the stream. If sed is somehow unavailable, fall back to cat.
-if command -v sed >/dev/null 2>&1; then
-  exec sed -E "$sed_filter"
-else
-  exec cat
-fi
+printf '%s' "$data"

@@ -107,6 +107,33 @@ def test_scrub_passthrough_no_secret():
     check("scrub leaves non-secret text unchanged", out == "nothing sensitive here\n", out)
 
 
+def test_scrub_secret_with_regex_metacharacters():
+    # Regression: a secret containing regex metacharacters ([](){}.*+?^$|) used
+    # to be interpolated into a `sed -E` pattern, which aborted with
+    # "unterminated substitute pattern" (dropping ALL output) or silently
+    # mangled the text. Literal substring replacement must handle it exactly.
+    meta = "sk_live_9f8[a|b](c).d*+?e^$again"
+    (_SECRETS / "META").write_text(meta)
+    try:
+        out = run_scrub(f"before {meta} after\n")
+        check(
+            "scrub masks a secret full of regex metacharacters",
+            out == "before @@SECRET:META@@ after\n",
+            repr(out),
+        )
+    finally:
+        (_SECRETS / "META").unlink()
+
+
+def test_scrub_preserves_trailing_and_missing_newline():
+    # The output must be byte-exact: no added or stripped trailing newline.
+    check(
+        "scrub preserves a missing trailing newline",
+        run_scrub("plain text no newline") == "plain text no newline",
+        "trailing newline was altered",
+    )
+
+
 # ── B. decloak.sh output scrubbing (no placeholder) ───────────────────────
 def test_grep_output_scrubbed():
     # Model reads the secret out of a file via grep — never uses a placeholder.
@@ -190,6 +217,8 @@ def test_read_of_clean_file_allowed():
 def main() -> int:
     for fn in [
         test_scrub_masks_secret, test_scrub_passthrough_no_secret,
+        test_scrub_secret_with_regex_metacharacters,
+        test_scrub_preserves_trailing_and_missing_newline,
         test_grep_output_scrubbed, test_source_echo_scrubbed,
         test_no_secret_in_wrapped_command, test_exit_code_preserved,
         test_placeholder_substituted_and_output_scrubbed,
