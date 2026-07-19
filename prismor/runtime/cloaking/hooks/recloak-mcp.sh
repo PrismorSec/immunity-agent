@@ -24,21 +24,20 @@ tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 response="$(printf '%s' "$input" | jq -r '.tool_response // empty')"
 [[ -n "$response" ]] || exit 0
 
-# Build a sed expression that substitutes every registered secret's real
-# value with its placeholder. Skip missing/empty entries.
-sed_filter=""
+# Replace every registered secret's real value with its placeholder using
+# bash's literal substring substitution (${var//"needle"/repl}). Not sed: the
+# value would be a regex there, so a secret with metacharacters could abort
+# sed ("unterminated substitute pattern") or silently mangle the response.
+# Quoting the needle forces a literal, byte-exact match. Skip missing/empty.
+scrubbed="$response"
 shopt -s nullglob
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
   name="$(basename "$secret_file")"
   real="$(cat "$secret_file")"
   [[ -n "$real" ]] || continue
-  esc_real="$(printf '%s' "$real" | sed 's/[\/&|]/\\&/g')"
-  sed_filter+="s|$esc_real|@@SECRET:$name@@|g;"
+  scrubbed="${scrubbed//"$real"/@@SECRET:$name@@}"
 done
-[[ -n "$sed_filter" ]] || exit 0
-
-scrubbed="$(printf '%s' "$response" | sed -E "$sed_filter")"
 
 # Only mutate if something actually changed — avoids noisy empty mutations.
 if [[ "$scrubbed" != "$response" ]]; then

@@ -1,3 +1,15 @@
+## [1.27.0] — 2026-07-18
+
+### Added
+
+- **Token usage tracking.** Runtime now records real per-turn token usage (input / output / cache read / cache write) for Claude Code by reading the hook payload's existing `transcript_path` — no new data source — deduped on `message_id` so parallel tool calls from one assistant turn aren't multiply-counted. A tool-output-size proxy ("where tokens are going") works across every agent (claude, codex, copilot, cursor, …) from the normalized hook event, recorded post-only to avoid double-counting Pre/Post pairs. New `prismor tokens [--all] [--hours N] [--json]` command, plus a `/api/tokens` dashboard endpoint and "Token Usage" widget. See #202.
+- **Passive update-available notice.** Commands nudge you when a newer prismor is on PyPI instead of relying on `prismor update --check`. Debounced to at most one PyPI hit per 24h (cached at `~/.prismor/update_check.json`), never fired on `hook-dispatch` (which runs on every tool call), and suppressable with `PRISMOR_NO_UPDATE_CHECK=1`. See #202.
+- **Per-skill inventory and governance.** Every Claude Code skill invocation arrives under the single `Skill` tool tag; the skill's actual name lived only in the raw hook payload, so the control plane could see that an agent used skills but not which ones, and could only deny the whole mechanism. Skill invocations are now lifted into a qualified `Skill:<name>` tag and reported alongside the bare tag, so the console shows individual skills and policy can allow/deny one at a time — denying `Skill` still blocks all skills, denying `Skill:<name>` blocks only that one.
+
+### Fixed
+
+- **Cloaking output scrub no longer breaks on secrets with regex metacharacters.** The output scrubbers (`scrub-stream.sh`, `recloak-mcp.sh`) interpolated each raw secret value into a `sed -E` substitution as the pattern. Since sed treats it as a regex, a secret containing any metacharacter (`[ ] ( ) { } . * + ? ^ $ |`) either aborted sed with `unterminated substitute pattern` — dropping the *entire* command's output so every Bash tool call failed — or silently mangled output while leaving the secret only partially masked. Both hooks now use bash's literal substring substitution (`${var//"$real"/placeholder}`), a byte-exact match immune to any character a key can contain, and also correctly span newlines (sed only scrubbed line-by-line). See #203.
+
 ## [1.26.5] — 2026-07-15
 
 ### Fixed

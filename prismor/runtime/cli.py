@@ -128,6 +128,14 @@ def _color(text: str, color: str) -> str:
     return f"{color}{text}{_NC}"
 
 
+def _block_header(finding: Dict[str, Any]) -> str:
+    """The first stderr line of a deny — carries the rule id every override needs."""
+    line = f"Prismor blocked this action: [{finding['severity']}] {finding['title']}"
+    if finding.get("ruleId"):
+        line += f" (rule: {finding['ruleId']})"
+    return line + "\n"
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -304,6 +312,54 @@ def main(argv: Optional[List[str]] = None) -> None:
             except OSError:
                 pass
         print("Un-enrolled." if had else "This machine was not enrolled.")
+        return
+
+    # ── pause / resume: suspend local screening without uninstalling hooks ──
+    if args.command == "pause":
+        from prismor.runtime import pause as _pause
+        duration_s: Optional[int] = None
+        raw_duration = getattr(args, "duration", None)
+        if raw_duration:
+            try:
+                duration_s = _pause.parse_duration(raw_duration)
+            except ValueError:
+                print(f"  {_color('✗', _RED)} Could not read duration '{raw_duration}'. Use e.g. 30m, 2h, 1d.")
+                return
+            if duration_s <= 0:
+                print(f"  {_color('✗', _RED)} Duration must be positive.")
+                return
+        # Attribute the pause to the enrolled member when we know them.
+        by = ""
+        try:
+            from prismor.runtime.enterprise import identity as _identity
+            ident = _identity.load_identity() or {}
+            by = ident.get("user_id") or ident.get("label") or ""
+        except Exception:
+            pass
+        rec = _pause.set_paused(duration_seconds=duration_s, reason=getattr(args, "reason", "") or "", by=by)
+        # Fire one heartbeat now so the console flips to "paused" within ~30s.
+        try:
+            _pause.beat(agent="claude", state=rec)
+        except Exception:
+            pass
+        print()
+        print(f"  {_color('⏸  Prismor paused', _YELLOW)} — tool calls are no longer screened and enforcement is off.")
+        if rec.get("until"):
+            until_local = datetime.fromtimestamp(float(rec["until"])).strftime("%H:%M")
+            print(f"  {_color('Auto-resumes at ' + until_local, _DIM)} (in {raw_duration}).")
+        else:
+            print(f"  {_color('Stays paused until you run', _DIM)} prismor resume.")
+        print(f"  {_color('Resume anytime:', _GREEN)} prismor resume")
+        print()
+        return
+
+    if args.command == "resume":
+        from prismor.runtime import pause as _pause
+        existed = _pause.clear_paused()
+        if existed:
+            print(f"  {_color('▶  Prismor resumed', _GREEN)} — screening and enforcement are active again.")
+        else:
+            print("  Prismor was not paused.")
         return
 
     # ── workspace: show/set whether THIS workspace is org-managed or personal ──
@@ -879,6 +935,22 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "hook-dispatch":
         register_workspace(workspace)
 
+        # Locally paused? Don't screen this tool call — allow it straight
+        # through, but emit a lightweight heartbeat so the console shows this
+        # machine as deliberately *paused* rather than silently idle. The pause
+        # self-heals when a `--for` window elapses (checked in active_state()).
+        try:
+            from prismor.runtime import pause as _pause
+            _pstate = _pause.active_state()
+        except Exception:
+            _pstate = None
+        if _pstate is not None:
+            try:
+                _pause.beat(agent=args.agent, state=_pstate)
+            except Exception:
+                pass
+            return
+
         # Keep org-managed policy fresh on the hot path: a cheap, debounced
         # (~30s) version check that pulls the full signed policy only when the
         # admin has changed it. Synchronous so a changed policy takes effect on
@@ -986,10 +1058,34 @@ def main(argv: Optional[List[str]] = None) -> None:
             # (async approval queue); here they deny with a clear reason.
             verdict = str(blocking.get("action") or "block").lower()
             reason = f"[{blocking['severity']}] {blocking['title']}"
+            if blocking.get("ruleId"):
+                # The rule id is what every override — allowlist, mode, exemption
+                # — is keyed on. Without it here the human has to go hunting at
+                # exactly the moment they need it.
+                reason += f" (rule: {blocking['ruleId']})"
             if blocking.get("evidence"):
                 reason += f"\n{blocking['evidence']}"
             if blocking.get("remediation"):
                 reason += f"\nRecommended fix: {blocking['remediation']}"
+
+            # Narrowest-first unblock steps, so a false positive costs one
+            # allowlist entry rather than an uninstall.
+            unblock_text = ""
+            try:
+                from prismor.runtime import unblock as _unblock
+                from prismor.runtime.enterprise import identity as _identity
+                from prismor.runtime.enterprise import workspace_scope as _scope
+                unblock_text = _unblock.format_unblock(
+                    blocking,
+                    workspace=workspace,
+                    session_id=normalized["sessionId"],
+                    org_managed=_scope.is_managed(workspace),
+                    enrolled=_identity.is_enrolled(),
+                )
+            except Exception:
+                pass  # best-effort — a block must never depend on its own help text
+            if unblock_text:
+                reason += f"\n\n{unblock_text}"
 
             if verdict == "defer":
                 # DEFER: hold the ambiguous action and escalate to the deeper
@@ -1064,14 +1160,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # Grok Build reads {"decision": "deny", "reason": ...} from stdout
                     # AND requires exit code 2 (unlike Copilot, which ignores exit code).
                     sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
-                    sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
+                    sys.stderr.write(_block_header(blocking))
+                    if unblock_text:
+                        sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(2)
                 else:
-                    sys.stderr.write(f"Prismor blocked this action: [{blocking['severity']}] {blocking['title']}\n")
+                    sys.stderr.write(_block_header(blocking))
                     if blocking.get("evidence"):
                         sys.stderr.write(f"{blocking['evidence']}\n")
                     if blocking.get("remediation"):
                         sys.stderr.write(f"Recommended fix: {blocking['remediation']}\n")
+                    if unblock_text:
+                        sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(2)
         elif current_findings:
             # Observe: surface all findings so agents know every package to fix.
@@ -2247,6 +2347,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--json", action="store_true", help="Machine-readable output (exit 0 iff all checks pass)")
 
     subparsers.add_parser("logout", help="Un-enroll this machine (remove device identity + cached remote policy)")
+
+    pause_p = subparsers.add_parser("pause", help="Pause local screening/enforcement without uninstalling the hooks")
+    pause_p.add_argument("--for", dest="duration", metavar="DURATION",
+                         help="Auto-resume after this long, e.g. 30m, 2h, 1d (default: until you run `prismor resume`)")
+    pause_p.add_argument("--reason", help="Why you're pausing — shown in the console next to the device")
+    subparsers.add_parser("resume", help="Resume local screening/enforcement after `prismor pause`")
+
     workspace_p = subparsers.add_parser("workspace", help="Show or set whether this workspace is org-managed or personal")
     workspace_p.add_argument("action", nargs="?", choices=["managed", "personal", "auto"], help="managed = report to org; personal = local-only; auto = let org patterns decide")
     exempt_p = subparsers.add_parser("exempt", help="Request an admin exemption (rule relaxation) for this repo")
@@ -3124,6 +3231,22 @@ def _print_status_overview(workspace: Path) -> None:
         print(f"  {_color('Hooks:', _GREEN)}       {', '.join(agents_with_hooks)}  ({mode_str})")
     else:
         print(f"  {_color('Hooks:', _GREEN)}       {_color('not installed', _YELLOW)}")
+
+    # Paused? Local screening is suspended without uninstalling the hooks.
+    try:
+        from prismor.runtime import pause as _pause
+        _pstate = _pause.active_state()
+    except Exception:
+        _pstate = None
+    if _pstate is not None:
+        if _pstate.get("until"):
+            _until = datetime.fromtimestamp(float(_pstate["until"])).strftime("%H:%M")
+            _pmsg = f"yes — auto-resumes {_until}"
+        else:
+            _pmsg = "yes — run `prismor resume` to re-enable"
+        if _pstate.get("reason"):
+            _pmsg += f"  ({_pstate['reason']})"
+        print(f"  {_color('Paused:', _YELLOW)}      {_color(_pmsg, _YELLOW)}")
 
     # Cloaking — lazy import so the cloaking subsystem stays optional
     cloak_state = "unknown"
