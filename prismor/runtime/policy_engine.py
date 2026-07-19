@@ -1270,6 +1270,15 @@ class PolicyEngine:
         """
         from supplychain.ecosystems.metadata import fetch_metadata
 
+        # Only registry installs carry an OSV-queryable name@version. A git/URL/
+        # local-path spec (source != "registry") has no version to score, and
+        # mis-scoring one produced a "vulnerable-version" false positive on a
+        # routine `pip install git+https://…` / `npm install github:…`. Those
+        # non-registry sources are surfaced separately (warn) by the
+        # pkg-install-from-url / npm-git-install hygiene rules.
+        if getattr(spec, "source", "registry") != "registry":
+            return None
+
         try:
             meta = fetch_metadata(spec, ecosystem)
             verdict = scorer.score(spec, meta, install_event)
@@ -1299,10 +1308,16 @@ class PolicyEngine:
 
         finding_id = f"pkg-install-vulnerable-version-{index}-{spec.name}"
         prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+        # Block-verdict scores (known-vulnerable / malicious) go under the
+        # blocking `dependency_risk` category; a lower-confidence "warn" verdict
+        # (e.g. a single low-severity advisory on an otherwise-current pin) goes
+        # under the non-blocking `dependency_hygiene` category so it surfaces as
+        # a warning instead of hard-stopping a routine install in enforce mode.
+        is_block = verdict.verdict == "block"
         return {
             "id": prefixed_id,
             "severity": severity,
-            "category": "dependency_risk",
+            "category": "dependency_risk" if is_block else "dependency_hygiene",
             "title": (
                 f"Risky {ecosystem} install: {spec.raw} "
                 f"(score {verdict.score}/100, {verdict.verdict})"
@@ -1310,7 +1325,7 @@ class PolicyEngine:
             "evidence": _truncate(evidence),
             "eventIndex": index,
             "ruleId": "pkg-install-vulnerable-version",
-            "action": "block" if verdict.verdict == "block" else "warn",
+            "action": "block" if is_block else "warn",
             "safe_version": _sv.version if _sv else None,
             "remediation": f"Use {_sv.version} instead ({_sv.reason})" if _sv else None,
             # Same default as every other dependency_risk rule: no per-rule
