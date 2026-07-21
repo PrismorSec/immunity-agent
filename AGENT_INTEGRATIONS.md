@@ -48,7 +48,7 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | browser-use | framework | sdk | ✅ | `throw` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
 | HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
-| MCP Proxy (any MCP-speaking agent) | framework | mcp | 🟡 | `proxy-deny` |
+| MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
 
 Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · `mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails).
 
