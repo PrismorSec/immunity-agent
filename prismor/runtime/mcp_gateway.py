@@ -447,7 +447,8 @@ class _Route:
 
 class Gateway:
     def __init__(self, specs: List[UpstreamSpec], *, workspace: Path,
-                 mode: str = "enforce", namespace: str = "plain"):
+                 mode: str = "enforce", namespace: str = "plain",
+                 session_id: str = ""):
         if not specs:
             raise GatewayConfigError("no upstream MCP servers configured")
         names = [s.name for s in specs]
@@ -458,7 +459,11 @@ class Gateway:
         # Single-upstream shim mode may skip renaming; the aggregator must
         # namespace to keep tool names collision-free across servers.
         self.namespace = "plain" if (namespace == "none" and len(specs) > 1) else namespace
-        self.session_id = "mcp-" + uuid.uuid4().hex[:12]
+        # A stable session id makes sessions resumable across gateway restarts
+        # (hosted deployments restore the session store + trifecta ledger from
+        # durable storage — a fresh id each boot would orphan that state and
+        # reset the crossover ledger, reopening the wait-out-the-restart bypass).
+        self.session_id = session_id or ("mcp-" + uuid.uuid4().hex[:12])
         self.agent_name = GATEWAY_AGENT
         self.upstreams: List[Upstream] = [
             make_upstream(s, self._make_notification_handler(s.name)) for s in specs
@@ -856,7 +861,9 @@ def run_gateway(args, workspace: Path) -> int:
 
     gateway = Gateway(specs, workspace=workspace,
                       mode=getattr(args, "mode", "enforce") or "enforce",
-                      namespace=getattr(args, "namespace", "plain") or "plain")
+                      namespace=getattr(args, "namespace", "plain") or "plain",
+                      session_id=(getattr(args, "session_id", "") or
+                                  os.environ.get("PRISMOR_SESSION_ID", "")))
 
     def _shutdown(signum, frame):  # noqa: ARG001
         gateway.close()

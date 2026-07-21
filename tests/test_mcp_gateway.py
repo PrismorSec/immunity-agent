@@ -401,3 +401,13 @@ def test_install_noops(tmp_path, monkeypatch):
         "prismor": {"command": "prismor"}}}))
     assert "already installed" in install_gateway(ws)
     assert "nothing to restore" in uninstall_gateway(ws)
+
+
+def test_stable_session_id(tmp_path):
+    specs = [UpstreamSpec(name="a", command=["true"])]
+    g = Gateway(specs, workspace=tmp_path, session_id="hosted-alice")
+    g.close()
+    assert g.session_id == "hosted-alice"
+    g2 = Gateway(specs, workspace=tmp_path)
+    g2.close()
+    assert g2.session_id.startswith("mcp-") and g2.session_id != "hosted-alice"
