@@ -2334,6 +2334,10 @@ def build_parser() -> argparse.ArgumentParser:
     gw_parser.add_argument("--mode", choices=["observe", "enforce"], default="enforce",
                            help="enforce=block policy violations (default), observe=log only")
     gw_parser.add_argument("--workspace", help="Workspace path for policy + session store")
+    gw_parser.add_argument("--session-id", dest="session_id", default="",
+                           help="Stable session id (default: fresh per process). Hosted deployments "
+                           "set this so restored session state survives gateway restarts. "
+                           "Env fallback: PRISMOR_SESSION_ID")
     gw_parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
                            help="plain=<server>__<tool> (default); none=raw tool names "
                            "(single-upstream shim only)")
