@@ -348,6 +348,9 @@ class UpstreamHttp(Upstream):
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            # urllib's default Python-urllib/x.y UA is rejected outright by
+            # common CDNs/WAFs (Cloudflare returns 403) — identify honestly.
+            "User-Agent": "prismor-gateway/" + _gateway_version(),
         }
         headers.update(self.spec.headers)
         if self._session_id:
