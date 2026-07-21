@@ -6,17 +6,18 @@ Items are ordered by priority. Each has a registry anchor where relevant.
 
 ## High priority
 
-### MCP proxy (`immunity mcp-proxy`)
-Registry: `id: mcp-proxy, status: roadmap`
+### ~~MCP proxy (`immunity mcp-proxy`)~~ — DONE as `prismor mcp-gateway`
+Registry: `id: mcp-proxy` (flip to `status: available` in prismor-web is a follow-up)
 
-A stdio/HTTP shim in front of downstream MCP servers that intercepts `tools/call`, normalizes to the canonical event shape, calls `evaluate_tool_call`, and denies on enforce. Zero per-framework code — any MCP-speaking agent (Claude Code, Cursor, custom) gets coverage without a hook-config install.
-
-Rough sketch:
-- `immunity mcp-proxy --upstream <mcp-server-url>` or `immunity mcp-proxy --stdio`
-- Intercept `tools/call` JSON-RPC method; pass-through everything else
-- Build event from `params.name` + `params.arguments`; call `evaluate_tool_call`
-- On deny: return `{"error": {"code": -32600, "message": "blocked by Prismor"}}` (or MCP `isError` shape)
-- On allow: forward to upstream, return result
+Shipped in `prismor/runtime/mcp_gateway.py` + `tests/test_mcp_gateway.py`, with docs in
+`docs/mcp-gateway.md`. Went beyond the sketch: full **aggregator** (one gateway fronts
+all of the user's MCP servers from an `mcpServers`-shaped config, tools namespaced
+`<server>__<tool>`), single-upstream shim mode (`--upstream`), stdio + streamable-HTTP/SSE
+upstreams, and tool **results** are injection-scanned before the model sees them.
+Deviation from the sketch: denials return an MCP tool result with `isError: true`
+(the model can read the reason and adapt) — JSON-RPC `-32600` is reserved for protocol
+failures. Events carry `tool_name = mcp__<server>__<tool>` with the *real* downstream
+server name, so trifecta globs / org tool denies / control-plane matchers apply unchanged.
 
 ---
 

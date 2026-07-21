@@ -931,6 +931,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"No Prismor hooks found for {item['agent']} at {item['configPath']}")
         return
 
+    # ── mcp-gateway (single MCP connector for all downstream servers) ──
+    if args.command == "mcp-gateway":
+        register_workspace(workspace)
+        from prismor.runtime.mcp_gateway import run_gateway, GatewayConfigError
+        try:
+            sys.exit(run_gateway(args, workspace))
+        except GatewayConfigError as exc:
+            sys.stderr.write(f"[prismor] {exc}\n")
+            sys.exit(2)
+
     # ── hook-dispatch (called by IDE hooks) ────────────────────────────
     if args.command == "hook-dispatch":
         register_workspace(workspace)
@@ -2300,6 +2310,33 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--workspace", help="Workspace path")
     uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user"], default="project", help="Hook scope")
+
+    # ── mcp-gateway ────────────────────────────────────────────────────
+    gw_parser = subparsers.add_parser(
+        "mcp-gateway",
+        help="Run the Prismor MCP gateway — one MCP connector that fronts and guards all your MCP servers",
+        description="Aggregates the MCP servers in --config behind a single stdio MCP server. "
+        "Every tools/call is policy-evaluated before forwarding and every response is "
+        "injection-scanned before the model sees it. Point your agent's .mcp.json at "
+        "`prismor mcp-gateway` and move your existing mcpServers block into the gateway config "
+        "(or run `prismor mcp-gateway install` to do that automatically).",
+    )
+    gw_parser.add_argument("action", nargs="?", choices=["serve", "install", "uninstall"],
+                           default="serve",
+                           help="serve (default) | install: move this workspace's .mcp.json servers "
+                           "behind the gateway | uninstall: restore the .mcp.json backup")
+    gw_parser.add_argument("--config", help="Downstream servers config (.mcp.json-shaped; "
+                           "default: ~/.prismor/mcp-gateway.json)")
+    gw_parser.add_argument("--upstream", help="Single upstream shim mode: a URL, or a quoted command "
+                           "(e.g. --upstream 'npx -y @modelcontextprotocol/server-github')")
+    gw_parser.add_argument("--server", action="append",
+                           help="Inline upstream as name=<url|command> (repeatable)")
+    gw_parser.add_argument("--mode", choices=["observe", "enforce"], default="enforce",
+                           help="enforce=block policy violations (default), observe=log only")
+    gw_parser.add_argument("--workspace", help="Workspace path for policy + session store")
+    gw_parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
+                           help="plain=<server>__<tool> (default); none=raw tool names "
+                           "(single-upstream shim only)")
 
     # ── hook-dispatch (internal) ───────────────────────────────────────
     hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")

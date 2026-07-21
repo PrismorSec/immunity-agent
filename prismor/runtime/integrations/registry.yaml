@@ -295,13 +295,13 @@ agents:
 
   # ── Universal — MCP proxy (follow-on) ────────────────────────────────────
   - id: mcp-proxy
-    name: MCP Proxy (any MCP-speaking agent)
+    name: MCP Gateway (any MCP-speaking agent)
     kind: framework
     surface: mcp
-    status: roadmap
+    status: shipped
     config_paths: {}
-    events: ["tools/call"]
+    events: ["tools/call", "tool_result"]
     blocking: proxy-deny
-    normalizer: null
+    normalizer: prismor.runtime.mcp_gateway
     notes: "stdio/HTTP shim in front of downstream MCP servers; covers any MCP client."
     sources: ["https://modelcontextprotocol.io/"]
