@@ -217,7 +217,12 @@ class TagLedger:
         union = seen_tags | set(new_tags)
         best: Optional[Dict[str, Any]] = None
         for forbidden in incompatible:
-            if forbidden <= union and not (forbidden <= seen_tags) and (forbidden & new_tags):
+            # Fires on every call that carries a tag of a covered forbidden set —
+            # including sets already fully seen. A session that has entered the
+            # forbidden state stays restricted; exempting "already complete" sets
+            # would let every call after the first completion sail through (e.g.
+            # a ledger populated during an observe period, or restored state).
+            if forbidden <= union and (forbidden & new_tags):
                 introduced = {t: self.seen[t] for t in forbidden if t in seen_tags}
                 cand = {
                     "set": sorted(forbidden),

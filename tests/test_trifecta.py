@@ -164,3 +164,35 @@ def test_observe_logs_but_does_not_block(tmp_path):
 def test_floor_protected():
     assert "tool-category-crossover" in _NON_OVERRIDABLE_RULE_IDS
     assert "lethal_trifecta" in _CORE_BLOCK_CATEGORIES
+
+
+# ── regression: a blocked call must not poison the ledger ────────────────────
+# One denied critical call used to record its tags, marking the forbidden set
+# "already complete" — so every LATER critical call sailed through
+# (completes() exempted fully-seen sets). Found live-testing the MCP gateway.
+
+def test_blocked_call_does_not_poison_ledger(tmp_path):
+    ws = _workspace(tmp_path, "enforce")
+    sid = "s-" + uuid.uuid4().hex
+    assert _call(ws, sid, "mcp__Gmail__read_email", "tool_result").allow is True
+    assert _call(ws, sid, "mcp__Gmail__send_email", "network").allow is False
+    # The denied call's critical_action tag must not be in the ledger...
+    ledger = TagLedger(ws, sid)
+    assert CRITICAL not in ledger.seen
+    # ...and a SECOND critical call is still blocked, not waved through.
+    d = _call(ws, sid, "mcp__Gmail__send_email", "network")
+    assert d.allow is False and d.blocking["category"] == "lethal_trifecta"
+
+
+def test_completed_set_stays_restricted(tmp_path):
+    # A single dual-tagged call completes the set alone and executes in
+    # observe... simulate a ledger that already holds the full set: every
+    # subsequent call carrying a set tag must still fire, not slip through.
+    ws = _workspace(tmp_path, "observe")
+    sid = "s-" + uuid.uuid4().hex
+    _call(ws, sid, "mcp__Gmail__read_email", "tool_result")
+    _call(ws, sid, "mcp__Gmail__send_email", "network")  # observed, recorded
+    ledger = TagLedger(ws, sid)
+    assert UNTRUSTED in ledger.seen and CRITICAL in ledger.seen
+    d = _call(ws, sid, "mcp__Gmail__send_email", "network")
+    assert any(f.get("category") == "lethal_trifecta" for f in d.findings)
