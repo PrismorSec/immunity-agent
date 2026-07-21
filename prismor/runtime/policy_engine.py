@@ -1191,8 +1191,8 @@ class PolicyEngine:
                     _incompat = normalize_incompatible(self.tool_tags.get("incompatible"))
                     _ledger = TagLedger(self.workspace, session_id)
                     _done = _ledger.completes(_tags, _incompat, index)
+                    _tt_mode = self.device_mode or str(self.tool_tags.get("mode", "observe")).lower()
                     if _done is not None:
-                        _tt_mode = self.device_mode or str(self.tool_tags.get("mode", "observe")).lower()
                         _intro = _done.get("introduced_by") or {}
                         _prior = ", ".join(
                             f"{_t} (by '{(_intro.get(_t) or {}).get('tool', '?')}')"
@@ -1217,7 +1217,12 @@ class PolicyEngine:
                             "action": "block",
                             "mode": _tt_mode,
                         })
-                    _ledger.record(_tags, index, _tt_tool)
+                    # A blocked call never executes, so its tags must not enter
+                    # the ledger: recording them would mark the forbidden set as
+                    # already covered and let every later same-tagged call
+                    # through (the one-denied-call-poisons-the-ledger bypass).
+                    if not (_done is not None and _tt_mode == "enforce"):
+                        _ledger.record(_tags, index, _tt_tool)
             except Exception:
                 pass
 
