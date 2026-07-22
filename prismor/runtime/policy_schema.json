@@ -227,6 +227,95 @@
             },
             "additionalProperties": false
           }
+        },
+        "tool_tags": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "observe",
+                "enforce"
+              ]
+            },
+            "detector": {
+              "type": "string"
+            },
+            "defaults_enabled": {
+              "type": "boolean"
+            },
+            "inference_enabled": {
+              "type": "boolean"
+            },
+            "meta_tags_enabled": {
+              "type": "boolean"
+            },
+            "tags": {
+              "type": "object",
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              }
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "expr"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "action": {
+                        "type": "string",
+                        "enum": [
+                          "block",
+                          "warn"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "incompatible": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                },
+                "minItems": 2
+              }
+            }
+          }
         }
       },
       "additionalProperties": false

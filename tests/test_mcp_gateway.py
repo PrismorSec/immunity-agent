@@ -411,3 +411,57 @@ def test_stable_session_id(tmp_path):
     g2 = Gateway(specs, workspace=tmp_path)
     g2.close()
     assert g2.session_id.startswith("mcp-") and g2.session_id != "hosted-alice"
+
+
+# ── _meta self-declared tags (trifecta auto-tagging) ─────────────────────────
+
+def test_extract_meta_tags_precedence_and_sanitization():
+    from prismor.runtime.mcp_gateway import _extract_meta_tags
+    # _meta.prismor.tags wins over _meta.tags and annotations
+    t = {"name": "x",
+         "_meta": {"prismor": {"tags": ["untrusted_content"]}, "tags": ["other"]},
+         "annotations": {"prismor/tags": ["nope"]}}
+    assert _extract_meta_tags(t) == ["untrusted_content"]
+    # fallbacks in order
+    assert _extract_meta_tags({"name": "x", "_meta": {"tags": "solo_tag"}}) == ["solo_tag"]
+    assert _extract_meta_tags(
+        {"name": "x", "annotations": {"prismor/tags": ["a_tag"]}}) == ["a_tag"]
+    # sanitization: lowercase, charset filter, dedupe, cap 8
+    dirty = {"name": "x", "_meta": {"prismor": {"tags": [
+        "UPPER", "ok_tag", "ok_tag", "bad tag!", "<script>", ""] + [f"t{i}" for i in range(10)]}}}
+    got = _extract_meta_tags(dirty)
+    assert "upper" in got and "ok_tag" in got
+    assert len(got) <= 8 and all(" " not in g and "<" not in g for g in got)
+    # absent -> empty
+    assert _extract_meta_tags({"name": "x"}) == []
+
+
+def test_meta_tags_flow_into_call_events(tmp_path, monkeypatch):
+    up = FakeUpstream(
+        UpstreamSpec(name="crm", command=["true"], transport="stdio"),
+        tools=[{"name": "read_customers", "description": "d",
+                "inputSchema": {"type": "object"},
+                "_meta": {"prismor": {"tags": ["private_data"]}}}])
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [up])
+    list_tools(gateway, sent)
+    assert gateway._routes["crm__read_customers"].meta_tags == ["private_data"]
+    calls = []
+    allow_all(monkeypatch, calls)
+    gateway._handle_tools_call("C", {"name": "crm__read_customers", "arguments": {}})
+    ev = calls[0]["event"]
+    assert ev["metadata"]["meta_tags"] == ["private_data"]
+    assert ev["metadata"]["tool_name"] == "mcp__crm__read_customers"
+
+
+def test_meta_tags_classification_tier():
+    from prismor.runtime.trifecta import classify_tool_tags
+    ev = {"type": "tool_result", "metadata": {
+        "tool_name": "mcp__crm__read_customers", "meta_tags": ["private_data"]}}
+    # _meta beats built-in defaults and inference
+    assert classify_tool_tags(ev, "tool_result", set(), {}) == {"private_data"}
+    # explicit org map beats _meta
+    tt = {"tags": {"mcp__crm__read_customers": ["untrusted_content"]}}
+    assert classify_tool_tags(ev, "tool_result", set(), tt) == {"untrusted_content"}
+    # disabled -> falls through to inference (tool_result -> untrusted)
+    tt2 = {"meta_tags_enabled": False, "defaults_enabled": False}
+    assert classify_tool_tags(ev, "tool_result", set(), tt2) == {"untrusted_content"}

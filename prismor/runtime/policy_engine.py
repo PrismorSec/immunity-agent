@@ -1178,9 +1178,8 @@ class PolicyEngine:
         # (swappable); enforcement is here.
         if self.tool_tags.get("enabled") and session_id and self.workspace is not None:
             try:
-                from prismor.runtime.trifecta import (
-                    classify_tool_tags, TagLedger, normalize_incompatible,
-                )
+                from prismor.runtime.trifecta import classify_tool_tags, TagLedger
+                from prismor.runtime.tag_rules import compile_tool_tag_rules
                 _tt_tool = str((event.get("metadata") or {}).get("tool_name") or "")
                 _tags = classify_tool_tags(
                     event, event_type,
@@ -1188,17 +1187,32 @@ class PolicyEngine:
                     self.tool_tags,
                 )
                 if _tags:
-                    _incompat = normalize_incompatible(self.tool_tags.get("incompatible"))
+                    _rules = compile_tool_tag_rules(self.tool_tags)
                     _ledger = TagLedger(self.workspace, session_id)
-                    _done = _ledger.completes(_tags, _incompat, index)
+                    _done = _ledger.completes_rules(_tags, _rules, index)
                     _tt_mode = self.device_mode or str(self.tool_tags.get("mode", "observe")).lower()
+                    if _done is not None and _done.get("action") == "warn":
+                        # A warn rule observes but never blocks — even under a
+                        # device-level enforce override.
+                        _tt_mode = "observe"
                     if _done is not None:
                         _intro = _done.get("introduced_by") or {}
                         _prior = ", ".join(
                             f"{_t} (by '{(_intro.get(_t) or {}).get('tool', '?')}')"
                             for _t in _done["set"] if _t in _intro
                         )
-                        _fid = f"tool-category-crossover-{index}"
+                        # Legacy/default rules keep the historical ruleId; DSL
+                        # rules get a stable per-expression id. Both stay floor-
+                        # protected via category lethal_trifecta.
+                        if _done.get("source") in ("incompatible", "default"):
+                            _rid = "tool-category-crossover"
+                        else:
+                            _rid = f"tag-rule:{_done.get('rule_id', '')}"
+                        _steps = _done.get("steps") or [_done["set"]]
+                        _combo = " then ".join(
+                            "+".join(s) for s in _steps
+                        ) if len(_steps) > 1 else ", ".join(_done["set"])
+                        _fid = f"{_rid}-{index}"
                         _pfx = f"{session_id}:{_fid}" if session_id else _fid
                         findings.append({
                             "id": _pfx,
@@ -1206,14 +1220,15 @@ class PolicyEngine:
                             "category": "lethal_trifecta",
                             "title": (
                                 f"Forbidden tool combination: '{_tt_tool}' completes "
-                                f"tag set [{', '.join(_done['set'])}] in this session"
+                                f"tag sequence [{_combo}] in this session"
                             ),
                             "evidence": (
                                 f"call adds tag(s) {_done['this_call_tags']}; "
                                 f"prior: {_prior or 'n/a'}"
+                                + (f"; rule: {_done['source']}" if _done.get("source") not in ("incompatible", "default") else "")
                             ),
                             "eventIndex": index,
-                            "ruleId": "tool-category-crossover",
+                            "ruleId": _rid,
                             "action": "block",
                             "mode": _tt_mode,
                         })
@@ -2086,5 +2101,27 @@ def validate_policy(path: Path) -> List[str]:
                 re.compile(pattern)
             except re.error as e:
                 errors.append(f"{prefix}.patterns[{j}]: invalid regex: {e}")
+
+    # settings.tool_tags: lint tag-rule expressions + legacy incompatible sets.
+    tt = ((raw.get("settings") or {}).get("tool_tags") or {})
+    if isinstance(tt, dict):
+        from prismor.runtime.tag_rules import ParseError as _TagParseError, compile_rule as _compile_tag_rule
+
+        for i, entry in enumerate(tt.get("rules") or []):
+            prefix = f"settings.tool_tags.rules[{i}]"
+            expr = entry if isinstance(entry, str) else (
+                entry.get("expr") if isinstance(entry, dict) else None)
+            if not isinstance(expr, str):
+                errors.append(f"{prefix}: must be a string or an {{expr, action}} map")
+                continue
+            try:
+                _compile_tag_rule(expr)
+            except _TagParseError as e:
+                errors.append(f"{prefix}: {e.args[0]} in \"{expr}\"")
+            if isinstance(entry, dict) and entry.get("action") not in (None, "block", "warn"):
+                errors.append(f"{prefix}: invalid action '{entry.get('action')}' (block or warn)")
+        for i, s in enumerate(tt.get("incompatible") or []):
+            if not isinstance(s, (list, tuple)) or len({str(t) for t in s}) < 2:
+                errors.append(f"settings.tool_tags.incompatible[{i}]: needs at least 2 distinct tags")
 
     return errors

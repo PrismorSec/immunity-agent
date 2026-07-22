@@ -1,0 +1,43 @@
+{
+  "_comment": "Golden vectors for the tag-rule DSL. Asserted by BOTH the Python parser tests (prismor/runtime/tag_rules.py) and the TS parser tests (prismor-web lib/tag-expr.ts) to prevent drift. steps = ordered list of sorted tag arrays.",
+  "valid": [
+    {"expr": "untrusted_content with critical_action -> block",
+     "steps": [["critical_action", "untrusted_content"]], "action": "block"},
+    {"expr": "untrusted_content then critical_action -> block",
+     "steps": [["untrusted_content"], ["critical_action"]], "action": "block"},
+    {"expr": "untrusted_content then private_data then external_comms -> block",
+     "steps": [["untrusted_content"], ["private_data"], ["external_comms"]], "action": "block"},
+    {"expr": "web_read with secrets_access -> warn",
+     "steps": [["secrets_access", "web_read"]], "action": "warn"},
+    {"expr": "untrusted_content with private_data then external_comms -> block",
+     "steps": [["private_data", "untrusted_content"], ["external_comms"]], "action": "block"},
+    {"expr": "customer_pii then external_comms",
+     "steps": [["customer_pii"], ["external_comms"]], "action": "block"},
+    {"expr": "  a_tag   then    b_tag  ->  warn ",
+     "steps": [["a_tag"], ["b_tag"]], "action": "warn"},
+    {"expr": "a then a",
+     "steps": [["a"], ["a"]], "action": "block"},
+    {"expr": "x.y-z_1 with b2 -> block",
+     "steps": [["b2", "x.y-z_1"]], "action": "block"}
+  ],
+  "invalid": [
+    "",
+    "   ",
+    "just_one_tag",
+    "a then",
+    "a with -> block",
+    "then a",
+    "a b",
+    "a then b -> explode",
+    "a -> block then b",
+    "a then b ->",
+    "A_Tag then b",
+    "_lead then b",
+    "a then not b",
+    "a or b",
+    "a within b",
+    "a count b",
+    "->",
+    "-> block"
+  ]
+}

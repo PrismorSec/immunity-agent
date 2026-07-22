@@ -1858,6 +1858,48 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print(f"    {t:8s}  {n}")
             return
 
+    # ── tags subcommands ───────────────────────────────────────────────
+    if args.command == "tags":
+        from prismor.runtime import tags_cli
+
+        tc = getattr(args, "tags_command", None)
+        if tc == "list":
+            tags_cli.tags_list(workspace, last=args.last)
+            return
+        if tc == "set":
+            tags_cli.tags_set(workspace, args.tool, args.tag)
+            return
+        if tc == "rm":
+            tags_cli.tags_rm(workspace, args.tool, args.tag)
+            return
+        if tc == "rules":
+            if args.rules_action == "add":
+                if not args.expr:
+                    print("usage: prismor tags rules add \"<expr>\"")
+                    sys.exit(2)
+                tags_cli.rules_add(workspace, args.expr)
+            elif args.rules_action == "rm":
+                if not args.expr:
+                    print("usage: prismor tags rules rm <index|expr>")
+                    sys.exit(2)
+                tags_cli.rules_rm(workspace, args.expr)
+            else:
+                tags_cli.rules_list(workspace)
+            return
+        if tc == "edit":
+            tags_cli.tags_edit(workspace)
+            return
+        if tc == "lint":
+            tags_cli.tags_lint(workspace, getattr(args, "file", None))
+            return
+        if tc == "test":
+            tags_cli.tags_test(workspace, session=args.session, last=args.last,
+                               extra_rules=args.rule,
+                               fail_on_hit=args.fail_on_hit)
+            return
+        parser.parse_args(["tags", "--help"])
+        return
+
     # ── policy subcommands ─────────────────────────────────────────────
     if args.command == "policy":
         if args.policy_command == "init":
@@ -2368,6 +2410,47 @@ def build_parser() -> argparse.ArgumentParser:
     policy_test = policy_sub.add_parser("test", help="Run declarative policy tests from policy-tests.yaml")
     policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml)")
     policy_test.add_argument("--workspace", help="Workspace path")
+
+    # ── tags (tool tags + tag-rule expressions) ────────────────────────
+    tags_parser = subparsers.add_parser(
+        "tags", help="Tag tools/MCPs and write tag-rules (policy as code)")
+    tags_sub = tags_parser.add_subparsers(dest="tags_command")
+
+    tags_list_p = tags_sub.add_parser("list", help="Tools seen in sessions + resolved tags + tier")
+    tags_list_p.add_argument("--last", type=int, default=50, help="How many recent sessions to scan")
+    tags_list_p.add_argument("--workspace", help="Workspace path")
+
+    tags_set_p = tags_sub.add_parser("set", help="Tag a tool (writes .prismor/policy.yaml)")
+    tags_set_p.add_argument("tool", help="Tool name or glob (e.g. mcp__crm__*)")
+    tags_set_p.add_argument("tag", nargs="+", help="One or more tags")
+    tags_set_p.add_argument("--workspace", help="Workspace path")
+
+    tags_rm_p = tags_sub.add_parser("rm", help="Remove a tool's explicit tag mapping")
+    tags_rm_p.add_argument("tool", help="Tool name/glob as written in the policy")
+    tags_rm_p.add_argument("tag", nargs="?", help="Remove only this tag (default: whole mapping)")
+    tags_rm_p.add_argument("--workspace", help="Workspace path")
+
+    tags_rules_p = tags_sub.add_parser("rules", help="List/add/remove tag-rule expressions")
+    tags_rules_p.add_argument("rules_action", nargs="?", default="list",
+                              choices=["list", "add", "rm"])
+    tags_rules_p.add_argument("expr", nargs="?",
+                              help='Rule expression (add) or index/text (rm), e.g. "untrusted_content then critical_action -> block"')
+    tags_rules_p.add_argument("--workspace", help="Workspace path")
+
+    tags_edit_p = tags_sub.add_parser("edit", help="Interactive wizard: tag tools + author rules")
+    tags_edit_p.add_argument("--workspace", help="Workspace path")
+
+    tags_lint_p = tags_sub.add_parser("lint", help="Validate rule expressions in a policy file")
+    tags_lint_p.add_argument("file", nargs="?", help="Policy file (default: .prismor/policy.yaml)")
+    tags_lint_p.add_argument("--workspace", help="Workspace path")
+
+    tags_test_p = tags_sub.add_parser("test", help="Dry-run tag rules against recorded session logs")
+    tags_test_p.add_argument("--session", help="Replay one specific session id")
+    tags_test_p.add_argument("--last", type=int, default=5, help="Replay the N most recent sessions (default 5)")
+    tags_test_p.add_argument("--rule", action="append", default=[],
+                             help="Extra candidate rule expression (repeatable, what-if)")
+    tags_test_p.add_argument("--fail-on-hit", action="store_true", help="Exit 1 if any rule would fire")
+    tags_test_p.add_argument("--workspace", help="Workspace path")
 
     # ── enroll / device identity (enterprise control plane) ─────────────
     enroll_parser = subparsers.add_parser(

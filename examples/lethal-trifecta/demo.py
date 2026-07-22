@@ -33,23 +33,22 @@ GREEN = lambda s: _c("32", s)
 TAGCOL = lambda s: _c("36", s)
 
 
-def make_workspace(mode: str, tags: dict, incompatible: list) -> Path:
+def make_workspace(mode: str, tags: dict, incompatible: list,
+                   rules: list | None = None) -> Path:
     ws = Path(tempfile.mkdtemp(prefix=f"trifecta-{mode}-"))
     (ws / ".prismor").mkdir(parents=True, exist_ok=True)
-    policy = {
-        "version": "1.0",
-        "settings": {
-            "tool_tags": {
-                "enabled": True,
-                "mode": mode,               # observe | enforce
-                "detector": "strict_combination",
-                "defaults_enabled": True,
-                "inference_enabled": True,
-                "tags": tags,               # {} -> rely on built-in defaults
-                "incompatible": incompatible,
-            }
-        },
+    tt = {
+        "enabled": True,
+        "mode": mode,               # observe | enforce
+        "detector": "strict_combination",
+        "defaults_enabled": True,
+        "inference_enabled": True,
+        "tags": tags,               # {} -> rely on built-in defaults
+        "incompatible": incompatible,
     }
+    if rules is not None:
+        tt["rules"] = rules         # tag-rule expressions (policy as code)
+    policy = {"version": "1.0", "settings": {"tool_tags": tt}}
     try:
         import yaml
         (ws / ".prismor" / "policy.yaml").write_text(yaml.safe_dump(policy))
@@ -131,10 +130,27 @@ def main() -> int:
     run_session("5. Same as #1 but OBSERVE-first — logs, does not block",
                 ws_obs, "observe", ["read_email", "send_email"])
 
+    # ORDERED rule (tag-rule expression): critical FIRST is fine; only a
+    # critical action AFTER untrusted content fires.
+    ws_ord = make_workspace(
+        "enforce", {}, [],
+        rules=["untrusted_content then critical_action -> block"])
+    run_session('6. ORDERED rule "untrusted then critical" — send, read, send',
+                ws_ord, "ordered", ["send_email", "read_email", "send_email"])
+
+    # WARN rule: same sequence logs a finding but never blocks, even in enforce.
+    ws_warn = make_workspace(
+        "enforce", {}, [],
+        rules=["untrusted_content then critical_action -> warn"])
+    run_session('7. WARN rule — same sequence, logged but never blocked',
+                ws_warn, "warn", ["read_email", "send_email"])
+
     print(BOLD("\n=== summary ==="))
     print("  same-tag sessions (#2, #3) stay frictionless — no blocks.")
     print("  the call that COMPLETES a forbidden set is blocked (#1 = 2-tag, #4 = 3-tag).")
     print("  observe mode (#5) logs the combination without blocking (safe rollout).")
+    print("  ordered rules (#6) allow critical-first patterns; only untrusted->critical fires.")
+    print("  warn rules (#7) log the finding but never block, even in enforce.")
     return 0
 
 

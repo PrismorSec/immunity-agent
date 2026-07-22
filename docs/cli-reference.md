@@ -117,6 +117,12 @@ Modes (`observe` vs `enforce`): [Prismor](prismor-runtime.md).
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
 | `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). |
 | `prismor sandbox <status\|check\|run>` | `--workspace` | Docker-backed command sandbox: show config, check the backend, or run one command isolated. See [Docker sandbox](docker.md). |
+| `prismor tags list` | `--last N`, `--workspace` | Tools seen in recent sessions + resolved tags + which tier resolved them (explicit / `_meta` / default / inference). See [Tool Tags](tool-tags.md). |
+| `prismor tags set <tool> <tag>...` | `--workspace` | Tag a tool or glob in `.prismor/policy.yaml` (`tags rm` removes). |
+| `prismor tags rules [add\|rm]` | `--workspace` | List, add, or remove tag-rule expressions, e.g. `"untrusted_content then critical_action -> block"`. Adds are parse-checked with caret diagnostics. |
+| `prismor tags edit` | `--workspace` | Interactive wizard: tag tools, author rules, flip mode. |
+| `prismor tags lint [file]` | `--workspace` | Validate every rule expression in a policy file. Exit `1` on errors. |
+| `prismor tags test` | `--session <id>`, `--last N`, `--rule "<expr>"`, `--fail-on-hit` | Dry-run tag rules against recorded session logs: prints WOULD BLOCK / WOULD WARN per call, touches no enforcement state. `--rule` adds what-if candidates. |
 
 ### eval-server
 

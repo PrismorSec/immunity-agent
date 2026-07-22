@@ -97,15 +97,26 @@ settings:
     detector: strict_combination
     defaults_enabled: true  # apply built-in tags for well-known tools
     inference_enabled: true # infer tags for uncategorized tools from event type
+    meta_tags_enabled: true # honor tags MCP servers self-declare in _meta.prismor.tags
     tags: {}                # explicit tool -> tag | [tags] (merge over defaults)
-    incompatible:           # forbidden co-occurrence tag sets; default = the trifecta pair
-      - [untrusted_content, critical_action]
+    rules: []               # tag-rule expressions (policy as code). Grammar:
+                            #   TAG (then|with TAG)* [-> block|warn]
+                            # `with` = unordered co-occurrence; `then` = ordered
+                            # sequence. The call completing the final step is
+                            # blocked/warned. Validate with `prismor tags lint`,
+                            # dry-run against session logs with `prismor tags test`.
+    incompatible:           # legacy forbidden co-occurrence sets — still honored,
+      - [untrusted_content, critical_action]   # same as "a with b -> block"
     # Example:
     #   tags:
     #     mcp__Gmail__read_email: [untrusted_content]
     #     WebFetch: [untrusted_content, network_read]
     #     mcp__Gmail__send_email: [critical_action]
     #     mcp__db__delete: [critical_action, destructive]
+    #   rules:
+    #     - "untrusted_content then critical_action -> block"
+    #     - "untrusted_content then private_data then external_comms -> block"
+    #     - "network_read with destructive -> warn"
     #   incompatible:
     #     - [untrusted_content, critical_action]
     #     - [untrusted_content, destructive]

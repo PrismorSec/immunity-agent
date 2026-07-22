@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -443,6 +444,44 @@ class _Route:
     upstream: Upstream
     server: str        # real downstream server name (event namespace)
     tool: str          # original un-namespaced tool name
+    # Tags the server self-declares on the tool definition (_meta.prismor.tags,
+    # _meta.tags, or annotations["prismor/tags"]) — consumed by trifecta
+    # classification below the explicit org map (admin always wins).
+    meta_tags: List[str] = field(default_factory=list)
+
+
+_META_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_.\-]*$")
+_META_TAG_CAP = 8
+
+
+def _extract_meta_tags(tool: Dict[str, Any]) -> List[str]:
+    """Pull self-declared tags off an upstream tool definition, sanitized:
+    lowercase, tag charset only, capped. Untrusted input — never let a server
+    smuggle arbitrary strings into policy findings."""
+    raw: Any = None
+    meta = tool.get("_meta")
+    if isinstance(meta, dict):
+        pris = meta.get("prismor")
+        if isinstance(pris, dict):
+            raw = pris.get("tags")
+        if raw is None:
+            raw = meta.get("tags")
+    if raw is None:
+        ann = tool.get("annotations")
+        if isinstance(ann, dict):
+            raw = ann.get("prismor/tags")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: List[str] = []
+    for item in raw:
+        tag = str(item).strip().lower()
+        if tag and _META_TAG_RE.match(tag) and tag not in out:
+            out.append(tag)
+        if len(out) >= _META_TAG_CAP:
+            break
+    return out
 
 
 class Gateway:
@@ -597,7 +636,8 @@ class Gateway:
                 original = str(tool["name"])
                 exposed = self._client_tool_name(up.spec.name, original)
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
-                                         tool=original)
+                                         tool=original,
+                                         meta_tags=_extract_meta_tags(tool))
                 entry = dict(tool)
                 entry["name"] = exposed
                 if self.namespace != "none":
@@ -687,17 +727,22 @@ class Gateway:
     # ── event builders ───────────────────────────────────────────────────
 
     def _event_base(self, route: _Route, agent_event: str) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "cwd": str(self.workspace),
+            # The REAL server name — matches trifecta globs, tool denies,
+            # and control-plane parseToolName. See module docstring.
+            "tool_name": f"mcp__{route.server}__{route.tool}",
+        }
+        if route.meta_tags:
+            # Server-declared tags ride on the event; trifecta consumes them
+            # as a classification tier below the explicit org map.
+            metadata["meta_tags"] = list(route.meta_tags)
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": self.session_id,
             "agent": GATEWAY_AGENT,
             "agent_event": agent_event,
-            "metadata": {
-                "cwd": str(self.workspace),
-                # The REAL server name — matches trifecta globs, tool denies,
-                # and control-plane parseToolName. See module docstring.
-                "tool_name": f"mcp__{route.server}__{route.tool}",
-            },
+            "metadata": metadata,
         }
 
     def _build_call_event(self, route: _Route, arguments: Any) -> Dict[str, Any]:

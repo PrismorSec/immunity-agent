@@ -101,6 +101,15 @@ defaults (`mcp__*__send_email`), org tool denies, tool-tag rules pushed from
 the control plane, and the console's tool inventory. One gateway process is
 one Prismor session; the trifecta ledger spans your whole agent session.
 
+## Server-declared tags (`_meta`)
+
+At `tools/list` time the gateway reads tags a server self-declares on each
+tool definition — `_meta.prismor.tags` (also `_meta.tags` or
+`annotations["prismor/tags"]`) — sanitizes them, and stamps them onto every
+call event. They feed tool-tag classification *below* the explicit org map:
+an admin's tag always wins over a server's self-declaration. See
+[Tool Tags](tool-tags.md).
+
 ## Notes
 
 - The gateway config may contain tokens in `env` blocks; `install` writes it

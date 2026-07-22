@@ -122,8 +122,10 @@ def classify_tool_tags(
 ) -> Set[str]:
     """Return the set of tags for a tool call.
 
-    Resolution: explicit org map → built-in defaults → event/finding inference.
-    Each tier unions all matching entries; the first non-empty tier wins.
+    Resolution: explicit org map → server-declared ``_meta`` tags → built-in
+    defaults → event/finding inference. Each tier unions all matching entries;
+    the first non-empty tier wins (the org admin always beats a server's
+    self-declaration, which beats generic globs).
     """
     tt = tt_settings or {}
     tool_name = _tool_name(event)
@@ -139,6 +141,15 @@ def classify_tool_tags(
                 tags |= set(_as_list(val))
     if tags:
         return tags
+
+    # 1.5. Server-declared tags (MCP `_meta.prismor.tags`), stamped onto the
+    # event by the gateway at tools/list time. Already sanitized there.
+    if tt.get("meta_tags_enabled", True):
+        meta_tags = (event.get("metadata") or {}).get("meta_tags")
+        if isinstance(meta_tags, (list, tuple)):
+            tags |= {str(t) for t in meta_tags if t}
+        if tags:
+            return tags
 
     # 2. Built-in defaults.
     if tt.get("defaults_enabled", True):
@@ -163,11 +174,21 @@ def classify_tool_tags(
     return tags
 
 
+def _rule_pref(match: Dict[str, Any]) -> tuple:
+    """Ordering key for competing rule matches: block beats warn, then the
+    larger tag set wins (clearest finding message)."""
+    return (1 if match.get("action") == "block" else 0, len(match.get("set") or ()))
+
+
 class TagLedger:
     """Per-session record of which tags a session has used and the tool that
     first introduced each. Persisted across hook invocations (each hook call is a
     separate process) as JSON under the central data dir, like ``_TaintStore``.
     """
+
+    # Cap per-tag occurrence history so a chatty session can't grow the ledger
+    # file unboundedly. 256 indexes per tag is far beyond any real rule depth.
+    _HIST_CAP = 256
 
     def __init__(self, workspace: Path, session_id: str) -> None:
         safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in session_id)
@@ -176,6 +197,9 @@ class TagLedger:
         self._path = get_data_dir(workspace) / "trifecta" / f"{safe}.json"
         # tag -> {"index": int, "tool": str}  (first call that introduced the tag)
         self.seen: Dict[str, Dict[str, Any]] = {}
+        # tag -> sorted [indexes] of every recorded occurrence (capped). Needed
+        # for ordered ("then") rules; ``seen`` alone only knows first occurrence.
+        self.hist: Dict[str, List[int]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -186,14 +210,29 @@ class TagLedger:
             s = data.get("seen")
             if isinstance(s, dict):
                 self.seen = s
+            h = data.get("hist")
+            if isinstance(h, dict):
+                self.hist = {
+                    t: sorted(int(i) for i in v)
+                    for t, v in h.items()
+                    if isinstance(v, (list, tuple))
+                }
         except Exception:
             pass
+        # Pre-hist ledger files: synthesize history from first-seen so ordered
+        # rules degrade to first-seen semantics instead of crashing/missing.
+        for tag, info in self.seen.items():
+            if tag not in self.hist and isinstance(info, dict):
+                idx = info.get("index")
+                if isinstance(idx, int):
+                    self.hist[tag] = [idx]
 
     def _save(self) -> None:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(
-                json.dumps({"seen": self.seen}, indent=2), encoding="utf-8"
+                json.dumps({"seen": self.seen, "hist": self.hist}, indent=2),
+                encoding="utf-8",
             )
         except Exception:
             pass
@@ -234,11 +273,105 @@ class TagLedger:
                     best = cand
         return best
 
+    def completes_rules(
+        self,
+        new_tags: Set[str],
+        rules: List[Any],
+        current_index: int = 1 << 62,
+    ) -> Optional[Dict[str, Any]]:
+        """Generalized :meth:`completes` over compiled tag rules (see
+        ``tag_rules.CompiledRule``: ``.steps`` is an ordered list of unordered
+        tag sets, plus ``.action``/``.rule_id``/``.source``).
+
+        A single-step rule reduces exactly to :meth:`completes` — including the
+        "already-complete sets keep the session restricted" property. For
+        ordered (multi-step) rules a greedy subsequence cursor walks ``hist``:
+        each non-final step must be fully covered by occurrences strictly after
+        the previous step's position; the final step must be covered by prior
+        occurrences after the cursor plus this call's ``new_tags``, and this
+        call must contribute at least one final-step tag (it is the call that
+        gets blocked). Occurrences at index >= ``current_index`` never count as
+        prior (same re-record contract as :meth:`completes`)."""
+        best: Optional[Dict[str, Any]] = None
+        for rule in rules:
+            steps = getattr(rule, "steps", None)
+            if not steps:
+                continue
+            final = steps[-1]
+            if not (final & new_tags):
+                continue
+            # Walk the non-final steps as an ordered subsequence over hist.
+            cursor = -1
+            ok = True
+            for step in steps[:-1]:
+                step_pos = cursor
+                for tag in step:
+                    nxt = self._first_after(tag, cursor, current_index)
+                    if nxt is None:
+                        ok = False
+                        break
+                    step_pos = max(step_pos, nxt)
+                if not ok:
+                    break
+                cursor = step_pos
+            if not ok:
+                continue
+            # Final step: every tag covered by this call or a prior occurrence
+            # after the cursor.
+            for tag in final:
+                if tag in new_tags:
+                    continue
+                if self._first_after(tag, cursor, current_index) is None:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            all_tags = set()
+            for s in steps:
+                all_tags |= s
+            introduced = {
+                t: self.seen[t]
+                for t in all_tags
+                if t in self.seen
+                and isinstance(self.seen[t], dict)
+                and self.seen[t].get("index", -1) < current_index
+            }
+            cand = {
+                "set": sorted(all_tags),
+                "steps": [sorted(s) for s in steps],
+                "this_call_tags": sorted(final & new_tags),
+                "introduced_by": introduced,
+                "rule_id": getattr(rule, "rule_id", ""),
+                "action": getattr(rule, "action", "block"),
+                "source": getattr(rule, "source", ""),
+            }
+            # Prefer block over warn; among equals, the largest set for the
+            # clearest message.
+            if best is None or _rule_pref(cand) > _rule_pref(best):
+                best = cand
+        return best
+
+    def _first_after(
+        self, tag: str, after: int, current_index: int
+    ) -> Optional[int]:
+        """Smallest recorded occurrence index of ``tag`` with
+        ``after < index < current_index``, else None."""
+        for idx in self.hist.get(tag, ()):  # sorted ascending
+            if idx > after and idx < current_index:
+                return idx
+        return None
+
     def record(self, new_tags: Set[str], index: int, tool: str) -> None:
         changed = False
         for tag in new_tags:
             if tag not in self.seen:
                 self.seen[tag] = {"index": index, "tool": tool}
+                changed = True
+            h = self.hist.setdefault(tag, [])
+            if index not in h and len(h) < self._HIST_CAP:
+                import bisect
+
+                bisect.insort(h, index)
                 changed = True
         if changed:
             self._save()
