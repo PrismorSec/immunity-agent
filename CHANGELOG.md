@@ -1,3 +1,9 @@
+## [1.31.0] — 2026-07-22
+
+### Added
+
+- **Tag-rule expression language for policy-as-code over tool tags.** A tiny DSL in `settings.tool_tags.rules` — `TAG (then|with TAG)* [-> block|warn]` — expresses ordered (`then`) and unordered (`with`) tag co-occurrence rules, with `-> warn` logging findings without ever blocking. Fully backward compatible: legacy `incompatible:` lists keep working, compiling to the same IR (`prismor/runtime/tag_rules.py`) as the new syntax. `TagLedger` gains ordered greedy-subsequence matching for 3+-step rules. New `prismor tags {list,set,rm,rules,edit,lint,test}` CLI, including a `test` subcommand that replays recorded session logs through a ruleset and reports `WOULD BLOCK`/`WOULD WARN` without touching real enforcement state. The MCP Gateway now also reads tags a server self-declares on its tool definitions (`_meta.prismor.tags`, `_meta.tags`, `annotations["prismor/tags"]`) and stamps them onto call events. See `docs/tool-tags.md`. (#208)
+
 ## [1.30.3] — 2026-07-22
 
 ### Docs
