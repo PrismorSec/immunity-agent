@@ -1,3 +1,29 @@
+## [1.30.3] — 2026-07-22
+
+### Docs
+
+- **MCP Gateway: per-tool and per-user governance.** Documented turning off
+  individual tools of a server for the whole org (`settings.tool_denies`) or
+  for one person (`settings.subject_controls` deny_tools), managed from the
+  console MCP Hub and enforced by every gateway. See docs/mcp-gateway.md.
+
+## [1.30.2] — 2026-07-22
+
+### Docs
+
+- **Hosted MCP instances (Enterprise).** Documented the managed-edge option
+  for the gateway: from the console's MCP Hub, Enterprise orgs can provision a
+  governed `mcp.prismor.dev/mcp/<key>` URL — the same real policy engine and
+  telemetry as the local gateway, running on Prismor's fleet, with the
+  registry's servers attached and secrets kept server-side. The local
+  `prismor mcp-gateway` remains available on every plan. See docs/mcp-gateway.md.
+
+## [1.30.1] — 2026-07-22
+
+### Fixed
+
+- **Control-plane requests now send a real User-Agent.** Every enterprise HTTP call (policy version/pull, telemetry upload, enrollment, approvals, sink deliveries) used urllib's default `Python-urllib/x.y` UA, which CDN/WAF fronts reject before the request reaches the app — Cloudflare's browser integrity check returns 403 (error 1010). The runtime interpreted that 403 as key revocation and silently stopped telemetry and policy sync. Found live when prismor.dev moved behind a proxying CDN; all outbound requests now identify as `prismor-runtime/<version>`.
+
 ## [1.30.0] — 2026-07-21
 
 ### Added

@@ -37,6 +37,8 @@ org admin has explicitly opted into full capture.
 """
 from __future__ import annotations
 
+from prismor.runtime.http_ua import user_agent as _http_user_agent
+
 import json
 import os
 import socket
@@ -111,6 +113,7 @@ def _dispatch_webhook(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     timeout = float(cfg.get("timeout_seconds", 3))
     data = json.dumps(event).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         resp.read(16)  # drain
 
@@ -168,6 +171,7 @@ def _dispatch_splunk_hec(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     data = json.dumps(envelope).encode("utf-8")
     headers = {"Authorization": f"Splunk {token}", "Content-Type": "application/json"}
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
     with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
         resp.read(16)
 
@@ -191,6 +195,7 @@ def _dispatch_datadog(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     data = json.dumps([payload]).encode("utf-8")
     headers = {"DD-API-KEY": str(api_key), "Content-Type": "application/json"}
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
     with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
         resp.read(16)
 
@@ -399,6 +404,7 @@ def upload_telemetry(
         "Authorization": f"Bearer {ident.get('device_key')}",
     }
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read(16)  # drain

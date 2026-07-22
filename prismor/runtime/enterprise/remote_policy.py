@@ -25,6 +25,8 @@ hard dependency stays ``pyyaml``.
 """
 from __future__ import annotations
 
+from prismor.runtime.http_ua import user_agent as _http_user_agent
+
 import base64
 import json
 import os
@@ -152,6 +154,7 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
     req = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {ident.get('device_key')}"}, method="GET"
     )
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
             body = json.loads(resp.read().decode("utf-8"))
@@ -500,6 +503,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         headers={"Authorization": f"Bearer {ident.get('device_key')}"},
         method="GET",
     )
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))

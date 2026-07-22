@@ -110,6 +110,52 @@ call event. They feed tool-tag classification *below* the explicit org map:
 an admin's tag always wins over a server's self-declaration. See
 [Tool Tags](tool-tags.md).
 
+## Governing tools (admins)
+
+Beyond blocking a whole server, an admin can turn off **individual tools** —
+for everyone, or for one person — from the console **MCP Hub** (per-server
+*Tools* panel):
+
+- **For everyone:** an org-scoped tool deny on `mcp__<server>__<tool>`. It
+  rides the signed org policy, so it applies to every gateway — local and
+  hosted alike. The same thing can be set as code in `policy.yaml`
+  (`settings.tool_denies`) and shipped with `prismor-cli policy apply`.
+- **For one person:** a per-user rule (`settings.subject_controls` →
+  `deny_tools` for `user:<id>`). It applies when the gateway runs under that
+  person's subject — a hosted instance bound to them, or `PRISMOR_SUBJECT`
+  set locally. A denied tool is blocked before it reaches the server, with the
+  usual `isError` reason returned to the model.
+
+## Hosted instances (Enterprise)
+
+Everything above runs the gateway **locally** on your machine — available on
+every plan. Enterprise adds a **hosted** option: from the MCP Hub in the
+console, *Spin up MCP instance* provisions a governed MCP URL on Prismor's
+managed edge:
+
+```
+https://mcp.prismor.dev/mcp/<instance-key>
+```
+
+Paste that one URL into any agent, on any machine — no local install. The
+servers you registered in the Hub are attached automatically (their secrets
+stay server-side, encrypted at rest and only ever decrypted for the fleet).
+The instance is a service identity, so the full control loop applies: every
+call is policy-evaluated and streamed to your Activity feed, an admin can flip
+it between observe/enforce from the console, and revoking it is an instant kill
+switch. The instance key *is* the credential in the URL — treat it like a
+secret; it's shown only once.
+
+Local gateway vs hosted instance:
+
+| | Local (`prismor mcp-gateway`) | Hosted instance |
+|---|---|---|
+| Plan | Any | Enterprise |
+| Runs on | Your machine | Prismor edge (mcp.prismor.dev) |
+| Setup | CLI / config file | One click, paste a URL |
+| Secrets | In your local config | Encrypted server-side |
+| Telemetry / policy / kill switch | Yes (enrolled) | Yes (built in) |
+
 ## Notes
 
 - The gateway config may contain tokens in `env` blocks; `install` writes it

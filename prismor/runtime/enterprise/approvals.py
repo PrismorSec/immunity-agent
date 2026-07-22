@@ -24,6 +24,8 @@ or timeout all resolve to "not approved" so the caller fails closed. Tunables:
 """
 from __future__ import annotations
 
+from prismor.runtime.http_ua import user_agent as _http_user_agent
+
 import hashlib
 import json
 import os
@@ -84,6 +86,7 @@ def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=_headers(ident), method="POST"
     )
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -98,6 +101,7 @@ def _get_status(ident: Dict[str, Any], approval_id: str, timeout: float) -> Opti
     base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
     url = f"{base}/api/approvals/{approval_id}"
     req = urllib.request.Request(url, headers=_headers(ident), method="GET")
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))

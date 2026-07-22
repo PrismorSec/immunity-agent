@@ -16,6 +16,8 @@ control-plane I/O use ``urllib`` from the stdlib, mirroring ``sinks.py``.
 """
 from __future__ import annotations
 
+from prismor.runtime.http_ua import user_agent as _http_user_agent
+
 import json
 import os
 import stat
@@ -231,6 +233,7 @@ def enroll(token: str, base: Optional[str] = None, label: Optional[str] = None,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
