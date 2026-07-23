@@ -291,65 +291,75 @@ class TagLedger:
         occurrences after the cursor plus this call's ``new_tags``, and this
         call must contribute at least one final-step tag (it is the call that
         gets blocked). Occurrences at index >= ``current_index`` never count as
-        prior (same re-record contract as :meth:`completes`)."""
+        prior (same re-record contract as :meth:`completes`).
+
+        A rule with ``or`` alternatives carries ``.variants`` — each an
+        ``or``-free step sequence. The rule fires when *any* variant completes,
+        so alternation reuses this exact matcher per variant with no new
+        semantics; the winning variant's steps are what the finding reports."""
         best: Optional[Dict[str, Any]] = None
         for rule in rules:
-            steps = getattr(rule, "steps", None)
-            if not steps:
-                continue
-            final = steps[-1]
-            if not (final & new_tags):
-                continue
-            # Walk the non-final steps as an ordered subsequence over hist.
-            cursor = -1
-            ok = True
-            for step in steps[:-1]:
-                step_pos = cursor
-                for tag in step:
-                    nxt = self._first_after(tag, cursor, current_index)
-                    if nxt is None:
-                        ok = False
-                        break
-                    step_pos = max(step_pos, nxt)
-                if not ok:
-                    break
-                cursor = step_pos
-            if not ok:
-                continue
-            # Final step: every tag covered by this call or a prior occurrence
-            # after the cursor.
-            for tag in final:
-                if tag in new_tags:
+            variants = getattr(rule, "variants", None)
+            if not variants:
+                steps = getattr(rule, "steps", None)
+                variants = [steps] if steps else []
+            for steps in variants:
+                if not steps:
                     continue
-                if self._first_after(tag, cursor, current_index) is None:
-                    ok = False
-                    break
-            if not ok:
-                continue
-            all_tags = set()
-            for s in steps:
-                all_tags |= s
-            introduced = {
-                t: self.seen[t]
-                for t in all_tags
-                if t in self.seen
-                and isinstance(self.seen[t], dict)
-                and self.seen[t].get("index", -1) < current_index
-            }
-            cand = {
-                "set": sorted(all_tags),
-                "steps": [sorted(s) for s in steps],
-                "this_call_tags": sorted(final & new_tags),
-                "introduced_by": introduced,
-                "rule_id": getattr(rule, "rule_id", ""),
-                "action": getattr(rule, "action", "block"),
-                "source": getattr(rule, "source", ""),
-            }
-            # Prefer block over warn; among equals, the largest set for the
-            # clearest message.
-            if best is None or _rule_pref(cand) > _rule_pref(best):
-                best = cand
+                cand = self._variant_completes(steps, new_tags, current_index)
+                if cand is None:
+                    continue
+                cand["rule_id"] = getattr(rule, "rule_id", "")
+                cand["action"] = getattr(rule, "action", "block")
+                cand["source"] = getattr(rule, "source", "")
+                # Prefer block over warn; among equals, the largest set for the
+                # clearest message.
+                if best is None or _rule_pref(cand) > _rule_pref(best):
+                    best = cand
         return best
+
+    def _variant_completes(
+        self, steps: List[Set[str]], new_tags: Set[str], current_index: int
+    ) -> Optional[Dict[str, Any]]:
+        """Match one ``or``-free step sequence against the ledger. Returns a
+        partial candidate dict (without ``rule_id``/``action``/``source``) when
+        the current call completes it, else ``None``."""
+        final = steps[-1]
+        if not (final & new_tags):
+            return None
+        # Walk the non-final steps as an ordered subsequence over hist.
+        cursor = -1
+        for step in steps[:-1]:
+            step_pos = cursor
+            for tag in step:
+                nxt = self._first_after(tag, cursor, current_index)
+                if nxt is None:
+                    return None
+                step_pos = max(step_pos, nxt)
+            cursor = step_pos
+        # Final step: every tag covered by this call or a prior occurrence
+        # after the cursor.
+        for tag in final:
+            if tag in new_tags:
+                continue
+            if self._first_after(tag, cursor, current_index) is None:
+                return None
+        all_tags: Set[str] = set()
+        for s in steps:
+            all_tags |= s
+        introduced = {
+            t: self.seen[t]
+            for t in all_tags
+            if t in self.seen
+            and isinstance(self.seen[t], dict)
+            and self.seen[t].get("index", -1) < current_index
+        }
+        return {
+            "set": sorted(all_tags),
+            "steps": [sorted(s) for s in steps],
+            "this_call_tags": sorted(final & new_tags),
+            "introduced_by": introduced,
+        }
 
     def _first_after(
         self, tag: str, after: int, current_index: int

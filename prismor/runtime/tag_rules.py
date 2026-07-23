@@ -1,29 +1,37 @@
 """Tag-rule expression language — policy-as-code over tool tags.
 
 A tiny, dependency-free rule DSL for ``settings.tool_tags.rules``. One rule per
-line-string; three keywords; whitespace-tokenized:
+line-string; whitespace-tokenized; three connectors with fixed precedence
+(``with`` binds tightest, then ``or``, then ``then``):
 
-    rule      := seq [ "->" action ]
-    seq       := term ( ("then" | "with") term )*
-    term      := TAG                      # [a-z0-9][a-z0-9_.-]*
+    rule      := disj ( "then" disj )* [ "->" action ]
+    disj      := conj ( "or" conj )*
+    conj      := TAG ( "with" TAG )*      # TAG = [a-z0-9][a-z0-9_.-]*
     action    := "block" | "warn"         # omitted -> "block"
 
 Semantics:
-  * ``with`` groups adjacent terms into one unordered step (all tags must
-    co-occur in the session — exactly the legacy ``incompatible`` semantics).
-  * ``then`` separates ordered steps: every tag of step N must have occurred
-    before the occurrences satisfying step N+1.
+  * ``with`` groups adjacent tags into one unordered conjunction — all must
+    co-occur in the session (exactly the legacy ``incompatible`` semantics).
+  * ``or`` offers alternative conjunctions at the same position — any one of
+    them satisfies that step.
+  * ``then`` separates ordered steps: some alternative of step N must be
+    satisfied by occurrences before those satisfying step N+1.
   * The call that satisfies the *final* step is the one blocked/warned.
+
+An ``or`` rule is compiled to its **variants** — the cross-product of one
+alternative per step — each an ordinary ``or``-free step sequence. The rule
+fires when *any* variant is completed, so alternation reuses the exact
+ordered-subsequence matcher and adds no new matching semantics.
 
 Examples:
     untrusted_content with critical_action -> block
     untrusted_content then critical_action -> block
-    untrusted_content then private_data then external_comms -> block
-    web_read with secrets_access -> warn
+    untrusted_content then send_email or post_message -> block
+    secrets_access with external_comms or customer_pii with external_comms -> warn
     customer_pii then external_comms          (implicit -> block)
 
-``not``, ``or``, ``within`` and ``count`` are reserved for future grammar
-growth and raise a ParseError today.
+``not``, ``within`` and ``count`` are reserved for future grammar growth and
+raise a ParseError today.
 
 Legacy compatibility: :func:`compile_tool_tag_rules` is the single funnel that
 compiles both the new ``rules:`` strings and the legacy ``incompatible:`` lists
@@ -33,6 +41,7 @@ keep working byte-for-byte.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -40,8 +49,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from prismor.runtime.trifecta import DEFAULT_INCOMPATIBLE, _as_list
 
 ACTIONS = ("block", "warn")
-CONNECTORS = ("then", "with")
-RESERVED = ("not", "or", "within", "count")
+CONNECTORS = ("then", "with", "or")
+RESERVED = ("not", "within", "count")
 _TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_.\-]*$")
 
 
@@ -59,29 +68,53 @@ class ParseError(ValueError):
         return f"{self.expr}\n{' ' * self.pos}^ {self.args[0]}"
 
 
+def _variants_signature(variants: List[List[Set[str]]]) -> str:
+    """Order-insensitive (within a step's alternatives, and across variants)
+    signature of a rule's variants — the stable basis for ``rule_id``."""
+    per_variant = [
+        ";".join(",".join(sorted(s)) for s in variant) for variant in variants
+    ]
+    return "&".join(sorted(per_variant))
+
+
 @dataclass
 class CompiledRule:
-    """Internal representation shared by DSL rules and legacy incompatible sets."""
+    """Internal representation shared by DSL rules and legacy incompatible sets.
 
-    steps: List[Set[str]]  # ordered steps; each step is an unordered tag set
+    ``steps`` is the primary (first) variant — a flat ordered list of unordered
+    tag sets, unchanged from before, so display/legacy consumers keep working.
+    ``variants`` holds every ``or``-free step sequence the rule expands to (just
+    ``[steps]`` for a rule without ``or``); the matcher fires on any of them."""
+
+    steps: List[Set[str]]  # primary variant: ordered steps, each an unordered tag set
     action: str = "block"  # "block" | "warn"
     source: str = ""  # original expression, or "incompatible" for legacy rows
     rule_id: str = field(default="")
+    variants: List[List[Set[str]]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not self.variants:
+            self.variants = [self.steps]
+        if not self.steps and self.variants:
+            self.steps = self.variants[0]
         if not self.rule_id:
-            norm = ";".join(",".join(sorted(s)) for s in self.steps) + "|" + self.action
+            norm = _variants_signature(self.variants) + "|" + self.action
             self.rule_id = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:10]
 
     @property
     def ordered(self) -> bool:
-        return len(self.steps) > 1
+        return any(len(v) > 1 for v in self.variants)
+
+    @property
+    def has_alternatives(self) -> bool:
+        return len(self.variants) > 1
 
     @property
     def all_tags(self) -> Set[str]:
         out: Set[str] = set()
-        for s in self.steps:
-            out |= s
+        for variant in self.variants:
+            for s in variant:
+                out |= s
         return out
 
 
@@ -120,17 +153,17 @@ def compile_rule(expr: str) -> CompiledRule:
         if not toks:
             raise ParseError("rule has no tags before '->'", expr, 0)
 
-    # seq := term ( connector term )*
-    steps: List[Set[str]] = []
-    current: Set[str] = set()
+    # Parse into steps, each a list of alternative conjunctions (tag sets):
+    #   step_alts : List[step]        step : List[alt]        alt : Set[tag]
+    step_alts: List[List[Set[str]]] = []
+    cur_alts: List[Set[str]] = []  # alternatives collected in the current step
+    cur_set: Set[str] = set()  # tags of the current conjunction
     expect_term = True
     for tok, pos in toks:
         if expect_term:
             low = tok.lower()
             if low in RESERVED:
-                raise ParseError(
-                    f"'{tok}' is reserved for future use", expr, pos
-                )
+                raise ParseError(f"'{tok}' is reserved for future use", expr, pos)
             if low in CONNECTORS or tok == "->":
                 raise ParseError(f"expected a tag, got '{tok}'", expr, pos)
             if not _TAG_RE.match(tok):
@@ -138,31 +171,58 @@ def compile_rule(expr: str) -> CompiledRule:
                     f"invalid tag '{tok}' (allowed: [a-z0-9][a-z0-9_.-]*)",
                     expr, pos,
                 )
-            current.add(tok)
+            cur_set.add(tok)
             expect_term = False
         else:
-            if tok == "then":
-                steps.append(current)
-                current = set()
+            low = tok.lower()
+            if low == "with":
+                expect_term = True  # another tag in the same conjunction
+            elif low == "or":
+                cur_alts.append(cur_set)  # close this conjunction, start another
+                cur_set = set()
                 expect_term = True
-            elif tok == "with":
+            elif low == "then":
+                cur_alts.append(cur_set)  # close the step and start the next
+                step_alts.append(cur_alts)
+                cur_alts = []
+                cur_set = set()
                 expect_term = True
             else:
                 raise ParseError(
-                    f"expected 'then', 'with' or '->', got '{tok}'", expr, pos
+                    f"expected 'then', 'with', 'or' or '->', got '{tok}'", expr, pos
                 )
     if expect_term:
-        # Trailing connector like "a then".
+        # Trailing connector like "a then" / "a or".
         tok, pos = toks[-1]
         raise ParseError(f"dangling '{tok}' at end of rule", expr, pos)
-    steps.append(current)
+    cur_alts.append(cur_set)
+    step_alts.append(cur_alts)
 
-    if len(steps) == 1 and len(steps[0]) < 2:
-        raise ParseError(
-            "a rule needs at least two tags (a single tag can never be a "
-            "combination)", expr, 0,
-        )
-    return CompiledRule(steps=steps, action=action, source=expr.strip())
+    # Expand to variants: one alternative chosen per step. Dedup identical
+    # variants (repeated alternatives) so rule_id stays stable.
+    seen_sig: Set[str] = set()
+    variants: List[List[Set[str]]] = []
+    for combo in itertools.product(*step_alts):
+        variant = [set(s) for s in combo]
+        sig = ";".join(",".join(sorted(s)) for s in variant)
+        if sig in seen_sig:
+            continue
+        seen_sig.add(sig)
+        variants.append(variant)
+
+    # Every variant must be a real combination — a single tag (one step, one
+    # tag) can never be a "combination", so reject rules any alternative of
+    # which would fire on one tag alone.
+    for variant in variants:
+        if len(variant) == 1 and len(variant[0]) < 2:
+            raise ParseError(
+                "a rule needs at least two tags (a single tag can never be a "
+                "combination)", expr, 0,
+            )
+
+    return CompiledRule(
+        steps=variants[0], action=action, source=expr.strip(), variants=variants
+    )
 
 
 def lint_rules(exprs: List[str]) -> List[Tuple[str, ParseError]]:
@@ -188,7 +248,10 @@ def _coerce_rule_entry(entry: Any) -> Optional[CompiledRule]:
         act = entry.get("action")
         if act in ACTIONS and act != rule.action:
             # Explicit map action overrides the expression's (or the default).
-            rule = CompiledRule(steps=rule.steps, action=act, source=rule.source)
+            rule = CompiledRule(
+                steps=rule.steps, action=act, source=rule.source,
+                variants=rule.variants,
+            )
         return rule
     raise ParseError("rule must be a string or an {expr, action} map", str(entry), 0)
 

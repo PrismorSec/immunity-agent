@@ -77,7 +77,7 @@ def test_invalid_rules_raise(expr):
         compile_rule(expr)
 
 
-@pytest.mark.parametrize("kw", ["not", "or", "within", "count"])
+@pytest.mark.parametrize("kw", ["not", "within", "count"])
 def test_reserved_keywords_rejected(kw):
     with pytest.raises(ParseError) as ei:
         compile_rule(f"a then {kw} b")
@@ -392,6 +392,96 @@ def test_e2e_legacy_policy_unchanged_behavior(tmp_path):
     assert d.blocking["id"].startswith(sid)
 
 
+# ── or / alternation ─────────────────────────────────────────────────────────
+
+def test_or_expands_to_variants():
+    r = compile_rule("untrusted_content then send_email or post_message -> block")
+    variants = [[sorted(s) for s in v] for v in r.variants]
+    assert variants == [
+        [["untrusted_content"], ["send_email"]],
+        [["untrusted_content"], ["post_message"]],
+    ]
+    assert r.has_alternatives and r.ordered
+    # primary steps is variants[0], so display/legacy consumers keep working
+    assert [sorted(s) for s in r.steps] == [["untrusted_content"], ["send_email"]]
+
+
+def test_or_precedence_with_binds_tighter_than_or():
+    # "a with b or c with d" == "(a with b) or (c with d)"
+    r = compile_rule("a with b or c with d -> warn")
+    variants = [[sorted(s) for s in v] for v in r.variants]
+    assert variants == [[["a", "b"]], [["c", "d"]]]
+
+
+def test_or_precedence_then_binds_loosest():
+    # "a or b then c" == "(a or b) then c"
+    r = compile_rule("a or b then c")
+    variants = [[sorted(s) for s in v] for v in r.variants]
+    assert variants == [[["a"], ["c"]], [["b"], ["c"]]]
+
+
+def test_or_single_tag_alternatives_rejected():
+    # every variant would fire on one tag alone — not a combination
+    with pytest.raises(ParseError):
+        compile_rule("a or b")
+
+
+def test_or_dangling_rejected():
+    with pytest.raises(ParseError):
+        compile_rule("a or")
+    with pytest.raises(ParseError):
+        compile_rule("or b")
+
+
+def test_or_duplicate_alternatives_deduped():
+    r = compile_rule("a with b or a with b -> block")
+    variants = [[sorted(s) for s in v] for v in r.variants]
+    assert variants == [[["a", "b"]]]
+
+
+def test_or_rule_id_order_insensitive_across_alternatives():
+    a = compile_rule("secrets_access with x or customer_pii with x -> block")
+    b = compile_rule("customer_pii with x or secrets_access with x -> block")
+    assert a.rule_id == b.rule_id
+
+
+def test_or_ledger_fires_on_either_alternative(tmp_path):
+    rule = compile_rule("untrusted_content then send_email or post_message -> block")
+    # variant via post_message
+    led = _led(tmp_path)
+    led.record({UNTRUSTED}, 0, "read_email")
+    done = led.completes_rules({"post_message"}, [rule], 1)
+    assert done is not None
+    assert done["steps"] == [["untrusted_content"], ["post_message"]]
+    assert done["rule_id"] == rule.rule_id
+    # variant via send_email
+    led2 = _led(tmp_path)
+    led2.record({UNTRUSTED}, 0, "read_email")
+    done2 = led2.completes_rules({"send_email"}, [rule], 1)
+    assert done2 is not None
+    assert done2["steps"] == [["untrusted_content"], ["send_email"]]
+
+
+def test_or_ledger_does_not_fire_without_a_matching_alternative(tmp_path):
+    rule = compile_rule("untrusted_content then send_email or post_message -> block")
+    led = _led(tmp_path)
+    led.record({UNTRUSTED}, 0, "read_email")
+    # a critical tag that is neither alternative
+    assert led.completes_rules({"delete_repo"}, [rule], 1) is None
+
+
+def test_or_ledger_respects_order_per_variant(tmp_path):
+    # (a or b) then c: c first, then a — must NOT fire (a must precede c)
+    rule = compile_rule("a or b then c")
+    led = _led(tmp_path)
+    led.record({"c"}, 0, "t0")
+    led.record({"a"}, 1, "t1")
+    assert led.completes_rules({"c"}, [rule], 2) is not None  # c(0) a(1) c(2): a then c ✓
+    led2 = _led(tmp_path)
+    led2.record({"c"}, 0, "t0")
+    assert led2.completes_rules({"a"}, [rule], 1) is None  # only c before, a completes nothing
+
+
 # ── golden vectors (shared with the TS parser in prismor-web) ────────────────
 
 def test_golden_vectors():
@@ -403,6 +493,9 @@ def test_golden_vectors():
         r = compile_rule(case["expr"])
         assert [sorted(s) for s in r.steps] == case["steps"], case["expr"]
         assert r.action == case["action"], case["expr"]
+        if "variants" in case:
+            got = [[sorted(s) for s in v] for v in r.variants]
+            assert got == case["variants"], case["expr"]
     for expr in golden["invalid"]:
         with pytest.raises(ParseError):
             compile_rule(expr)

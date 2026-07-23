@@ -280,8 +280,8 @@ def rules_add(workspace: Path, expr: str) -> None:
         return
     lst.append(expr.strip())
     _save_policy_file(workspace, data)
-    steps = " -> ".join("+".join(sorted(s)) for s in rule.steps)
-    print(f"{_c('added', _GREEN)} [{rule.action}] {steps}")
+    # Echo the source so `or` alternatives show; steps is only the first variant.
+    print(f"{_c('added', _GREEN)} [{rule.action}] {rule.source}")
     _org_managed_hint(workspace)
 
 

@@ -55,19 +55,31 @@ Disable the tier with `meta_tags_enabled: false`.
 
 ## The rule language
 
-One rule per line. Three keywords. That's the whole grammar:
+One rule per line. Three connectors with fixed precedence
+(`with` binds tightest, then `or`, then `then`):
 
 ```
-rule    :=  TAG ( then|with TAG )*  [ -> block|warn ]
+rule    :=  disj ( then disj )*  [ -> block|warn ]
+disj    :=  conj ( or conj )*
+conj    :=  TAG ( with TAG )*
 ```
 
 - **`with`** — unordered co-occurrence: both tags appearing anywhere in the
   session is enough.
+- **`or`** — alternatives at the same position: any one satisfies that step
+  (e.g. `send_email or post_message` = either critical action).
 - **`then`** — ordered sequence: the left step must occur *before* the right.
 - **`-> block`** (default) or **`-> warn`** — warn logs the finding but never
   blocks, even in enforce mode.
 - The call completing the **final step** is the one blocked/warned.
-- `not`, `or`, `within`, `count` are reserved for future use.
+- `not`, `within`, `count` are reserved for future use.
+
+An `or` rule expands to its **variants** (one alternative per step) and fires
+when any variant completes — so `untrusted_content then send_email or
+post_message` is exactly `untrusted_content then send_email` **and**
+`untrusted_content then post_message` folded into one rule. Every alternative
+must still be a real combination (two tags, or two ordered steps): a bare
+`a or b` is rejected, since it would fire on a single tag.
 
 ```yaml
 settings:
@@ -90,6 +102,8 @@ More examples:
 untrusted_content with critical_action -> block    # either order
 untrusted_content then critical_action -> block    # read first, act later
 untrusted_content with private_data then external_comms -> block
+untrusted_content then send_email or post_message -> block   # either critical action
+secrets_access with external_comms or customer_pii with external_comms -> warn
 customer_pii then external_comms                   # implicit -> block
 ```
 

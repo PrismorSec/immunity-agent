@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden vectors for the tag-rule DSL. Asserted by BOTH the Python parser tests (prismor/runtime/tag_rules.py) and the TS parser tests (prismor-web lib/tag-expr.ts) to prevent drift. steps = ordered list of sorted tag arrays.",
+  "_comment": "Golden vectors for the tag-rule DSL. Asserted by BOTH the Python parser tests (prismor/runtime/tag_rules.py) and the TS parser tests (prismor-web lib/tag-expr.ts) to prevent drift. steps = the primary variant (ordered list of sorted tag arrays). variants (when present) = every or-free step sequence the rule expands to; each variant is a list of sorted-tag-array steps. Precedence: with > or > then.",
   "valid": [
     {"expr": "untrusted_content with critical_action -> block",
      "steps": [["critical_action", "untrusted_content"]], "action": "block"},
@@ -18,7 +18,19 @@
     {"expr": "a then a",
      "steps": [["a"], ["a"]], "action": "block"},
     {"expr": "x.y-z_1 with b2 -> block",
-     "steps": [["b2", "x.y-z_1"]], "action": "block"}
+     "steps": [["b2", "x.y-z_1"]], "action": "block"},
+    {"expr": "untrusted_content then send_email or post_message -> block",
+     "steps": [["untrusted_content"], ["send_email"]], "action": "block",
+     "variants": [[["untrusted_content"], ["send_email"]], [["untrusted_content"], ["post_message"]]]},
+    {"expr": "a with b or c with d -> warn",
+     "steps": [["a", "b"]], "action": "warn",
+     "variants": [[["a", "b"]], [["c", "d"]]]},
+    {"expr": "a or b then c",
+     "steps": [["a"], ["c"]], "action": "block",
+     "variants": [[["a"], ["c"]], [["b"], ["c"]]]},
+    {"expr": "untrusted_content with private_data or secrets_access then external_comms -> block",
+     "steps": [["private_data", "untrusted_content"], ["external_comms"]], "action": "block",
+     "variants": [[["private_data", "untrusted_content"], ["external_comms"]], [["secrets_access"], ["external_comms"]]]}
   ],
   "invalid": [
     "",
@@ -35,6 +47,8 @@
     "_lead then b",
     "a then not b",
     "a or b",
+    "a or",
+    "or b",
     "a within b",
     "a count b",
     "->",
