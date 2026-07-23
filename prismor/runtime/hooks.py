@@ -80,6 +80,62 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
     return results
 
 
+def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
+    """True if a Prismor PreToolUse hook is present in this agent's config at
+    ``scope`` ("project" | "global"). Text-based — the dispatcher command embeds
+    the stable ``hook-dispatch`` marker in every agent's config format — so it
+    works regardless of the JSON/TOML shape."""
+    try:
+        path = _config_path(agent, scope, workspace)
+        return path.exists() and "hook-dispatch" in path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+
+
+def coverage(workspace: Path) -> Dict[str, Dict[str, bool]]:
+    """Per *detected* agent on this machine, whether a Prismor hook is present at
+    project and global scope. A detected agent with neither is an UNGUARDED
+    install — a coverage gap an enrolled device must surface (and self-heal)."""
+    from prismor.runtime.setup_wizard import _detect_agents
+    out: Dict[str, Dict[str, bool]] = {}
+    for agent, present in _detect_agents(workspace).items():
+        if not present:
+            continue
+        out[agent] = {
+            "project": hook_installed(agent, "project", workspace),
+            "global": hook_installed(agent, "global", workspace),
+        }
+    return out
+
+
+def unguarded_agents(workspace: Path) -> List[str]:
+    """Detected agents with no Prismor hook at any scope — trivially bypassable."""
+    return [a for a, s in coverage(workspace).items() if not (s["project"] or s["global"])]
+
+
+def ensure_global_coverage(*, repo_root: Path, workspace: Path, mode: str = "observe") -> List[str]:
+    """Self-heal: re-assert the GLOBAL hook for any detected agent that has no
+    hook at all — the repair for a removed/absent hook on an enrolled device.
+    Returns the agents that were (re)installed. Best-effort; never raises.
+
+    Note this can only run when *some* Prismor code is already executing (another
+    agent's hook, or the debounced policy refresh) — a machine with every hook
+    removed and no Prismor invocation cannot heal itself. Global-scope install at
+    enroll time is the primary guarantee; this is defense-in-depth on top."""
+    repaired: List[str] = []
+    try:
+        gaps = unguarded_agents(workspace)
+    except Exception:
+        return repaired
+    for agent in gaps:
+        try:
+            install_hooks(repo_root=repo_root, workspace=workspace, agent=agent, scope="global", mode=mode)
+            repaired.append(agent)
+        except Exception:
+            pass
+    return repaired
+
+
 def _ensure_codex_hooks_feature_enabled(config_toml_path: Path) -> None:
     """Ensure Codex's own ``[features].hooks`` flag is set in the USER-level
     config.toml (``config_toml_path`` must always be ``~/.codex/config.toml``

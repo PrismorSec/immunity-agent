@@ -137,13 +137,15 @@ def _block_header(finding: Dict[str, Any]) -> str:
 
 
 def _offer_post_enroll_install(workspace: Path) -> None:
-    """After a successful enroll, offer to install the agent hooks so linking a
-    machine and guarding it are one continuous flow. Enforcement is governed by
-    the signed policy from here on (see the enrolled-device mode authority in
-    runtime.evaluate_tool_call), so we install with the safe local default
-    (observe) and the org controls observe/enforce from the console — no further
-    local change. Non-interactive contexts (scripts/CI) just get the next-step
-    hint, never a prompt."""
+    """After a successful enroll, offer to guard the WHOLE MACHINE — not just the
+    current project. Enrollment means the device is managed, so the hooks go in
+    at GLOBAL scope (``~/.claude/settings.json`` etc.), covering every workspace
+    the user opens; otherwise an agent trivially escapes governance by working in
+    an un-hooked directory. Enforcement is governed by the signed policy from
+    here on (see the enrolled-device mode authority in runtime.evaluate_tool_call),
+    so we install with the safe local default (observe) and the org controls
+    observe/enforce from the console — no further local change. Non-interactive
+    contexts (scripts/CI) just get the next-step hint, never a prompt."""
     try:
         from prismor.runtime.setup_wizard import _detect_agents, run_non_interactive
     except Exception:
@@ -151,23 +153,28 @@ def _offer_post_enroll_install(workspace: Path) -> None:
     det = _detect_agents(workspace)
     agents = [n for n, ok in det.items() if ok]
     if not agents:
-        print("\nNext, install the guard into your agent:  prismor setup")
+        print("\nNext, guard this machine's agents:  prismor setup --scope global")
         return
     label = ", ".join(agents)
     if not sys.stdin.isatty():
-        print(f"\nNext, install the guard into {label}:  prismor setup")
+        print(f"\nNext, guard {label} across every project:  prismor setup --scope global")
         return
     try:
-        resp = input(f"\nInstall Prismor into {label} now? [Y/n] ").strip().lower()
+        resp = input(
+            f"\nGuard this machine — install Prismor into {label} for ALL projects? [Y/n] "
+        ).strip().lower()
     except (EOFError, KeyboardInterrupt):
-        print("\nSkipped. Install later with:  prismor setup")
+        print("\nSkipped. Guard the machine later with:  prismor setup --scope global")
         return
     if resp in ("", "y", "yes"):
-        run_non_interactive(workspace, mode="observe", agents=agents)
-        print("The org policy now governs observe/enforce for this device — "
-              "change it in the console, no local edits needed.")
+        # Global scope so every workspace on this machine is screened — an
+        # enrolled device shouldn't have unguarded directories.
+        run_non_interactive(workspace, mode="observe", agents=agents, scope="global")
+        print("This machine is guarded across every project. The org policy now "
+              "governs observe/enforce for the device — change it in the console, "
+              "no local edits needed.")
     else:
-        print("Skipped. Install later with:  prismor setup")
+        print("Skipped. Guard the machine later with:  prismor setup --scope global")
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -314,6 +321,28 @@ def main(argv: Optional[List[str]] = None) -> None:
             pending = _spool.pending_count()
             if pending:
                 print(f"  telemetry:  {pending} event(s) spooled for upload (control plane unreachable)")
+        except Exception:
+            pass
+        # Hook coverage — an enrolled device with an unguarded agent is trivially
+        # bypassable (just work in that agent / an un-hooked directory).
+        try:
+            from prismor.runtime.hooks import coverage as _coverage
+            cov = _coverage(workspace)
+            if cov:
+                parts = []
+                unguarded = []
+                for agent, s in cov.items():
+                    if s["global"]:
+                        parts.append(f"{agent} (all projects)")
+                    elif s["project"]:
+                        parts.append(f"{agent} (this project only)")
+                    else:
+                        parts.append(f"{agent} UNGUARDED")
+                        unguarded.append(agent)
+                print(f"  coverage:   {', '.join(parts)}")
+                if unguarded:
+                    print(f"  ⚠ {', '.join(unguarded)} has no Prismor hook — guard the machine: "
+                          f"prismor setup --scope global")
         except Exception:
             pass
         return
@@ -1010,7 +1039,21 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Best-effort — never blocks the tool call beyond a short timeout.
         try:
             from prismor.runtime.enterprise import remote_policy as _remote
-            _remote.check_and_refresh()
+            _refreshed = _remote.check_and_refresh()
+            # Self-heal coverage when a policy actually refreshed (rare, so this
+            # never touches the hot path): re-assert the GLOBAL hook for any
+            # detected agent that has no hook at all. Repairs a removed/absent
+            # hook on an enrolled device as long as *some* agent's hook still
+            # fires — an enrolled machine shouldn't have unguarded agents.
+            if _refreshed:
+                from prismor.runtime.enterprise import identity as _identity
+                if _identity.is_enrolled():
+                    from prismor.runtime.hooks import ensure_global_coverage
+                    _repaired = ensure_global_coverage(repo_root=repo_root, workspace=workspace)
+                    if _repaired:
+                        sys.stderr.write(
+                            f"[prismor] re-asserted guard for unhooked agent(s): {', '.join(_repaired)}\n"
+                        )
         except Exception:
             pass
 
@@ -1348,6 +1391,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "setup":
         from prismor.runtime.setup_wizard import run_wizard, run_non_interactive
         target = Path(getattr(args, "target", None) or ".").resolve()
+        scope = getattr(args, "scope", None) or os.environ.get("PRISMOR_SCOPE", "project")
+        if scope not in ("project", "global"):
+            scope = "project"
         non_interactive = getattr(args, "non_interactive", False) or not sys.stdin.isatty()
         if non_interactive:
             mode = getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "observe")
@@ -1359,7 +1405,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if cloak_flag is not None
                 else os.environ.get("PRISMOR_CLOAK", "").lower() in {"1", "true", "yes", "on"}
             )
-            run_non_interactive(target, mode=mode, agents=agents, cloak=cloak)
+            run_non_interactive(target, mode=mode, agents=agents, cloak=cloak, scope=scope)
+        elif getattr(args, "scope", None) == "global":
+            # Explicit `--scope global` skips the TUI scope step and guards the
+            # whole machine directly — the recommended install for an enrolled
+            # device (no unguarded directories).
+            det_agents = None
+            run_non_interactive(target, scope="global", agents=det_agents)
         else:
             run_wizard(target)
         return
@@ -2748,6 +2800,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="AGENT[,AGENT…]",
         help="Comma-separated agents to hook (non-interactive only): claude,cursor,windsurf,codex,…",
+    )
+    setup_parser.add_argument(
+        "--scope",
+        choices=["project", "global"],
+        default=None,
+        help="project = hooks in ./.claude only; global = ~/.claude, guards every workspace "
+             "(recommended for an enrolled device — no unguarded directories)",
     )
     setup_parser.add_argument(
         "--cloak",
