@@ -1016,20 +1016,28 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "hook-dispatch":
         register_workspace(workspace)
 
-        # Locally paused? Don't screen this tool call — allow it straight
-        # through, but emit a lightweight heartbeat so the console shows this
-        # machine as deliberately *paused* rather than silently idle. The pause
-        # self-heals when a `--for` window elapses (checked in active_state()).
+        payload = json.loads(sys.stdin.read() or "{}")
+        normalized = normalize_payload(agent=args.agent, payload=payload, workspace=workspace)
+        event = normalized["event"]
+        _agent_event = str(event.get("agent_event") or "")
+
+        # Locally paused? Don't screen this call — pass it straight through. Emit
+        # the "paused" heartbeat only on a USER-TURN boundary (a prompt submit or
+        # session start), never on every tool call — so a busy paused session
+        # tells the console "still here, still paused" about once per message
+        # instead of flooding the feed with a beat per action. An idle paused
+        # machine simply goes quiet, which is the truth.
         try:
             from prismor.runtime import pause as _pause
             _pstate = _pause.active_state()
         except Exception:
             _pstate = None
         if _pstate is not None:
-            try:
-                _pause.beat(agent=args.agent, state=_pstate)
-            except Exception:
-                pass
+            if _agent_event in ("UserPromptSubmit", "SessionStart"):
+                try:
+                    _pause.beat(agent=args.agent, state=_pstate)
+                except Exception:
+                    pass
             return
 
         # Keep org-managed policy fresh on the hot path: a cheap, debounced
@@ -1057,9 +1065,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         except Exception:
             pass
 
-        payload = json.loads(sys.stdin.read() or "{}")
-        normalized = normalize_payload(agent=args.agent, payload=payload, workspace=workspace)
-        event = normalized["event"]
+        # (payload / normalized / event were read at the top of hook-dispatch,
+        # before the pause check, so the paused path can gate on the event type.)
 
         # ── Scoped agent: synthesize rules on first prompt ────────────
         if event.get("agent_event") == "UserPromptSubmit":

@@ -24,10 +24,11 @@ from typing import Any, Dict, Optional
 
 _SCHEMA = "prismor.runtime.pause.v1"
 
-# Don't upload a paused heartbeat more than once per this many seconds, so a
-# burst of tool calls while paused doesn't hammer the control plane. Matches
-# the ~30s policy-refresh debounce cadence.
-_BEAT_DEBOUNCE_SECONDS = 30.0
+# The paused heartbeat is emitted on user-turn boundaries (a prompt submit),
+# NOT on a timer — see hook-dispatch. This is only a floor so several quick
+# messages in a row still coalesce to one "still paused" beat rather than one
+# each; an idle paused machine emits nothing.
+_BEAT_DEBOUNCE_SECONDS = 60.0
 
 
 def prismor_home() -> Path:
