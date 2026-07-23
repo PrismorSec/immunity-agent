@@ -349,6 +349,47 @@ def test_e2e_ordered_rule_blocks_in_order_only(tmp_path):
     assert d.blocking["ruleId"].startswith("tag-rule:")
 
 
+def _seq_completes(ws, sid, mode):
+    """Read (untrusted) then send (critical) — the second call completes the
+    ordered rule. Returns the completing call's Decision, run at local `mode`."""
+    evaluate_tool_call(event=_ev("mcp__Gmail__read_email", "tool_result"), workspace=ws,
+                       agent="claude", mode=mode, session_id=sid, persist=True)
+    return evaluate_tool_call(event=_ev("mcp__Gmail__send_email", "network"), workspace=ws,
+                              agent="claude", mode=mode, session_id=sid, persist=True)
+
+
+def test_e2e_enrolled_org_enforce_overrides_local_observe(tmp_path, monkeypatch):
+    # The org set tool_tags to enforce. The device runs the hook with the
+    # install default `--mode observe`. Once ENROLLED, the org's signed policy
+    # is authoritative: the local observe must NOT veto the block.
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: True)
+    ws = _ws(tmp_path, "enforce", rules=["untrusted_content then critical_action -> block"], incompatible=[])
+    d = _seq_completes(ws, "s-" + uuid.uuid4().hex, mode="observe")
+    assert d.allow is False and d.blocking["category"] == "lethal_trifecta"
+
+
+def test_e2e_not_enrolled_local_observe_is_dry_run(tmp_path, monkeypatch):
+    # Not enrolled: `--mode observe` is a genuine local dry-run — the finding is
+    # logged but nothing blocks.
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: False)
+    ws = _ws(tmp_path, "enforce", rules=["untrusted_content then critical_action -> block"], incompatible=[])
+    d = _seq_completes(ws, "s-" + uuid.uuid4().hex, mode="observe")
+    assert d.allow is True
+    assert any(f.get("category") == "lethal_trifecta" for f in d.findings)
+
+
+def test_e2e_enrolled_org_observe_still_does_not_block(tmp_path, monkeypatch):
+    # Enrolled but the org chose observe for tool_tags — nothing blocks (the
+    # finding mode is observe, so should_block never returns a block anyway).
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: True)
+    ws = _ws(tmp_path, "observe", rules=["untrusted_content then critical_action -> block"], incompatible=[])
+    d = _seq_completes(ws, "s-" + uuid.uuid4().hex, mode="observe")
+    assert d.allow is True
+
+
 def test_e2e_warn_rule_never_blocks(tmp_path):
     rules = ["untrusted_content then critical_action -> warn"]
     ws = _ws(tmp_path, "enforce", rules=rules, incompatible=[])

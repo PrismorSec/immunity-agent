@@ -441,11 +441,24 @@ def evaluate_tool_call(
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
 
-    # Per-agent observe override: if the effective mode was downgraded to observe
-    # (by the agent registry), suppress blocking even when policy findings say enforce.
-    # Kill-switch (agent-control category) is exempt — it always blocks.
-    if blocking is not None and mode == "observe":
-        if blocking.get("category") != "agent-control":
+    # Local dry-run kill switch: a locally-passed observe mode suppresses blocks.
+    # BUT once this machine is ENROLLED the org's signed policy is authoritative —
+    # a local `--mode observe` (the install default) must not veto a block the
+    # admin set to enforce (device_mode / enforce rules / tool_tags). So honor the
+    # observe downgrade only when either (a) the org itself chose observe for this
+    # agent (agent_controls, carried in `_control.mode`), or (b) this machine is
+    # not enrolled (local-only dry run). The agent-control kill switch always
+    # blocks regardless. This is what lets an admin flip a device to enforce from
+    # the console and have it take effect with no local change.
+    if blocking is not None and mode == "observe" and blocking.get("category") != "agent-control":
+        _org_chose_observe = bool(_control is not None and getattr(_control, "mode", None) == "observe")
+        _enrolled = False
+        try:
+            from prismor.runtime.enterprise import identity as _identity
+            _enrolled = _identity.is_enrolled()
+        except Exception:
+            _enrolled = False
+        if _org_chose_observe or not _enrolled:
             blocking = None
 
     # Tamper-evident signed audit trail: one chained + signed record per

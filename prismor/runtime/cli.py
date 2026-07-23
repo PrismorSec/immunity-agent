@@ -136,6 +136,40 @@ def _block_header(finding: Dict[str, Any]) -> str:
     return line + "\n"
 
 
+def _offer_post_enroll_install(workspace: Path) -> None:
+    """After a successful enroll, offer to install the agent hooks so linking a
+    machine and guarding it are one continuous flow. Enforcement is governed by
+    the signed policy from here on (see the enrolled-device mode authority in
+    runtime.evaluate_tool_call), so we install with the safe local default
+    (observe) and the org controls observe/enforce from the console — no further
+    local change. Non-interactive contexts (scripts/CI) just get the next-step
+    hint, never a prompt."""
+    try:
+        from prismor.runtime.setup_wizard import _detect_agents, run_non_interactive
+    except Exception:
+        return
+    det = _detect_agents(workspace)
+    agents = [n for n, ok in det.items() if ok]
+    if not agents:
+        print("\nNext, install the guard into your agent:  prismor setup")
+        return
+    label = ", ".join(agents)
+    if not sys.stdin.isatty():
+        print(f"\nNext, install the guard into {label}:  prismor setup")
+        return
+    try:
+        resp = input(f"\nInstall Prismor into {label} now? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nSkipped. Install later with:  prismor setup")
+        return
+    if resp in ("", "y", "yes"):
+        run_non_interactive(workspace, mode="observe", agents=agents)
+        print("The org policy now governs observe/enforce for this device — "
+              "change it in the console, no local edits needed.")
+    else:
+        print("Skipped. Install later with:  prismor setup")
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -234,6 +268,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"Enrolled this machine ({ident.get('label')}) into org: {org}")
         print(f"  device id: {ident.get('device_id')}")
         print("  Telemetry is redacted by default. An admin can enable full capture per org.")
+        # One continuous flow: link the machine → guard it. Offer to install the
+        # agent hooks now. Enforcement is governed by the signed policy from here
+        # on, so the admin controls observe/enforce from the console with no
+        # further local change.
+        try:
+            _offer_post_enroll_install(workspace)
+        except Exception:
+            pass
         return
 
     if args.command == "enroll-status":
