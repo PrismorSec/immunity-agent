@@ -96,6 +96,41 @@ def clear_paused() -> bool:
     return False
 
 
+def beat_resumed(agent: Optional[str] = None) -> bool:
+    """Tell the control plane this machine just resumed, so the console clears
+    the *paused* badge immediately instead of waiting for the next real tool
+    call. The ingest endpoint clears ``pausedAt`` on any event whose type
+    isn't ``paused_heartbeat`` — this sends exactly that, with no local
+    debounce, since a resume is a one-off user action, not a hot-path event.
+    No-op when not enrolled or on any error. Returns True iff it uploaded."""
+    try:
+        from prismor.runtime.enterprise import identity as _identity
+        if not _identity.is_enrolled():
+            return False
+    except Exception:
+        return False
+
+    now = _now()
+    record = {
+        "schema": "prismor.runtime.telemetry.v1",
+        "event_id": "evt_" + uuid.uuid4().hex,
+        "ts": _iso(now),
+        "type": "resumed_heartbeat",
+        "verdict": "observed",
+        "title": "Prismor resumed locally",
+        "agent": agent or None,
+        "count": 1,
+        "redacted": True,
+        "detail": {"resumed": True},
+    }
+    try:
+        from prismor.runtime.sinks import upload_telemetry
+        upload_telemetry([record])
+        return True
+    except Exception:
+        return False
+
+
 def _read_raw() -> Optional[Dict[str, Any]]:
     try:
         data = json.loads(pause_path().read_text(encoding="utf-8"))

@@ -357,6 +357,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime import pause as _pause
         existed = _pause.clear_paused()
         if existed:
+            # Push the resume immediately so the console clears its "paused"
+            # badge now, instead of waiting on the next real tool call.
+            try:
+                _pause.beat_resumed(agent="claude")
+            except Exception:
+                pass
             print(f"  {_color('▶  Prismor resumed', _GREEN)} — screening and enforcement are active again.")
         else:
             print("  Prismor was not paused.")
@@ -2038,12 +2044,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "update":
         import subprocess
         from prismor.runtime import __version__ as _current
-        from prismor.runtime.version_check import fetch_latest
+        from prismor.runtime.version_check import fetch_latest, record_latest
         check_only = getattr(args, "check_only", False)
         latest = fetch_latest(timeout=10)
         if latest is None:
             sys.stderr.write("prismor update: could not reach PyPI\n")
             raise SystemExit(1)
+        record_latest(latest)
 
         if latest == _current:
             print(f"prismor {_current} is already the latest version.")
@@ -2055,11 +2062,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             return
 
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "immunity-agent"],
+            [sys.executable, "-m", "pip", "install", "--upgrade", "prismor"],
             check=False,
         )
         if result.returncode == 0:
-            print(f"Updated to immunity-agent {latest}. Restart your shell or agent to use the new version.")
+            print(f"Updated to prismor {latest}. Restart your shell or agent to use the new version.")
         else:
             sys.stderr.write("pip upgrade failed — check the output above.\n")
             raise SystemExit(result.returncode)

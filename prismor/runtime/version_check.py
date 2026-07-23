@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-_PACKAGE = "immunity-agent"
+_PACKAGE = "prismor"
 _CHECK_INTERVAL = 24 * 60 * 60  # seconds
 _TIMEOUT = 1.5
 
@@ -57,13 +57,33 @@ def fetch_latest(timeout: float = _TIMEOUT) -> Optional[str]:
         return None
 
 
+def record_latest(latest: Optional[str]) -> None:
+    """Write a freshly (live) fetched version into the shared cache, so a
+    live check — e.g. from `prismor update` — also resets the passive
+    startup notice instead of leaving it to show a stale value for up to
+    ``_CHECK_INTERVAL`` after the user already resolved it.
+    """
+    if latest:
+        _write_cache({"last_checked": time.time(), "package": _PACKAGE, "latest_version": latest})
+
+
 def latest_known_version() -> Optional[str]:
     """Debounced latest version — refreshes from PyPI at most once per
     ``_CHECK_INTERVAL``, otherwise returns the cached value. Never raises.
+
+    Cache entries written against a different ``_PACKAGE`` (e.g. left over
+    from the pre-rename ``immunity-agent`` lookup) are treated as absent so
+    a rename can't leave stale, wrongly-sourced version numbers on disk.
     """
     cache = _read_cache()
+    if cache.get("package") != _PACKAGE:
+        cache = {}
     if time.time() - cache.get("last_checked", 0) < _CHECK_INTERVAL:
         return cache.get("latest_version")
     latest = fetch_latest()
-    _write_cache({"last_checked": time.time(), "latest_version": latest or cache.get("latest_version")})
+    _write_cache({
+        "last_checked": time.time(),
+        "package": _PACKAGE,
+        "latest_version": latest or cache.get("latest_version"),
+    })
     return latest or cache.get("latest_version")
