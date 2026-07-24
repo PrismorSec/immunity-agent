@@ -61,7 +61,7 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Pydantic AI | framework | sdk | ✅ | `throw` |
 | AutoGen (Microsoft) — Core runtime | framework | sdk | ✅ | `throw` |
 | Agno | framework | sdk | ✅ | `throw` |
-| Semantic Kernel (Microsoft) | framework | sdk | 🟡 | `throw` |
+| Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
 | Google Agent Development Kit (ADK) | framework | sdk | 🟡 | `throw` |
 | Mastra (TypeScript) | framework | sdk | 🟡 | `throw` |
@@ -334,6 +334,28 @@ telemetry scope to the end-user.
   `echo hello` executed normally.
 - **Code:** `adapters/agno/prismor_agno/__init__.py`.
 
+### Semantic Kernel (Microsoft)
+
+- **Surface:** in-process filter middleware (`surface: sdk`).
+- **Package:** [`adapters/semantic-kernel/`](adapters/semantic-kernel/) → `prismor-semantic-kernel`.
+  `kernel.add_filter(FilterTypes.AUTO_FUNCTION_INVOCATION, make_filter(subject="user:alice", mode="enforce"))`.
+- **Hook:** `filter_fn(context, next)` wraps the actual invocation — every
+  registered filter composes into one middleware stack whose innermost link
+  calls `context.function.invoke(...)`. The cleanest gate-then-continue
+  semantics of any framework in this table: not calling `await next(context)`
+  means the real tool never runs. (Python confirmed; the .NET
+  `IAutoFunctionInvocationFilter` equivalent was not independently
+  re-verified in this pass.)
+- **Blocking:** deny by skipping `next(context)` and setting a synthetic
+  `context.function_result` so the model still sees a coherent (denied) tool
+  response. `raise_on_block=True` raises `PrismorBlocked` instead.
+  `mode="observe"` is log-only.
+- **Verified:** live against a real `Kernel` + `OpenAIChatCompletion(ai_model_id="gpt-4o-mini")`
+  with a genuine OpenAI API key — a destructive shell command was denied
+  before the tool's Python implementation ever ran, a benign command
+  executed normally.
+- **Code:** `adapters/semantic-kernel/prismor_semantic_kernel/__init__.py`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
 Every framework below was verified to expose a real pre-execution interception
@@ -345,8 +367,6 @@ tool already executed) or that require an out-of-process human-approval
 round-trip instead of an in-process deny (Letta's `ToolRules`) — those
 aren't a real adapter target and are omitted rather than listed as weak
 roadmap entries.
-
-**Semantic Kernel (Microsoft)** — cleanest gate in this table: `IFunctionInvocationFilter.OnFunctionInvocationAsync(context, next)` (C#) or `@kernel.filter(FilterTypes.FUNCTION_INVOCATION)` (Python) wraps every function call with a `next` delegate — simply not calling it denies before execution. For LLM-initiated tool calls specifically, `IAutoFunctionInvocationFilter` / `FilterTypes.AUTO_FUNCTION_INVOCATION` is the more targeted filter; `context.Terminate = true` halts the whole auto-tool loop. [Docs.](https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters)
 
 **Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
 

@@ -453,6 +453,18 @@ agents:
     notes: "tool_hooks list on Agent/Team (distinct from the singular pre_hook/post_hook). Hook signature (function_name, function_call, arguments) — Agno introspects and injects by param name; function_call is the callable that continues the chain, not a data object. Deny by raising (confirmed against source: the try/finally wrapper around hook calls only isolates message-list state, does not swallow exceptions) instead of calling function_call(**arguments). Verified live (2026-07) against a real Agent(model=OpenAIChat(id='gpt-4o-mini')) with a genuine OpenAI key: a destructive shell command was denied before the tool's Python implementation ever ran (Agno surfaced the RuntimeError as a tool error, model reported the block); a benign command executed normally. pip install prismor-agno."
     sources: ["https://docs.agno.com/tools/hooks"]
 
+  - id: semantic-kernel
+    name: Semantic Kernel (Microsoft)
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [auto_function_invocation]
+    blocking: throw
+    normalizer: "prismor_semantic_kernel"
+    notes: "kernel.add_filter(FilterTypes.AUTO_FUNCTION_INVOCATION, filter_fn) where filter_fn(context, next) wraps the actual invocation; every filter composes into one middleware stack whose innermost link calls context.function.invoke(...). Deny by not calling await next(context) — cleanest gate-then-continue semantics of any framework in this table (Python confirmed; the .NET IAutoFunctionInvocationFilter equivalent was not independently re-verified in this pass). Sets a synthetic context.function_result so the model sees a coherent denied response. Verified live (2026-07) against a real Kernel + OpenAIChatCompletion(ai_model_id='gpt-4o-mini') with a genuine OpenAI key: a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install prismor-semantic-kernel."
+    sources: ["https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters"]
+
   # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
   # Each entry below was verified to have a real pre-execution interception
   # point that can DENY a tool call, not just observe it — the same bar the
@@ -460,17 +472,6 @@ agents:
   # observe-only (e.g. LlamaIndex's CallbackManager, smolagents' step_callbacks)
   # or requires an out-of-process human-approval round-trip (Letta's ToolRules)
   # were deliberately excluded rather than added as weaker roadmap entries.
-  - id: semantic-kernel
-    name: Semantic Kernel (Microsoft)
-    kind: framework
-    surface: sdk
-    status: roadmap
-    config_paths: {}
-    events: [function_invocation, auto_function_invocation]
-    blocking: throw
-    normalizer: null
-    notes: "IFunctionInvocationFilter.OnFunctionInvocationAsync(context, next) (C#) / @kernel.filter(FilterTypes.FUNCTION_INVOCATION) + kernel.add_filter(...) (Python); for LLM-initiated tool calls specifically, IAutoFunctionInvocationFilter.OnAutoFunctionInvocationAsync / FilterTypes.AUTO_FUNCTION_INVOCATION. Deny by simply not calling the injected `next` delegate — cleanest gate-then-continue semantics of any framework surveyed. Can also override context.Result or set context.Terminate=true to halt the auto-tool loop."
-    sources: ["https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters"]
 
   - id: claude-agent-sdk
     name: Claude Code Agent SDK
