@@ -489,6 +489,18 @@ agents:
     notes: "prismorTool()/prismorTools() wrap a tool's execute function directly (CrewAI/LangChain-style), calling the Prismor eval-server (surface: http sidecar, prismor eval-server --port 7071) before the body runs. CORRECTED FROM ROADMAP: the originally-planned processOutputStep + abort() hook was tested live and found NOT reliable — abort() throws a workflow-level error but the tool's execute function runs anyway regardless (confirmed with timestamped logging against a real agent run, @mastra/core v0.x, 2026-07). Direct execute-wrapping does reliably block, since the wrapped function is what Mastra actually calls. Verified live against a real Agent running gpt-4o-mini (via @ai-sdk/openai) with a genuine OpenAI key and a local eval-server: a destructive shell command was denied before the tool's JS implementation ever ran; a benign command executed normally. npm install prismor-mastra."
     sources: ["https://mastra.ai/reference/processors/processor-interface", "https://mastra.ai/docs/agents/processors"]
 
+  - id: beeai
+    name: BeeAI Framework (IBM Research / Linux Foundation)
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: ["start"]
+    blocking: throw
+    normalizer: "prismor_beeai"
+    notes: "guard_tool()/guard_tools() subscribe a blocking listener to a Tool's Emitter \"start\" event (emitter.on(\"start\", handler, EmitterOptions(is_blocking=True))), fired by Tool.run() before self._run(...). Verified against source (not just docs, after the Mastra lesson): Emitter._invoke runs listeners as tasks inside asyncio.TaskGroup, which always awaits every task and re-raises on failure before the surrounding block exits — a listener that raises genuinely prevents the tool body from running. Deny raises a plain RuntimeError by default, or PrismorBlocked with raise_on_block=True. Verified live (2026-07) against a real ReActAgent (Python 3.13; beeai-framework's pydantic TypedDict config hits an unrelated pydantic/3.14 rebuild issue, unrelated to this adapter) running openai:gpt-4o-mini via ChatModel.from_name with a genuine OpenAI key: a destructive shell command was denied before the tool's _run ever executed; a benign command executed normally. pip install \"prismor-beeai[beeai]\"."
+    sources: ["https://framework.beeai.dev/modules/emitter", "https://framework.beeai.dev/modules/middleware", "https://framework.beeai.dev/modules/agents/requirement-agent"]
+
   # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
   # Each entry below was verified to have a real pre-execution interception
   # point that can DENY a tool call, not just observe it — the same bar the
@@ -508,21 +520,6 @@ agents:
     normalizer: null
     notes: "The same hooks system as the Claude Code CLI, exposed programmatically: `hooks` option on ClaudeAgentOptions (Python) / options.hooks (TS), registered via HookMatcher(matcher=\"Write|Edit\", hooks=[cb]) against a PreToolUseHookInput (tool_name, tool_input). Deny via hookSpecificOutput.permissionDecision: \"deny\" (also \"allow\"/\"ask\"); overrides even bypassPermissions mode; can rewrite input via updatedInput. Also has a separate canUseTool permission callback. Adapter work would closely mirror this repo's own _merge_claude/_normalize_claude, just called in-process instead of via subprocess dispatch."
     sources: ["https://code.claude.com/docs/en/agent-sdk/hooks", "https://code.claude.com/docs/en/agent-sdk/permissions"]
-
-
-
-
-  - id: beeai
-    name: BeeAI Framework (IBM Research / Linux Foundation)
-    kind: framework
-    surface: sdk
-    status: roadmap
-    config_paths: {}
-    events: ["start"]
-    blocking: throw
-    normalizer: null
-    notes: "Tool Emitter fires a \"start\" event (ToolStartEvent) before execution — subscribe via emitter.on(\"start\", handler) or emitter.match(pattern, handler). Alternatively implement RunMiddlewareProtocol.bind(ctx), wiring ctx.emitter, and register with .middleware(...). A declarative gate also exists: ConditionalRequirement(Tool, only_before=, max_invocations=, ...). Deny by aborting the in-flight run via AbortSignal from a blocking \"start\" handler. NOT independently verified against source — confirm the exact deny/data.output field shape before writing adapter code; this entry is one step less confident than the others in this table."
-    sources: ["https://framework.beeai.dev/modules/emitter", "https://framework.beeai.dev/modules/middleware", "https://framework.beeai.dev/modules/agents/requirement-agent"]
 
   # ── Vercel AI SDK (TypeScript, via HTTP eval-server) ─────────────────────
   - id: vercel-ai

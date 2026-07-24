@@ -64,8 +64,8 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
 | Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
 | Mastra (TypeScript) | framework | sdk | ✅ | `throw` |
+| BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | ✅ | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
-| BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | 🟡 | `throw` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
 | HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
 | MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
@@ -404,21 +404,39 @@ telemetry scope to the end-user.
   normally.
 - **Code:** `adapters/mastra/src/index.ts`.
 
+### BeeAI Framework (IBM Research / Linux Foundation)
+
+- **Surface:** in-process tool wrapper (`surface: sdk`).
+- **Package:** [`adapters/beeai/`](adapters/beeai/) → `prismor-beeai`.
+  `guard_tool(tool, subject="user:alice", mode="enforce")` /
+  `guard_tools([...])`.
+- **Hook:** subscribes a blocking listener to a `Tool`'s `Emitter`
+  `"start"` event — `emitter.on("start", handler, EmitterOptions(is_blocking=True))`
+  — which `Tool.run()` awaits *before* calling `self._run(...)`.
+- **Extra scrutiny applied:** after finding that Mastra's documented
+  "before execution" hook did *not* actually block (above), the same
+  source-reading discipline was applied here before writing any adapter
+  code: `Emitter._invoke` runs listeners as tasks inside
+  `asyncio.TaskGroup`, which always awaits every task and re-raises on
+  failure before the surrounding block exits — so a listener that raises
+  genuinely prevents `self._run(...)` from ever executing, confirmed
+  against source rather than assumed from docs.
+- **Blocking:** a denied call raises inside the listener (`RuntimeError`
+  by default, or `PrismorBlocked` with `raise_on_block=True`); BeeAI's
+  tool executor surfaces this as a tool error visible to the agent.
+- **Verified:** live against a real `ReActAgent` running `gpt-4o-mini`
+  (via `ChatModel.from_name("openai:gpt-4o-mini")`) with a genuine OpenAI
+  API key — a destructive shell command was denied before the tool's
+  `_run` ever executed, a benign command executed normally.
+- **Code:** `adapters/beeai/prismor_beeai/__init__.py`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
-Every framework below was verified to expose a real pre-execution interception
+The framework below was verified to expose a real pre-execution interception
 point capable of **denying** a tool call outright — not just observing it —
-the same bar the four shipped adapters above meet. This list intentionally
-excludes frameworks whose only tool-level hook is observe-only (LlamaIndex's
-`CallbackManager`, smolagents' `step_callbacks`, which both run after the
-tool already executed) or that require an out-of-process human-approval
-round-trip instead of an in-process deny (Letta's `ToolRules`) — those
-aren't a real adapter target and are omitted rather than listed as weak
-roadmap entries.
+the same bar the shipped adapters above meet.
 
-**Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
-
-**BeeAI Framework (IBM Research / Linux Foundation)** — tool `Emitter` fires a `"start"` event (`ToolStartEvent`) before execution, subscribed via `emitter.on("start", handler)`; alternatively implement `RunMiddlewareProtocol.bind(ctx)` and register with `.middleware(...)`. A declarative gate also exists (`ConditionalRequirement(Tool, only_before=, max_invocations=, ...)`). Deny by aborting the in-flight run via `AbortSignal` from a blocking `"start"` handler. **Not independently verified against source** — confirm the exact deny/`data.output` field shape before writing adapter code; treat this entry as one notch less confident than the rest of this table. [Docs.](https://framework.beeai.dev/modules/emitter)
+**Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. **Cannot be live-tested with an OpenAI key alone** — the SDK requires genuine Anthropic/Claude authentication. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
 
 ### MCP proxy — roadmap
 

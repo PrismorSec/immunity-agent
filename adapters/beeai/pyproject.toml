@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismor-beeai"
+version = "0.1.0"
+description = "Prismor adapter for BeeAI Framework — per-user runtime tool-call policy for production agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Prismor" }]
+keywords = ["beeai", "beeai-framework", "security", "policy", "guardrail", "prismor"]
+
+dependencies = [
+    "prismor>=1.13.0",
+]
+
+[project.optional-dependencies]
+beeai = ["beeai-framework>=0.1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["prismor_beeai", "prismor"]
