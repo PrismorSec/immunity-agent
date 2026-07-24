@@ -1,0 +1,102 @@
+"""Prismor adapter for Google Agent Development Kit (ADK).
+
+Routes every tool call through ``prismor.runtime.runtime.evaluate_tool_call``
+before the tool runs — same policy engine, observe/enforce model, and
+per-user attribution as the other adapters.
+
+ADK's real hook point is ``before_tool_callback(tool, args, tool_context)``,
+set on ``LlmAgent(before_tool_callback=fn)``. Deny is by *substitution*,
+not exception: returning ``None`` lets the real tool run; returning a
+``dict`` skips the real tool call entirely and that dict becomes the tool's
+result instead — the model never sees the tool actually execute.
+
+Easy path::
+
+    from google.adk.agents import LlmAgent
+    from prismor_google_adk import make_before_tool_callback
+
+    agent = LlmAgent(
+        model="gemini-2.0-flash", name="ops", tools=[run_shell],
+        before_tool_callback=make_before_tool_callback(subject="user:alice", mode="enforce"),
+    )
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Union
+
+from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.runtime import Decision, evaluate_tool_call
+
+__all__ = ["make_before_tool_callback", "PrismorBlocked"]
+
+_TYPE_FIELD = {
+    "shell": "command",
+    "file_read": "path",
+    "file_write": "path",
+    "network": "url",
+    "prompt": "content",
+    "tool_result": "content",
+}
+
+
+class PrismorBlocked(Exception):
+    def __init__(self, reason: str, decision: Optional[Decision] = None) -> None:
+        super().__init__(reason or "blocked by Prismor policy")
+        self.decision = decision
+
+
+def _payload(args: Dict[str, Any]) -> str:
+    return " ".join(str(v) for v in (args or {}).values()).strip()
+
+
+def make_before_tool_callback(
+    *,
+    subject: Optional[Union[str, Subject]] = None,
+    workspace: Optional[Union[str, Path]] = None,
+    agent: str = "google-adk",
+    mode: str = "enforce",
+    session_id: Optional[str] = None,
+    event_type: str = "shell",
+    raise_on_block: bool = False,
+) -> Callable[[Any, Dict[str, Any], Any], Optional[Dict[str, Any]]]:
+    """Build a Prismor before_tool_callback bound to the given
+    subject/workspace/mode. Pass the returned callable as
+    ``LlmAgent(before_tool_callback=...)``.
+    """
+    ws = Path(workspace) if workspace else Path.cwd()
+    sid = session_id or f"google-adk-{os.getpid()}"
+
+    def callback(tool: Any, args: Dict[str, Any], tool_context: Any) -> Optional[Dict[str, Any]]:
+        field = _TYPE_FIELD.get(event_type, "command")
+        run_id = getattr(tool_context, "invocation_id", None) or sid
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "session_id": run_id,
+            "agent": agent,
+            "agent_event": "PreToolUse",
+            "type": event_type,
+            field: _payload(args),
+            "metadata": {
+                "tool_name": getattr(tool, "name", str(tool)),
+                "framework": "google-adk",
+                "args": dict(args or {}),
+            },
+        }
+        decision: Decision = evaluate_tool_call(
+            event=event, workspace=ws, agent=agent, mode=mode,
+            session_id=run_id, subject=resolve_subject(subject),
+        )
+        if not decision.allow:
+            reason = decision.reason or "policy violation"
+            if raise_on_block:
+                raise PrismorBlocked(reason, decision)
+            # Deny-by-substitution: a dict return SKIPS the real tool call
+            # entirely and becomes the tool's result -- ADK's own mechanism,
+            # not an exception.
+            return {"error": f"⛔ Prismor blocked this tool call: {reason}"}
+        return None  # None -> proceed with the real tool call
+
+    return callback

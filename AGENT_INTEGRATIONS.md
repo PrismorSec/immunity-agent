@@ -62,8 +62,8 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | AutoGen (Microsoft) — Core runtime | framework | sdk | ✅ | `throw` |
 | Agno | framework | sdk | ✅ | `throw` |
 | Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
+| Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
-| Google Agent Development Kit (ADK) | framework | sdk | 🟡 | `throw` |
 | Mastra (TypeScript) | framework | sdk | 🟡 | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | 🟡 | `throw` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
@@ -356,6 +356,26 @@ telemetry scope to the end-user.
   executed normally.
 - **Code:** `adapters/semantic-kernel/prismor_semantic_kernel/__init__.py`.
 
+### Google Agent Development Kit (ADK)
+
+- **Surface:** in-process `before_tool_callback` (`surface: sdk`).
+- **Package:** [`adapters/google-adk/`](adapters/google-adk/) → `prismor-google-adk`.
+  `LlmAgent(before_tool_callback=make_before_tool_callback(subject="user:alice", mode="enforce"))`.
+- **Hook:** `before_tool_callback(tool, args, tool_context)` on `LlmAgent`
+  (or as a `BasePlugin` method — plugin-level callbacks take precedence
+  over agent-level ones).
+- **Blocking:** deny-by-substitution by default, not exception: returning
+  `None` proceeds with the real tool call; returning a `dict` **skips**
+  tool execution and that dict becomes the result instead — the model
+  never sees the tool actually run. `raise_on_block=True` raises
+  `PrismorBlocked` instead. `mode="observe"` is log-only.
+- **Verified:** live against a real `LlmAgent` using ADK's `LiteLlm` wrapper
+  for `openai/gpt-4o-mini` (`pip install "google-adk[extensions]"`) with a
+  genuine OpenAI API key — a destructive shell command was denied before
+  the tool's Python implementation ever ran, a benign command executed
+  normally.
+- **Code:** `adapters/google-adk/prismor_google_adk/__init__.py`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
 Every framework below was verified to expose a real pre-execution interception
@@ -369,8 +389,6 @@ aren't a real adapter target and are omitted rather than listed as weak
 roadmap entries.
 
 **Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
-
-**Google ADK** — `before_tool_callback(tool, args, tool_context)` on `LlmAgent(before_tool_callback=fn)` or as a `BasePlugin` method (plugin-level callbacks take precedence over agent-level ones). Deny-by-substitution, not exception: returning `None` proceeds normally; returning a `dict` **skips** the real tool call and that dict becomes the result. [Docs.](https://adk.dev/callbacks/types-of-callbacks/)
 
 **Mastra (TypeScript)** — implement the `Processor` interface; `processOutputStep` runs after the LLM response but before tool execution, and calls the injected `abort(reason, { retry })` to deny (throws a `TripWire`). **Caveat:** this aborts the entire step/agent loop, not just the one tool call in place — coarser-grained than every other framework here. `ToolCallFilter` only strips tool calls out of messages; it's not a runtime deny gate. [Docs.](https://mastra.ai/reference/processors/processor-interface)
 

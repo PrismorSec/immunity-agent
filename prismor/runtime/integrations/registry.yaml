@@ -465,6 +465,18 @@ agents:
     notes: "kernel.add_filter(FilterTypes.AUTO_FUNCTION_INVOCATION, filter_fn) where filter_fn(context, next) wraps the actual invocation; every filter composes into one middleware stack whose innermost link calls context.function.invoke(...). Deny by not calling await next(context) — cleanest gate-then-continue semantics of any framework in this table (Python confirmed; the .NET IAutoFunctionInvocationFilter equivalent was not independently re-verified in this pass). Sets a synthetic context.function_result so the model sees a coherent denied response. Verified live (2026-07) against a real Kernel + OpenAIChatCompletion(ai_model_id='gpt-4o-mini') with a genuine OpenAI key: a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install prismor-semantic-kernel."
     sources: ["https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters"]
 
+  - id: google-adk
+    name: Google Agent Development Kit (ADK)
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [before_tool_callback]
+    blocking: throw
+    normalizer: "prismor_google_adk"
+    notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) (or as a BasePlugin method, which take precedence over agent-level callbacks). Deny-by-substitution by default, not exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead — the model never sees the tool actually run. raise_on_block=True raises PrismorBlocked instead. Verified live (2026-07) against a real LlmAgent using ADK's LiteLlm wrapper for openai/gpt-4o-mini with a genuine OpenAI key (pip install \"google-adk[extensions]\"): a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install prismor-google-adk."
+    sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
+
   # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
   # Each entry below was verified to have a real pre-execution interception
   # point that can DENY a tool call, not just observe it — the same bar the
@@ -485,17 +497,6 @@ agents:
     notes: "The same hooks system as the Claude Code CLI, exposed programmatically: `hooks` option on ClaudeAgentOptions (Python) / options.hooks (TS), registered via HookMatcher(matcher=\"Write|Edit\", hooks=[cb]) against a PreToolUseHookInput (tool_name, tool_input). Deny via hookSpecificOutput.permissionDecision: \"deny\" (also \"allow\"/\"ask\"); overrides even bypassPermissions mode; can rewrite input via updatedInput. Also has a separate canUseTool permission callback. Adapter work would closely mirror this repo's own _merge_claude/_normalize_claude, just called in-process instead of via subprocess dispatch."
     sources: ["https://code.claude.com/docs/en/agent-sdk/hooks", "https://code.claude.com/docs/en/agent-sdk/permissions"]
 
-  - id: google-adk
-    name: Google Agent Development Kit (ADK)
-    kind: framework
-    surface: sdk
-    status: roadmap
-    config_paths: {}
-    events: [before_tool_callback, after_tool_callback]
-    blocking: throw
-    normalizer: null
-    notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) or as a BasePlugin method (plugin-level callbacks run first and take precedence over agent-level ones). Deny-by-substitution rather than an exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead."
-    sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
 
 
 
