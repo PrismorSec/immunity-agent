@@ -60,10 +60,10 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | browser-use | framework | sdk | ✅ | `throw` |
 | Pydantic AI | framework | sdk | ✅ | `throw` |
 | AutoGen (Microsoft) — Core runtime | framework | sdk | ✅ | `throw` |
+| Agno | framework | sdk | ✅ | `throw` |
 | Semantic Kernel (Microsoft) | framework | sdk | 🟡 | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
 | Google Agent Development Kit (ADK) | framework | sdk | 🟡 | `throw` |
-| Agno | framework | sdk | 🟡 | `throw` |
 | Mastra (TypeScript) | framework | sdk | 🟡 | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | 🟡 | `throw` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
@@ -310,6 +310,30 @@ telemetry scope to the end-user.
   Python implementation ever ran, a benign command executed normally.
 - **Code:** `adapters/autogen-core/prismor_autogen_core/__init__.py`.
 
+### Agno
+
+- **Surface:** in-process `tool_hooks` chain (`surface: sdk`).
+- **Package:** [`adapters/agno/`](adapters/agno/) → `prismor-agno`.
+  `Agent(tools=[...], tool_hooks=[prismor_tool_hook])`, or
+  `make_tool_hook(subject="user:alice", mode="enforce")` to customize.
+- **Hook:** `tool_hooks` list on `Agent`/`Team` — distinct from the singular
+  `pre_hook`/`post_hook`. Agno introspects the hook's own signature and
+  injects `function_name` / `function_call` / `args`/`arguments` by
+  parameter name; `function_call` is the callable that continues the
+  execution chain, not a data object.
+- **Blocking:** raise inside the hook instead of calling
+  `function_call(**arguments)` — confirmed against source that the
+  `try/finally` wrapper around hook calls only isolates message-list state,
+  it does not swallow exceptions. Raises plain `RuntimeError` by default
+  (Agno surfaces it to the model as a tool error); `raise_on_block=True`
+  (via `make_tool_hook`) raises `PrismorBlocked` instead. `mode="observe"`
+  is log-only.
+- **Verified:** live against a real `Agent(model=OpenAIChat(id="gpt-4o-mini"))`
+  with a genuine OpenAI API key — `sudo rm -rf /` denied before the tool's
+  Python implementation ever ran (model correctly reported the block),
+  `echo hello` executed normally.
+- **Code:** `adapters/agno/prismor_agno/__init__.py`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
 Every framework below was verified to expose a real pre-execution interception
@@ -327,8 +351,6 @@ roadmap entries.
 **Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
 
 **Google ADK** — `before_tool_callback(tool, args, tool_context)` on `LlmAgent(before_tool_callback=fn)` or as a `BasePlugin` method (plugin-level callbacks take precedence over agent-level ones). Deny-by-substitution, not exception: returning `None` proceeds normally; returning a `dict` **skips** the real tool call and that dict becomes the result. [Docs.](https://adk.dev/callbacks/types-of-callbacks/)
-
-**Agno** — `tool_hooks` on `Agent`/`Team` (wraps every tool) or per-tool `@tool(pre_hook=..., post_hook=...)`, signature `(function_name, function_call, arguments)`; call `function_call(**arguments)` to continue. Deny by raising, or by returning a different result to replace the call outright, before invoking `function_call`. Distinct from `pre_hooks`/guardrails, which gate LLM input rather than individual tool calls. [Docs.](https://docs.agno.com/tools/hooks)
 
 **Mastra (TypeScript)** — implement the `Processor` interface; `processOutputStep` runs after the LLM response but before tool execution, and calls the injected `abort(reason, { retry })` to deny (throws a `TripWire`). **Caveat:** this aborts the entire step/agent loop, not just the one tool call in place — coarser-grained than every other framework here. `ToolCallFilter` only strips tool calls out of messages; it's not a runtime deny gate. [Docs.](https://mastra.ai/reference/processors/processor-interface)
 
