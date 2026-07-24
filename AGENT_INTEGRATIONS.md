@@ -30,12 +30,24 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | GitHub Copilot CLI | coding-agent | hook-config | ✅ | `json-permission` |
 | Grok Build (xAI) | coding-agent | hook-config | ✅ | `exit-2` |
 | Kiro CLI (AWS) | coding-agent | hook-config | ✅ | `exit-2` |
+| Crush (Charmbracelet) | coding-agent | hook-config | ✅ | `exit-2` |
+| OpenHands | coding-agent | hook-config | ✅ | `exit-2` |
+| Qwen Code (Alibaba) | coding-agent | hook-config | ✅ | `json-permission` |
+| Continue CLI | coding-agent | hook-config | ✅ | `exit-2` |
+| Goose (Agentic AI Foundation) | coding-agent | hook-config | ✅ | `exit-2` |
 | Gemini CLI (Google) | coding-agent | hook-config | 🟡 | `exit-2` |
 | OpenCode | coding-agent | sdk | 🟡 | `throw` |
 | Factory Droid | coding-agent | hook-config | 🟡 | `json-permission` |
+| Pi Coding Agent | coding-agent | hook-config | 🟡 | `exit-2` |
+| Amazon Q Developer CLI (AWS) | coding-agent | hook-config | 🟡 | `exit-2` |
+| Amp (Sourcegraph spinoff) | coding-agent | sdk | 🟡 | `throw` |
+| Auggie CLI (Augment Code) | coding-agent | hook-config | 🟡 | `exit-2` |
+| Kimi Code (Moonshot AI) | coding-agent | hook-config | 🟡 | `exit-2` |
+| Devin CLI (Cognition AI) | coding-agent | hook-config | 🟡 | `exit-2` |
 | Google Antigravity | coding-agent | rules-only | — | — |
 | Aider | coding-agent | rules-only | — | — |
 | Trae / Trae CN (ByteDance) | coding-agent | rules-only | — | — |
+| Warp (Agent Mode) | coding-agent | rules-only | — | — |
 | Kilocode | coding-agent | rules-only | — | — |
 
 **Production frameworks**
@@ -151,6 +163,55 @@ Prismor integrates with Hermes at two complementary layers:
 - **Not yet verified against a live `kiro-cli` binary.** Built from [kiro.dev/docs/cli/hooks](https://kiro.dev/docs/cli/hooks/), the [agent configuration reference](https://kiro.dev/docs/cli/custom-agents/configuration-reference/), and community documentation at [Ar9av/agent-manual](https://github.com/Ar9av/agent-manual/blob/main/tools/kiro/README.md). Before relying on this in `enforce` mode, confirm live whether a partial `kiro_default.json` is merged or replaces built-in defaults, and verify a deliberately blocked command is actually denied end to end.
 - **Code:** `prismor/runtime/hooks.py` `_merge_kiro()`, `_strip_kiro()`, `_normalize_kiro()`.
 
+### Crush (Charmbracelet)
+
+- **Config:** `crush.json` (project root) or `~/.config/crush/crush.json` (user).
+- **Events hooked:** `PreToolUse` only. Verified live (2026-07, crush v0.86.x): Crush's own SDK exposes a generic `HookConfig` schema, but no `PostToolUse`/`UserPromptSubmit` hook is actually dispatched at runtime — only `PreToolUse` fires.
+- **Matcher:** an empty-string matcher (`""`) is used for full coverage — verified it fires for a non-bash tool, not just the shell tool.
+- **Blocking:** exit 2 blocks the tool call, with the reason read from **stderr only**. A `{"decision":"block","reason":"..."}` stdout envelope — the convention several other agents in this table use — was tested live and silently ignored; do not copy that pattern here.
+- **Tool-name taxonomy:** shell tool is `bash`. `view` reads a file; `write`/`edit`/`multiedit` write; `fetch`/`download`/`sourcegraph` are network.
+- **Sweep target:** `~/.config/crush/`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_crush()`, `_strip_crush()`, `_normalize_crush()`.
+
+### OpenHands
+
+- **Config:** `<repo>/.openhands/hooks.json` (project). No documented global path; a "global"-scope install falls back to `~/.openhands/hooks.json` (unverified — matches where OpenHands' other global state lives, but no official doc confirms a global hooks.json is ever read).
+- **Events hooked:** `PreToolUse`, `UserPromptSubmit`. Verified live (2026-07, openhands v1.21.0): a `PreToolUse` hook fires and a non-zero exit genuinely blocks the tool call (confirmed via the CLI's own `--headless` output).
+- **Tool-name taxonomy:** shell tool is `terminal` — **not** `execute_bash`, which is the name used elsewhere in this codebase's own docs for other agents and is easy to copy by mistake.
+- **Payload shape note:** the event-name field in the hook's stdin JSON is `event_type`, not `hook_event_name` like the Claude/Codex-family agents — a real schema difference between OpenHands and most of this table, not a typo.
+- **Blocking:** exit 2 from the hook blocks the tool call; falls into the same fail-closed `else` branch as Cursor/Windsurf/Codex/Kiro.
+- **Sweep target:** `~/.openhands/`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_openhands()`, `_strip_openhands()`, `_normalize_openhands()`.
+
+### Qwen Code (Alibaba)
+
+- **Config:** `.qwen/settings.json` (project) or `~/.qwen/settings.json` (user).
+- **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PostToolUse`. Verified live (2026-07, qwen-code v0.20.1): a `PreToolUse` hook fires and genuinely blocks via a `hookSpecificOutput.permissionDecision: "deny"` stdout envelope.
+- **Tool-name taxonomy:** hooks are Claude-Code-shaped (same field names, matcher syntax), but with Qwen's **own** tool ids — the shell tool is `run_shell_command`, not `Bash`. A matcher of `"Bash"` copied from the Claude integration silently never fires; `"*"` is used here instead for guaranteed coverage.
+- **Blocking:** a **nested** stdout JSON envelope (`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..."}}`), not the flat shape Copilot uses. This needed its own `cli.py` branch — it doesn't fit any existing blocking pattern in this table. Verified the deny is honored even without a non-zero exit code, so this dispatcher path intentionally does not `raise SystemExit(2)` afterward.
+- **Non-interactive gotcha (not a hook bug, but easy to mistake for one):** running `qwen -p "..."` without `-y`/`--yolo` leaves shell-tool approval unable to proceed in a non-interactive session; a small/cheap model can then narrate a plausible-sounding fake "command succeeded" or "blocked by your hook" result without any tool call — or hook — actually running. Always pass `-y` when testing or scripting this integration, and don't trust the model's narration as proof a hook fired; check the hook's own side effects.
+- **Sweep target:** `~/.qwen/`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_qwen()`, `_strip_qwen()`, `_normalize_qwen()`.
+
+### Continue CLI
+
+- **Config:** `.continue/settings.json` (project) or `~/.continue/settings.json` (user). Continue CLI also reads `.claude/settings.json`/`~/.claude/settings.json` for cross-compatibility, but this integration targets its own native path.
+- **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — schema is deliberately Claude-Code-compatible (same field names, same tool-name convention: `Bash`, `Read`, `Edit`, `MultiEdit`, `Write`).
+- **Blocking:** exit 2, same as Claude/Codex/Kiro — falls into the generic fail-closed `else` branch.
+- **⚠️ Known issue, not a Prismor bug:** verified live (2026-07, `cn` v1.5.47) that hooks configured exactly per this schema, in every documented config location (project/global, custom/default `--config` path), **did not fire at all in headless (`cn -p`) mode** — not just for `PreToolUse`, but for `UserPromptSubmit` too, which needs no tool call whatsoever to trigger. `runHeadlessMode()` in Continue's own source does call `initializeServices()` (which registers and eagerly initializes the hooks service) before running the prompt, so this isn't an obvious ordering bug — root cause not fully pinned down beyond that. **This integration is shipped anyway** because interactive-mode users may still be covered, and an installed-but-inert hook config does no harm — but **do not treat "hooks installed" as "hooks active" for Continue CLI** without testing your actual invocation mode first. Re-check this against newer `cn` releases before relying on it.
+- **Sweep target:** `~/.continue/`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_continue()`, `_strip_continue()`, `_normalize_continue()`.
+
+### Goose (Agentic AI Foundation, formerly Block)
+
+- **Config:** a scaffolded plugin directory following goose's Open Plugins spec — `<repo>/.agents/plugins/prismor/hooks/hooks.json` (project) or `~/.agents/plugins/prismor/hooks/hooks.json` (user). Goose auto-discovers any directory under `.../plugins/<name>/` containing `hooks/hooks.json`; unlike OpenClaw/Hermes there's no central `"plugins": [...]` list to register — a static `plugin.json` manifest is scaffolded alongside the hooks file as a one-time side effect.
+- **Events hooked:** `PreToolUse`, `UserPromptSubmit`.
+- **Tool-name taxonomy:** the built-in shell tool's real name is `shell` — verified live (2026-07, goose v1.44.0) that this is **not** `developer__shell`, which is what goose's own official documentation example currently shows. A matcher copied straight from goose's docs would silently never fire; `".*"` is used here instead.
+- **Payload shape note:** the event-name field is `event`, not `hook_event_name`.
+- **Blocking:** exit 2 blocks (stderr reason), OR a `{"decision":"block","reason":"..."}` stdout envelope — both confirmed live. This fits the generic fail-closed `else` branch; no special-case needed in `cli.py`.
+- **Sweep target:** `~/.config/goose/`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_goose()`, `_strip_goose()`, `_normalize_goose()`.
+
 ---
 
 ## Production frameworks — in-process SDK adapters
@@ -239,6 +300,46 @@ Each agent below exposes a blocking pre-tool hook. An adapter requires (1) confi
 - **Blocking:** return `{permissionDecision: "deny", reason}`; `updatedInput` supports input rewriting before execution.
 - **Adapter work:** the JSON-response contract differs from Claude's exit-2 convention — dispatcher needs to emit a response object, not just an exit code. Otherwise reuse normalizer.
 
+### Pi Coding Agent
+
+- **Config:** requires the community `pi-yaml-hooks` package (`pi install npm:pi-yaml-hooks`) — Pi has no built-in hooks.json. `.pi/hook/hooks.yaml` (project, requires trust) or `~/.pi/agent/hook/hooks.yaml` (user).
+- **Events:** dot-notation (`tool.before.*`, `tool.after.*`, `session.created`, `file.changed`).
+- **Blocking:** `exit 2` from a `tool.before.*` action's `bash:` script blocks the call — verified live (2026-07, pi-coding-agent v0.81.1), unconditional exit 2 genuinely blocked a tool call.
+- **Blocker for a real adapter:** the documented way to read the triggering command inside a hook — a `$TOOL_INPUT` env var, and `{{tool_input}}`/`{{command}}` mustache templating — were both tested live and did **not** work (empty/unsubstituted). Without a confirmed way to read the command, a real integration could only implement blanket policy (block/allow an entire event type), not the command-aware policy Prismor ships for every other agent. Find the correct mechanism (likely requires reading pi-yaml-hooks' own source) before building this.
+
+### Amazon Q Developer CLI (AWS)
+
+- **Config:** hooks live inside a named per-agent JSON file — `.amazonq/cli-agents/*.json` (project) or `~/.aws/amazonq/cli-agents/*.json` (user) — same structural complexity as Kiro's `kiro_default.json`, not a dedicated hooks file.
+- **Events:** `agentSpawn`, `userPromptSubmit`, `preToolUse` (only blocking event), `postToolUse`, `stop`.
+- **Blocking:** exit 2 + stderr text. No structured JSON decision object (simpler than the Claude-family agents, but no ask/modify verdict support either).
+- **Note:** AWS has marked the open-source Amazon Q Developer CLI unmaintained (critical-fixes-only), pointing users to the closed-source Kiro CLI instead — which Prismor already ships support for. Weigh this against the effort of a full adapter.
+
+### Amp (Sourcegraph spinoff)
+
+- **Config:** no declarative hooks.json — a TypeScript Plugin API (`.amp/plugins/*.ts` project, `~/.config/amp/plugins/*.ts` user). A plugin exports an async function receiving a context object and returning handlers keyed by event name (`tool.call`, `agent.start`, `agent.end`, ...).
+- **Adapter work:** architecturally closer to OpenCode than to any JSON-hooks agent in this table — needs a scaffolded `.ts` plugin file (like the OpenClaw/Hermes JS scaffolds, or OpenCode's planned shim) that shells out to the Prismor dispatcher and returns/throws a reject action on deny, not a config-merge. Not yet verified against a live `amp` install.
+
+### Auggie CLI (Augment Code)
+
+- **Config:** `.augment/settings.json` (project) or `~/.augment/settings.json` (user) — JSON with a top-level `hooks` key, command-type handlers only.
+- **Events:** `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `SessionEnd`.
+- **Blocking:** documented as exit 2, same family as Claude/Codex/Kiro/OpenHands.
+- **Adapter work:** shape looks like a straightforward reuse of the Claude/Codex merge pattern. Not yet verified against a live `auggie` install — confirm real tool-name matchers before shipping.
+
+### Kimi Code (Moonshot AI)
+
+- **Config:** TOML, not JSON — `.kimi-code/local.toml` (project) or `~/.kimi-code/config.toml` (user).
+- **Events:** a rich set including `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart`, `SessionEnd`, `Stop`, `SubagentStart`, `SubagentStop`.
+- **Blocking:** exit 2, Claude-family convention.
+- **Adapter work:** needs Codex's `config.toml` text-patch approach (`_ensure_codex_hooks_feature_enabled` is the template), not the JSON read/merge/write path most other agents use. Not yet verified against a live `kimi-code` install.
+
+### Devin CLI (Cognition AI)
+
+- **Config:** `.devin/hooks.v1.json` (project) or `~/.config/devin/hooks.v1.json` (user).
+- **Events:** `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `PostCompaction`.
+- **Blocking:** exit 2, same family; Devin's own docs note the format explicitly mirrors Claude Code's, so hooks written for Claude Code projects reportedly work directly against Devin too.
+- **Adapter work:** likely the smallest lift of this roadmap set — port `_merge_claude`/`_strip_claude`/`_normalize_claude` with path and minor field-name changes. Devin also requires new (non-managed) hooks to be interactively trusted before first execution, similar to Codex's hook-trust model — factor that into install UX. Not yet verified against a live `devin` install.
+
 ---
 
 ## Sweep / rules-only — no runtime enforcement
@@ -271,6 +372,12 @@ These agents don't expose a programmable pre-tool hook. Integration is limited t
 - **Hooks:** soft only. `session.chat.before` can inject a guardrail prompt into chat params but cannot veto a tool call. Tool filtering is permission/approval UI, not programmable.
 - **Surface:** `AGENTS.md`, `.kilocode/rules/`, `kilo.jsonc`; plugin can inject prompt-level policy.
 - **Config dir:** `~/.kilocode/` (scanned by `prismor sweep`), workspace `.kilocode/rules/`.
+
+### Warp (Agent Mode)
+
+- **Hooks:** none. Warp's own docs describe Agent Profiles/Permissions and command/MCP allow-deny lists, not a lifecycle-event hook system.
+- **Surface:** primarily a GUI terminal app, not an install-anywhere CLI (it does ship a separate `oz` CLI for headless/cloud use, not evaluated here). `WARP.md`/`AGENTS.md` rules files, `.warp/.mcp.json` MCP config.
+- **Config dir:** `~/.warp/` (scanned by `prismor sweep`), workspace `.warp/`.
 
 ---
 

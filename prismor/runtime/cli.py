@@ -1270,7 +1270,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
             if blocking is not None and verdict == "step_up":
                 # Inline human-in-the-loop where the surface supports it.
-                if args.agent == "claude":
+                if args.agent in ("claude", "qwen"):
+                    # Qwen Code's hooks are Claude-Code-shaped and documents the
+                    # same hookSpecificOutput.permissionDecision "ask" value.
                     sys.stdout.write(json.dumps({
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
@@ -1285,7 +1287,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         "permissionDecisionReason": reason,
                     }) + "\n")
                     return
-                # No inline-approval surface (cursor/windsurf/codex/grok/kiro): fail closed.
+                # No inline-approval surface (cursor/windsurf/codex/grok/kiro/
+                # crush/openhands/continue/goose): fail closed.
                 sys.stderr.write(f"Prismor requires approval for this action (no approval surface — blocked): {reason}\n")
                 raise SystemExit(2)
 
@@ -1320,6 +1323,19 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if args.agent == "copilot":
                     # Copilot CLI reads permissionDecision from stdout; exit 2 is ignored.
                     sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
+                elif args.agent == "qwen":
+                    # Qwen Code reads hookSpecificOutput.permissionDecision from
+                    # stdout (Claude-Code-shaped, but nested unlike Copilot's flat
+                    # shape). Verified live: exit code is not the deny signal here
+                    # -- a hook that printed this JSON and exited 0 was honored, so
+                    # this deliberately does not raise SystemExit(2) afterward.
+                    sys.stdout.write(json.dumps({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }) + "\n")
                 elif args.agent == "grok":
                     # Grok Build reads {"decision": "deny", "reason": ...} from stdout
                     # AND requires exit code 2 (unlike Copilot, which ignores exit code).
@@ -2357,7 +2373,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── scan ──────────────────────────────────────────────────────────
     scan_parser = subparsers.add_parser("scan", help="Scan all MCP servers and skills for security risks")
     scan_parser.add_argument("--workspace", help="Workspace path")
-    scan_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro"], help="Only scan configs for this agent")
+    scan_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose"], help="Only scan configs for this agent")
     scan_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── deps ──────────────────────────────────────────────────────────
@@ -2500,7 +2516,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── install-hooks ──────────────────────────────────────────────────
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
     install_parser.add_argument("--workspace", help="Workspace path")
-    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "all"], required=True, help="Which agent/IDE")
+    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
     install_parser.add_argument("--scope", choices=["project", "user"], default="project", help="Hook scope (default: project)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
 
@@ -2514,7 +2530,7 @@ def build_parser() -> argparse.ArgumentParser:
         "`prismor cloak install`.",
     )
     uninstall_parser.add_argument("--workspace", help="Workspace path")
-    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "all"], required=True, help="Which agent/IDE")
+    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user"], default="project", help="Hook scope")
 
     # ── mcp-gateway ────────────────────────────────────────────────────
@@ -2551,7 +2567,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── hook-dispatch (internal) ───────────────────────────────────────
     hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
     hook_dispatch.add_argument("--workspace", help="Workspace path")
-    hook_dispatch.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro"], required=True)
+    hook_dispatch.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose"], required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
 
     # ── policy ─────────────────────────────────────────────────────────

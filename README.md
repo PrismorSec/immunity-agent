@@ -31,7 +31,7 @@
   <picture><source media="(prefers-color-scheme: dark)" srcset="https://d205xtizsu1yjh.cloudfront.net/icons/coding-agents/trae-white.svg"><img src="https://d205xtizsu1yjh.cloudfront.net/icons/coding-agents/trae.svg" width="20" height="20" alt="Trae / Trae CN" title="Trae / Trae CN"></picture>&nbsp;&nbsp;
   <picture><source media="(prefers-color-scheme: dark)" srcset="https://d205xtizsu1yjh.cloudfront.net/icons/coding-agents/google-antigravity-white.svg"><img src="https://d205xtizsu1yjh.cloudfront.net/icons/coding-agents/google-antigravity.svg" width="20" height="20" alt="Google Antigravity" title="Google Antigravity"></picture>
 </p>
-<p align="center"><sub>Plus generic support for Hermes, OpenClaw, Devin CLI, Factory Droid, and Aider and more</sub></p>
+<p align="center"><sub>Plus Grok Build, Crush, OpenHands, Qwen Code, Continue CLI, Goose, Hermes, OpenClaw, Devin CLI, Factory Droid, Aider, and more — see <a href="AGENT_INTEGRATIONS.md">AGENT_INTEGRATIONS.md</a> for the full coverage matrix</sub></p>
 
 
 ---
@@ -382,6 +382,13 @@ prismor uninstall-hooks --agent all --scope project      # every supported agent
 | Hermes | `<workspace>/.hermes/plugins.json` | `~/.hermes/config.json` |
 | Codex | `<workspace>/.codex/hooks.json` | `~/.codex/hooks.json` |
 | Copilot | `<workspace>/.github/copilot/hooks.json` | `~/.copilot/hooks.json` |
+| Grok Build | `<workspace>/.grok/hooks/prismor.json` | `~/.grok/hooks/prismor.json` |
+| Kiro CLI | `<workspace>/.kiro/agents/kiro_default.json` | `~/.kiro/agents/kiro_default.json` |
+| Crush | `<workspace>/crush.json` | `~/.config/crush/crush.json` |
+| OpenHands | `<workspace>/.openhands/hooks.json` | `~/.openhands/hooks.json` |
+| Qwen Code | `<workspace>/.qwen/settings.json` | `~/.qwen/settings.json` |
+| Continue CLI | `<workspace>/.continue/settings.json` | `~/.continue/settings.json` |
+| Goose | `<workspace>/.agents/plugins/prismor/hooks/hooks.json` | `~/.agents/plugins/prismor/hooks/hooks.json` |
 
 If you only run one scope, the other one's hooks (if installed) keep firing. Run both if you want Prismor fully out of the picture for an agent.
 

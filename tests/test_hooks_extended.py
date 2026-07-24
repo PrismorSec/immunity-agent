@@ -258,6 +258,16 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
             config_path = self.workspace / ".grok" / "hooks" / "prismor.json"
         elif agent == "kiro":
             config_path = self.workspace / ".kiro" / "agents" / "kiro_default.json"
+        elif agent == "crush":
+            config_path = self.workspace / "crush.json"
+        elif agent == "openhands":
+            config_path = self.workspace / ".openhands" / "hooks.json"
+        elif agent == "qwen":
+            config_path = self.workspace / ".qwen" / "settings.json"
+        elif agent == "continue":
+            config_path = self.workspace / ".continue" / "settings.json"
+        elif agent == "goose":
+            config_path = self.workspace / ".agents" / "plugins" / "prismor" / "hooks" / "hooks.json"
         else:
             config_path = self.workspace / ".windsurf" / "hooks.json"
         self.assertTrue(config_path.exists())
@@ -299,6 +309,39 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
 
     def test_kiro_roundtrip(self):
         self._roundtrip("kiro")
+
+    def test_crush_roundtrip(self):
+        self._roundtrip("crush")
+
+    def test_openhands_roundtrip(self):
+        self._roundtrip("openhands")
+
+    def test_qwen_roundtrip(self):
+        self._roundtrip("qwen")
+
+    def test_continue_roundtrip(self):
+        self._roundtrip("continue")
+
+    def test_goose_roundtrip(self):
+        self._roundtrip("goose")
+
+    def test_goose_scaffolds_plugin_manifest(self):
+        # Goose auto-discovers plugin dirs via a static plugin.json manifest
+        # alongside hooks/hooks.json -- verify it's created and idempotent.
+        install_hooks(
+            repo_root=self.repo_root, workspace=self.workspace,
+            agent="goose", scope="project", mode="observe",
+        )
+        manifest_path = self.workspace / ".agents" / "plugins" / "prismor" / "plugin.json"
+        self.assertTrue(manifest_path.exists())
+        manifest = json.loads(manifest_path.read_text())
+        self.assertEqual(manifest["name"], "prismor")
+        # Re-install must not error or corrupt the manifest.
+        install_hooks(
+            repo_root=self.repo_root, workspace=self.workspace,
+            agent="goose", scope="project", mode="observe",
+        )
+        self.assertEqual(json.loads(manifest_path.read_text()), manifest)
 
     def test_kiro_install_seeds_full_tools_list_on_fresh_config(self):
         # Kiro's merge-vs-replace semantics for a partial kiro_default.json
@@ -937,6 +980,113 @@ class TestIsPreActionExtended(unittest.TestCase):
 
     def test_codex_permission_request(self):
         self.assertTrue(_is_pre_action("PermissionRequest"))
+
+
+class TestNormalizePayloadCrush(unittest.TestCase):
+    """Test Crush payload normalization against the real live-captured shape
+    (2026-07, crush v0.86.x): {"event", "session_id", "cwd", "tool_name",
+    "tool_input"} -- tool_name "bash" for shell."""
+
+    def test_bash_tool(self):
+        payload = {
+            "event": "PreToolUse",
+            "session_id": "971d30cc",
+            "cwd": "/home/ubuntu/crush-test",
+            "tool_name": "bash",
+            "tool_input": {"command": "sudo ls /root", "description": "List root home directory"},
+        }
+        result = normalize_payload(agent="crush", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "sudo ls /root")
+        self.assertEqual(event["agent"], "crush")
+
+
+class TestNormalizePayloadOpenHands(unittest.TestCase):
+    """Test OpenHands payload normalization against the real live-captured
+    shape (2026-07, openhands v1.21.0): event-name field is "event_type"
+    (NOT "hook_event_name"), shell tool is "terminal" (NOT "execute_bash")."""
+
+    def test_terminal_tool(self):
+        payload = {
+            "event_type": "PreToolUse",
+            "tool_name": "terminal",
+            "tool_input": {"command": "echo forbidden-marker-xyz2", "is_input": False, "kind": "TerminalAction"},
+            "tool_response": None,
+            "message": None,
+            "session_id": "oh-1",
+            "working_dir": "/tmp",
+        }
+        result = normalize_payload(agent="openhands", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "echo forbidden-marker-xyz2")
+        self.assertEqual(event["agent_event"], "PreToolUse")
+
+
+class TestNormalizePayloadQwen(unittest.TestCase):
+    """Test Qwen Code payload normalization against the real live-captured
+    shape (2026-07, qwen-code v0.20.1): Claude-family field names, but
+    shell tool is "run_shell_command" (NOT "Bash")."""
+
+    def test_shell_tool(self):
+        payload = {
+            "session_id": "qwen-1",
+            "transcript_path": "/x",
+            "cwd": "/tmp",
+            "hook_event_name": "PreToolUse",
+            "permission_mode": "yolo",
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": "echo cleanmarker4o", "description": "desc"},
+        }
+        result = normalize_payload(agent="qwen", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "echo cleanmarker4o")
+
+    def test_user_prompt(self):
+        payload = {"session_id": "qwen-2", "hook_event_name": "UserPromptSubmit", "prompt": "hello"}
+        result = normalize_payload(agent="qwen", payload=payload, workspace=Path("/tmp"))
+        self.assertEqual(result["event"]["type"], "prompt")
+
+
+class TestNormalizePayloadContinue(unittest.TestCase):
+    """Test Continue CLI payload normalization -- deliberately Claude-Code-
+    compatible field names and tool-name convention ("Bash")."""
+
+    def test_bash_tool(self):
+        payload = {
+            "session_id": "cn-1",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hi"},
+            "cwd": "/tmp",
+        }
+        result = normalize_payload(agent="continue", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "echo hi")
+        self.assertEqual(event["agent"], "continue")
+
+
+class TestNormalizePayloadGoose(unittest.TestCase):
+    """Test Goose payload normalization against the real live-captured shape
+    (2026-07, goose v1.44.0): event-name field is "event" (NOT
+    "hook_event_name"), shell tool is "shell" (NOT "developer__shell")."""
+
+    def test_shell_tool(self):
+        payload = {
+            "event": "PreToolUse",
+            "session_id": "goose-1",
+            "matcher_context": "shell",
+            "tool_name": "shell",
+            "tool_input": {"command": "sudo ls /root"},
+            "working_dir": "/tmp",
+        }
+        result = normalize_payload(agent="goose", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "shell")
+        self.assertEqual(event["command"], "sudo ls /root")
 
 
 if __name__ == "__main__":

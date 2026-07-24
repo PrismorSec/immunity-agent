@@ -11,7 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from prismor.runtime.store import append_session_event
 
-_SUPPORTED_AGENTS = ["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro"]
+_SUPPORTED_AGENTS = [
+    "claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro",
+    "crush", "openhands", "qwen", "continue", "goose",
+]
 
 
 def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
@@ -32,6 +35,16 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
         return _strip_grok(config, marker)
     if agent == "kiro":
         return _strip_kiro(config, marker)
+    if agent == "crush":
+        return _strip_crush(config, marker)
+    if agent == "openhands":
+        return _strip_openhands(config, marker)
+    if agent == "qwen":
+        return _strip_qwen(config, marker)
+    if agent == "continue":
+        return _strip_continue(config, marker)
+    if agent == "goose":
+        return _strip_goose(config, marker)
     return _strip_windsurf(config, marker)
 
 
@@ -62,6 +75,19 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_grok(config, command)
         elif current_agent == "kiro":
             config = _merge_kiro(config, command)
+        elif current_agent == "crush":
+            config = _merge_crush(config, command)
+        elif current_agent == "openhands":
+            config = _merge_openhands(config, command)
+        elif current_agent == "qwen":
+            config = _merge_qwen(config, command)
+        elif current_agent == "continue":
+            config = _merge_continue(config, command)
+        elif current_agent == "goose":
+            # Goose auto-discovers any plugin directory under .../plugins/<name>/
+            # containing hooks/hooks.json — the plugin dir is config_path's
+            # grandparent (.../plugins/prismor/hooks/hooks.json -> .../plugins/prismor/).
+            config = _merge_goose(config, command, config_path.parent.parent)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -290,6 +316,16 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_grok(payload, session_id, workspace)
     elif agent == "kiro":
         event = _normalize_kiro(payload, session_id, workspace)
+    elif agent == "crush":
+        event = _normalize_crush(payload, session_id)
+    elif agent == "openhands":
+        event = _normalize_openhands(payload, session_id)
+    elif agent == "qwen":
+        event = _normalize_qwen(payload, session_id, workspace)
+    elif agent == "continue":
+        event = _normalize_continue(payload, session_id, workspace)
+    elif agent == "goose":
+        event = _normalize_goose(payload, session_id)
     else:
         event = _normalize_cursor(payload, session_id)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
@@ -400,6 +436,16 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".grok" / "hooks" / "prismor.json"
         if agent == "kiro":
             return workspace / ".kiro" / "agents" / "kiro_default.json"
+        if agent == "crush":
+            return workspace / "crush.json"
+        if agent == "openhands":
+            return workspace / ".openhands" / "hooks.json"
+        if agent == "qwen":
+            return workspace / ".qwen" / "settings.json"
+        if agent == "continue":
+            return workspace / ".continue" / "settings.json"
+        if agent == "goose":
+            return workspace / ".agents" / "plugins" / "prismor" / "hooks" / "hooks.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -418,6 +464,20 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".grok" / "hooks" / "prismor.json"
     if agent == "kiro":
         return home / ".kiro" / "agents" / "kiro_default.json"
+    if agent == "crush":
+        return home / ".config" / "crush" / "crush.json"
+    if agent == "openhands":
+        # OpenHands only documents a project-scoped `.openhands/hooks.json`; no
+        # official global path exists. Fall back to $OPENHANDS_PERSISTENCE_DIR
+        # (default ~/.openhands), matching where its other global state lives,
+        # for a "global"-scope install rather than erroring — unverified.
+        return home / ".openhands" / "hooks.json"
+    if agent == "qwen":
+        return home / ".qwen" / "settings.json"
+    if agent == "continue":
+        return home / ".continue" / "settings.json"
+    if agent == "goose":
+        return home / ".agents" / "plugins" / "prismor" / "hooks" / "hooks.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -891,6 +951,113 @@ def _merge_kiro(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     return {**config, "hooks": hooks}
 
 
+def _merge_crush(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    # Crush's hooks config is a flat dict of event -> list of {name, matcher,
+    # command} entries (no nested "hooks" array like Claude/Codex). Verified
+    # live (2026-07): only PreToolUse is actually dispatched -- there is no
+    # PostToolUse/UserPromptSubmit hook surface in crush v0.86.x despite the
+    # SDK schema exposing a HookConfig type generically. Matcher "" matches
+    # every tool (verified: an empty-matcher rule fired for a non-bash tool).
+    hooks = dict(config.get("hooks", {}))
+    entries = list(hooks.get("PreToolUse", []))
+    if not any(e.get("command") == command for e in entries):
+        entries.append({"name": "prismor", "matcher": "", "command": command})
+    hooks["PreToolUse"] = entries
+    return {**config, "hooks": hooks}
+
+
+def _merge_openhands(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    # Same nested {matcher, hooks:[{type, command}]} shape as Claude/Codex.
+    # Verified live (2026-07): PreToolUse fires and a non-zero exit blocks the
+    # tool call. "*" matches every tool (docs: "*" | exact tool name | /regex/).
+    hooks = dict(config.get("hooks", {}))
+    hooks["PreToolUse"] = _merge_claude_entries(
+        hooks.get("PreToolUse", []),
+        {"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 60}]},
+    )
+    hooks["UserPromptSubmit"] = _merge_claude_entries(
+        hooks.get("UserPromptSubmit", []),
+        {"hooks": [{"type": "command", "command": command, "timeout": 60}]},
+    )
+    return {**config, "hooks": hooks}
+
+
+def _merge_qwen(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    # Claude-Code-shaped hooks (nested matcher + hooks[]), but Qwen Code's own
+    # tool ids, NOT Claude's ("run_shell_command" not "Bash" -- verified live,
+    # a matcher of "Bash" silently never fires). "*" matches every tool.
+    hooks = dict(config.get("hooks", {}))
+    hooks["UserPromptSubmit"] = _merge_claude_entries(
+        hooks.get("UserPromptSubmit", []),
+        {"hooks": [{"type": "command", "command": command}]},
+    )
+    for event_name in ["PreToolUse", "PostToolUse"]:
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+        )
+    return {**config, "hooks": hooks}
+
+
+def _merge_continue(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    # Continue CLI's hooks.json schema is intentionally Claude-Code-compatible
+    # (same event names, same tool-name convention -- "Bash"). WARNING, verified
+    # live (2026-07, cn v1.5.47): hooks configured exactly per this schema, in
+    # every documented config location, did not fire in headless (`cn -p`)
+    # mode for ANY event including UserPromptSubmit -- not just PreToolUse.
+    # Ship anyway (interactive-mode users still benefit; the config is inert,
+    # not harmful, if the headless bug is present) but never assume this is
+    # actually enforcing anything without checking `cn` in the target
+    # environment first. See AGENT_INTEGRATIONS.md.
+    hooks = dict(config.get("hooks", {}))
+    hooks["UserPromptSubmit"] = _merge_claude_entries(
+        hooks.get("UserPromptSubmit", []),
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+    )
+    for event_name in ["PreToolUse", "PostToolUse"]:
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {
+                "matcher": "Bash|Read|Edit|MultiEdit|Write|Fetch|Search",
+                "hooks": [{"type": "command", "command": command}],
+            },
+        )
+    return {**config, "hooks": hooks}
+
+
+def _merge_goose(config: Dict[str, Any], command: str, plugin_dir: Path) -> Dict[str, Any]:
+    # Goose auto-discovers plugin directories containing hooks/hooks.json --
+    # no central "plugins": [...] list to register, unlike OpenClaw/Hermes.
+    # `config` here IS the plugin's own hooks.json; plugin.json is a static
+    # manifest scaffolded once as a side effect. Verified live (2026-07,
+    # goose v1.44.0): the built-in shell tool's real name is "shell", NOT
+    # "developer__shell" as goose's own official docs example shows -- a
+    # matcher of "developer__shell" silently never fires. ".*" matches every
+    # tool and is what's used here to avoid depending on that undocumented
+    # exact name for coverage.
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = plugin_dir / "plugin.json"
+    if not manifest_path.exists():
+        manifest_path.write_text(
+            json.dumps(
+                {"name": "prismor", "version": "0.1.0", "description": "Prismor security hooks"},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    hooks = dict(config.get("hooks", {}))
+    hooks["PreToolUse"] = _merge_claude_entries(
+        hooks.get("PreToolUse", []),
+        {"matcher": ".*", "hooks": [{"type": "command", "command": command, "timeout": 15}]},
+    )
+    hooks["UserPromptSubmit"] = _merge_claude_entries(
+        hooks.get("UserPromptSubmit", []),
+        {"hooks": [{"type": "command", "command": command, "timeout": 15}]},
+    )
+    return {**config, "hooks": hooks}
+
+
 def _strip_copilot(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
     hooks = dict(config.get("hooks", {}))
     removed = False
@@ -954,6 +1121,96 @@ def _strip_kiro(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bo
         if len(filtered) < len(entries):
             removed = True
         hooks[event_name] = filtered
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_crush(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        filtered = [e for e in entries if marker not in e.get("command", "")]
+        if len(filtered) < len(entries):
+            removed = True
+        hooks[event_name] = filtered
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_openhands(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_qwen(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_continue(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_goose(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
     return {**config, "hooks": hooks}, removed
 
 
@@ -1143,6 +1400,187 @@ def _normalize_kiro(payload: Dict[str, Any], session_id: str, workspace: Path) -
         return {**base, "type": "file_write", "path": path, "content": content}
     if tool_name in {"web_fetch", "web_search"}:
         return {**base, "type": "network", "url": tool_input.get("url", "")}
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_crush(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    # Verified live payload shape (2026-07, crush v0.86.x):
+    # {"event": "PreToolUse", "session_id", "cwd", "tool_name": "bash",
+    #  "tool_input": {"command": ..., "description": ...}}
+    hook_event = payload.get("event", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "crush",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if tool_name == "bash":
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name == "view":
+        return {**base, "type": "file_read", "path": tool_input.get("path", "")}
+    if tool_name in {"write", "edit", "multiedit"}:
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("path") or tool_input.get("file_path", ""),
+            "content": tool_input.get("content") or tool_input.get("new_string", ""),
+        }
+    if tool_name in {"fetch", "download", "sourcegraph"}:
+        return {**base, "type": "network", "url": tool_input.get("url", "")}
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_openhands(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    # Verified live payload shape (2026-07, openhands v1.21.0). Field name is
+    # "event_type" -- NOT "hook_event_name" like the Claude/Codex-family
+    # agents -- and the shell tool's name is "terminal", not "execute_bash".
+    hook_event = payload.get("event_type") or payload.get("hook_event_name", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "openhands",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("working_dir"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "UserPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("message") or payload.get("prompt", "")}
+    if tool_name == "terminal":
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name == "file_editor":
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("path", ""),
+            "content": tool_input.get("content") or tool_input.get("new_str", ""),
+        }
+    if tool_name in {"web_fetch", "web_search"}:
+        return {**base, "type": "network", "url": tool_input.get("url", "")}
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_qwen(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    # Same field-naming convention as Claude/Codex (hook_event_name, tool_name,
+    # tool_input) but Qwen Code's own tool ids -- verified live (2026-07,
+    # qwen-code v0.20.1): "run_shell_command", not "Bash".
+    hook_event = payload.get("hook_event_name", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "qwen",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "UserPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if tool_name == "run_shell_command":
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name == "read_file":
+        return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
+    if tool_name in {"write_file", "edit", "replace"}:
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("file_path") or tool_input.get("path", ""),
+            "content": tool_input.get("content") or tool_input.get("new_string", ""),
+        }
+    if tool_name in {"web_fetch", "web_search"}:
+        return {**base, "type": "network", "url": tool_input.get("url", "")}
+    mcp_event = _classify_mcp_event(
+        base=base,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        response=payload.get("tool_response", payload.get("response")),
+        is_post=(hook_event == "PostToolUse"),
+        workspace=workspace,
+    )
+    if mcp_event is not None:
+        return mcp_event
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_continue(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    # Continue CLI's hooks payload is intentionally Claude-Code-compatible
+    # (same field names AND tool-name convention -- "Bash", "Read", "Edit",
+    # ...). NOTE: hooks were not observed to fire at all in headless (`cn -p`)
+    # mode in live testing (2026-07, cn v1.5.47) -- this normalizer may never
+    # actually receive a payload in that mode. See _merge_continue.
+    hook_event = payload.get("hook_event_name", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "continue",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "UserPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if tool_name == "Bash":
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name == "Read":
+        return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
+    if tool_name in {"Edit", "MultiEdit", "Write"}:
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("file_path") or tool_input.get("path", ""),
+            "content": (
+                _join_edits(tool_input.get("edits", []))
+                or tool_input.get("content", "")
+                or tool_input.get("new_string", "")
+            ),
+        }
+    if tool_name in {"Fetch", "Search"}:
+        return {**base, "type": "network", "url": tool_input.get("url", "")}
+    mcp_event = _classify_mcp_event(
+        base=base,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        response=payload.get("tool_response", payload.get("response")),
+        is_post=(hook_event == "PostToolUse"),
+        workspace=workspace,
+    )
+    if mcp_event is not None:
+        return mcp_event
+    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+
+
+def _normalize_goose(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    # Verified live payload shape (2026-07, goose v1.44.0): field name is
+    # "event" (not "hook_event_name"), and the built-in shell tool's real
+    # name is "shell" -- NOT "developer__shell" as goose's own official docs
+    # example shows. See _merge_goose.
+    hook_event = payload.get("event", "unknown")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    base = {
+        "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "goose",
+        "agent_event": hook_event,
+        "metadata": {"cwd": payload.get("working_dir"), "tool_name": tool_name, "raw": payload},
+    }
+    if hook_event == "UserPromptSubmit":
+        return {**base, "type": "prompt", "prompt": payload.get("message", "")}
+    if tool_name == "shell":
+        return {**base, "type": "shell", "command": tool_input.get("command", "")}
+    if tool_name == "write":
+        return {**base, "type": "file_write", "path": tool_input.get("path", ""), "content": tool_input.get("content", "")}
+    if tool_name == "edit":
+        return {
+            **base,
+            "type": "file_write",
+            "path": tool_input.get("path", ""),
+            "content": tool_input.get("after", ""),
+        }
     return {**base, "type": "tool_result", "response": json.dumps(payload)}
 
 

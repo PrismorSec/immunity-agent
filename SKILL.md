@@ -98,6 +98,14 @@ Per-agent matrix (only one `--agent` value per invocation, or `all`):
 | OpenClaw | `openclaw` | `~/.openclaw/config.json` |
 | Hermes | `hermes` | `~/.hermes/config.json` |
 | GitHub Copilot CLI | `copilot` | `.github/copilot/hooks.json` |
+| Codex (OpenAI) | `codex` | `.codex/hooks.json` |
+| Grok Build (xAI) | `grok` | `.grok/hooks/prismor.json` |
+| Kiro CLI (AWS) | `kiro` | `.kiro/agents/kiro_default.json` |
+| Crush (Charmbracelet) | `crush` | `crush.json` |
+| OpenHands | `openhands` | `.openhands/hooks.json` |
+| Qwen Code (Alibaba) | `qwen` | `.qwen/settings.json` |
+| Continue CLI | `continue` | `.continue/settings.json` |
+| Goose (Agentic AI Foundation) | `goose` | `.agents/plugins/prismor/hooks/hooks.json` |
 
 After install, **verify** by re-running `prismor status`. The `Hooks:` line should now list the agent you just installed.
 

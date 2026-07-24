@@ -134,6 +134,71 @@ agents:
     notes: "Hooks live inside a named agent config, not a dedicated hooks file. Kiro's merge-vs-replace semantics for a partial kiro_default.json override are undocumented, so a fresh install seeds a self-contained config (explicit tools list included) rather than a hooks-only fragment. Not yet verified against a live kiro-cli binary."
     sources: ["https://kiro.dev/docs/cli/hooks/", "https://kiro.dev/docs/cli/custom-agents/configuration-reference/", "https://github.com/Ar9av/agent-manual/blob/main/tools/kiro/README.md"]
 
+  - id: crush
+    name: Crush (Charmbracelet)
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: "crush.json", user: "~/.config/crush/crush.json" }
+    events: [PreToolUse]
+    blocking: exit-2
+    normalizer: _normalize_crush
+    sweep_dir: "~/.config/crush/"
+    notes: "Verified live (2026-07, crush v0.86.x): PreToolUse is the only hookable event (no PostToolUse/UserPromptSubmit hook surface exists despite the SDK's generic HookConfig type); a deny reason must come from stderr on exit 2, NOT a {\"decision\":\"block\"} stdout envelope (that shape is silently ignored — a different convention than several other agents in this table). Shell tool name is \"bash\"."
+    sources: ["https://github.com/charmbracelet/crush", "https://github.com/Ar9av/agent-manual/blob/main/tools/crush/README.md"]
+
+  - id: openhands
+    name: OpenHands
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".openhands/hooks.json" }
+    events: [PreToolUse, UserPromptSubmit]
+    blocking: exit-2
+    normalizer: _normalize_openhands
+    sweep_dir: "~/.openhands/"
+    notes: "Verified live (2026-07, openhands v1.21.0): PreToolUse fires and a non-zero exit genuinely blocks the tool call. Shell tool name is \"terminal\" (not \"execute_bash\"). Payload's event-name field is \"event_type\", NOT \"hook_event_name\" like the Claude/Codex-family agents — a real schema difference, not a typo. No documented global/user-level hooks.json path exists; a \"global\"-scope install falls back to ~/.openhands/hooks.json (matches where other OpenHands global state lives) but this is unverified."
+    sources: ["https://docs.openhands.dev/", "https://github.com/Ar9av/agent-manual/blob/main/tools/openhands/README.md"]
+
+  - id: qwen
+    name: Qwen Code (Alibaba)
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".qwen/settings.json", user: "~/.qwen/settings.json" }
+    events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    blocking: json-permission
+    normalizer: _normalize_qwen
+    sweep_dir: "~/.qwen/"
+    notes: "Hooks schema is Claude-Code-shaped (hookSpecificOutput.permissionDecision), but Qwen Code's own tool ids -- verified live (2026-07, qwen-code v0.20.1) the shell tool is \"run_shell_command\", NOT \"Bash\"; a matcher of \"Bash\" silently never fires. Deny is a NESTED stdout envelope ({\"hookSpecificOutput\":{\"hookEventName\":...,\"permissionDecision\":\"deny\",...}}), unlike Copilot's flat shape — needs its own cli.py branch, not the generic exit-2 or Copilot's json-permission path. Non-interactive (`-p`) runs require `-y`/`--yolo` for the shell tool to execute at all; without it, a small model may narrate a plausible-sounding fake result instead of genuinely failing, which can look like (but is not) a hook problem."
+    sources: ["https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/", "https://github.com/Ar9av/agent-manual/blob/main/tools/qwen-code/README.md"]
+
+  - id: continue
+    name: Continue CLI
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".continue/settings.json", user: "~/.continue/settings.json" }
+    events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    blocking: exit-2
+    normalizer: _normalize_continue
+    sweep_dir: "~/.continue/"
+    notes: "WARNING — verified live (2026-07, cn v1.5.47): hooks configured exactly per this (Claude-Code-compatible) schema, in every documented config location (project/global, custom/default config path), did NOT fire in headless (`cn -p`) mode for ANY event, including UserPromptSubmit which needs no tool call at all. Traced to runHeadlessMode() in the CLI's own source, which does call initializeServices() before running the prompt, so this isn't an obvious ordering bug — root cause not fully pinned down. Shipped anyway (interactive-mode users may still be covered; this config is inert, not harmful, if the bug is present) but do not treat an installed Continue CLI hook as confirmed-active without testing it in your actual invocation mode first."
+    sources: ["https://docs.continue.dev/cli/quickstart", "https://github.com/Ar9av/agent-manual/blob/main/tools/continue-cli/README.md"]
+
+  - id: goose
+    name: Goose (Agentic AI Foundation)
+    kind: coding-agent
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".agents/plugins/prismor/hooks/hooks.json", user: "~/.agents/plugins/prismor/hooks/hooks.json" }
+    events: [PreToolUse, UserPromptSubmit]
+    blocking: exit-2
+    normalizer: _normalize_goose
+    sweep_dir: "~/.config/goose/"
+    notes: "Plugin-directory based (Open Plugins spec) — goose auto-discovers any dir under .../plugins/<name>/ containing hooks/hooks.json, no central plugin-registration list to append to (unlike OpenClaw/Hermes). A static plugin.json manifest is scaffolded once alongside it. Verified live (2026-07, goose v1.44.0): the built-in shell tool's real name is \"shell\" — NOT \"developer__shell\" as goose's own official docs example shows; a matcher of \"developer__shell\" silently never fires. Payload's event-name field is \"event\", not \"hook_event_name\"."
+    sources: ["https://goose-docs.ai/docs/guides/context-engineering/hooks", "https://github.com/Ar9av/agent-manual/blob/main/tools/goose/README.md"]
+
   # ── Coding agents — roadmap (hook surface exists, adapter not built) ──────
   - id: gemini
     name: Gemini CLI (Google)
@@ -167,6 +232,78 @@ agents:
     blocking: json-permission
     normalizer: null
     sources: ["https://docs.factory.ai/reference/hooks-reference"]
+
+  - id: pi-agent
+    name: Pi Coding Agent
+    kind: coding-agent
+    surface: hook-config
+    status: roadmap
+    config_paths: { project: ".pi/hook/hooks.yaml", user: "~/.pi/agent/hook/hooks.yaml" }
+    events: ["tool.before.*", "tool.after.*", "session.created"]
+    blocking: exit-2
+    normalizer: null
+    notes: "Requires the community pi-yaml-hooks package (`pi install npm:pi-yaml-hooks`) — Pi has no built-in hooks.json of its own. Project-scope hooks additionally require trust (PI_YAML_HOOKS_TRUST_PROJECT=1 or a trusted-projects.json entry) before they load. CAUTION, verified live (2026-07, pi-coding-agent v0.81.1): hook firing and unconditional exit-2 blocking both work, but the documented ways to read the triggering command inside a hook — a $TOOL_INPUT env var, and {{tool_input}}/{{command}} mustache templating — were BOTH non-functional in testing (empty/unsubstituted). A real integration here could only do blanket policy (block everything matching an event), not command-aware policy, until the correct mechanism for reading tool input is found."
+    sources: ["https://github.com/earendil-works/pi", "https://github.com/Ar9av/agent-manual/blob/main/tools/pi-agent/README.md"]
+
+  - id: amazon-q
+    name: Amazon Q Developer CLI (AWS)
+    kind: coding-agent
+    surface: hook-config
+    status: roadmap
+    config_paths: { project: ".amazonq/cli-agents/*.json", user: "~/.aws/amazonq/cli-agents/*.json" }
+    events: [agentSpawn, userPromptSubmit, preToolUse, postToolUse, stop]
+    blocking: exit-2
+    normalizer: null
+    notes: "Hooks live inside a named per-agent JSON config (like Kiro), not a dedicated hooks file — merging in a Prismor hook means editing whichever agent config is active, same structural complexity as Kiro's kiro_default.json. Only preToolUse blocks; deny is a plain exit-2 + stderr text, no structured JSON decision object (simpler than Claude-family agents, but also less expressive — no ask/modify verdict support). AWS has marked the underlying open-source CLI unmaintained (critical-fixes-only) in favor of the closed-source Kiro CLI, which Prismor already ships support for — that may make this lower priority than its own coverage gap suggests."
+    sources: ["https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html", "https://github.com/Ar9av/agent-manual/blob/main/tools/amazon-q-dev-cli/README.md"]
+
+  - id: amp
+    name: Amp (Sourcegraph spinoff)
+    kind: coding-agent
+    surface: sdk
+    status: roadmap
+    config_paths: { project: ".amp/plugins/*.ts", user: "~/.config/amp/plugins/*.ts" }
+    events: ["tool.call", "agent.start", "agent.end"]
+    blocking: throw
+    normalizer: null
+    notes: "No declarative hooks.json — extensibility is a TypeScript Plugin API (async function receiving a context, returning handlers keyed by event name). Architecturally closer to OpenCode's plugin model than to the JSON-hooks agents in this table: a real integration would need a scaffolded .ts plugin (like the OpenClaw/Hermes JS scaffolds) that shells out to the prismor dispatcher and returns a reject action, not a config-merge. Not yet verified against a live amp install."
+    sources: ["https://ampcode.com/manual/plugin-api", "https://github.com/Ar9av/agent-manual/blob/main/tools/amp/README.md"]
+
+  - id: auggie
+    name: Auggie CLI (Augment Code)
+    kind: coding-agent
+    surface: hook-config
+    status: roadmap
+    config_paths: { project: ".augment/settings.json", user: "~/.augment/settings.json" }
+    events: [PreToolUse, PostToolUse, Stop, SessionStart, SessionEnd]
+    blocking: exit-2
+    normalizer: null
+    notes: "Documented as a JSON settings.json with a top-level hooks key, command-type handlers only — same shape family as Claude/Codex. Not yet verified against a live auggie install (this repo's own live-testing pass covered Goose/Crush/Continue/OpenHands/Codex/Aider/OpenCode/Pi Agent/Qwen Code/OpenClaw but not Auggie)."
+    sources: ["https://docs.augmentcode.com/cli/hooks", "https://github.com/Ar9av/agent-manual/blob/main/tools/auggie/README.md"]
+
+  - id: kimi-code
+    name: Kimi Code (Moonshot AI)
+    kind: coding-agent
+    surface: hook-config
+    status: roadmap
+    config_paths: { project: ".kimi-code/local.toml", user: "~/.kimi-code/config.toml" }
+    events: [PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd, Stop, SubagentStart, SubagentStop]
+    blocking: exit-2
+    normalizer: null
+    notes: "TOML config like Codex, not JSON — a real integration would follow Codex's config.toml text-patch approach (_ensure_codex_hooks_feature_enabled) rather than the JSON read/merge/write path most other agents use. Not yet verified against a live kimi-code install."
+    sources: ["https://www.kimi.com/code/docs/en/kimi-code-cli/", "https://github.com/Ar9av/agent-manual/blob/main/tools/kimi-code/README.md"]
+
+  - id: devin
+    name: Devin CLI (Cognition AI)
+    kind: coding-agent
+    surface: hook-config
+    status: roadmap
+    config_paths: { project: ".devin/hooks.v1.json", user: "~/.config/devin/hooks.v1.json" }
+    events: [SessionStart, SessionEnd, UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest, Stop, PostCompaction]
+    blocking: exit-2
+    normalizer: null
+    notes: "Hooks format explicitly mirrors Claude Code's (own docs note hooks from Claude Code projects often work directly) — the Claude merge/strip/normalize logic in this file would very likely need only path + minor field-name changes to port. Devin also requires new (non-managed) hooks to be interactively trusted before first execution, similar to Codex's hook-trust model. Not yet verified against a live devin install."
+    sources: ["https://docs.devin.ai/cli/extensibility/hooks/overview", "https://github.com/Ar9av/agent-manual/blob/main/tools/devin-cli/README.md"]
 
   # ── Sweep / rules-only — no programmable pre-tool hook ────────────────────
   - id: antigravity
@@ -204,6 +341,19 @@ agents:
     normalizer: null
     sweep_dir: "~/.trae/"
     sources: ["https://docs.trae.ai/ide/rules?_lang=en"]
+
+  - id: warp
+    name: Warp (Agent Mode)
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { project: ".warp/", user: "~/.warp/" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.warp/"
+    notes: "Primarily a GUI terminal app (not an install-anywhere CLI); its own docs describe no lifecycle-event/hook system, only Agent Profiles/Permissions and command/MCP allow-deny lists. Rules files (WARP.md/AGENTS.md) and MCP config (.warp/.mcp.json) are the only sweepable static surface."
+    sources: ["https://docs.warp.dev/agent-platform/", "https://github.com/Ar9av/agent-manual/blob/main/tools/warp/README.md"]
 
   - id: kilocode
     name: Kilocode

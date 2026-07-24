@@ -238,6 +238,11 @@ def _detect_agents(target: Path) -> dict:
         "codex":    shutil.which("codex") is not None or (target / ".codex").exists() or (home / ".codex").exists(),
         "grok":     shutil.which("grok") is not None or (target / ".grok").exists() or (home / ".grok").exists(),
         "kiro":     shutil.which("kiro-cli") is not None or shutil.which("kiro") is not None or (target / ".kiro").exists() or (home / ".kiro").exists(),
+        "crush":    shutil.which("crush") is not None or (target / "crush.json").exists() or (home / ".config" / "crush").exists(),
+        "openhands": shutil.which("openhands") is not None or (target / ".openhands").exists() or (home / ".openhands").exists(),
+        "qwen":     shutil.which("qwen") is not None or (target / ".qwen").exists() or (home / ".qwen").exists(),
+        "continue": shutil.which("cn") is not None or (target / ".continue").exists() or (home / ".continue").exists(),
+        "goose":    shutil.which("goose") is not None or (home / ".config" / "goose").exists(),
     }
 
 
@@ -311,6 +316,11 @@ def _step_agents(target: Path) -> list:
         {"name": "codex",    "label": "Codex",       "on": detected.get("codex", False)},
         {"name": "grok",     "label": "Grok Build",  "on": detected.get("grok", False)},
         {"name": "kiro",     "label": "Kiro CLI",    "on": detected.get("kiro", False)},
+        {"name": "crush",     "label": "Crush",       "on": detected.get("crush", False)},
+        {"name": "openhands", "label": "OpenHands",   "on": detected.get("openhands", False)},
+        {"name": "qwen",      "label": "Qwen Code",   "on": detected.get("qwen", False)},
+        {"name": "continue",  "label": "Continue CLI", "on": detected.get("continue", False)},
+        {"name": "goose",     "label": "Goose",       "on": detected.get("goose", False)},
     ]
     if not any(a["on"] for a in agents):
         agents[0]["on"] = True
