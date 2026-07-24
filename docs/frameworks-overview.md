@@ -12,13 +12,25 @@ on your existing agent or controller object, with no changes to your tool logic.
 | LangChain / LangGraph | Python | `pip install "prismor[langchain]"` | `guard_tools([...])` | `use_subject("user:alice")` |
 | CrewAI | Python | `pip install "prismor[crewai]"` | `guard_tools([...])` | `use_subject("user:alice")` |
 | browser-use | Python | `pip install "prismor[browser-use]"` | `guard_controller(controller)` | `use_subject("user:alice")` |
+| Pydantic AI | Python | `pip install "prismor[pydantic-ai]"` | `guard_toolsets([...])` | `subject="user:alice"` |
+| AutoGen Core (Microsoft) | Python | `pip install "prismor[autogen-core]"` | `PrismorInterventionHandler(...)` | `subject="user:alice"` |
+| Agno | Python | `pip install "prismor[agno]"` | `tool_hooks=[prismor_tool_hook]` | `subject="user:alice"` |
+| Semantic Kernel (Microsoft) | Python | `pip install "prismor[semantic-kernel]"` | `add_filter(..., make_filter(...))` | `subject="user:alice"` |
+| Google ADK | Python | `pip install "prismor[google-adk]"` | `before_tool_callback=make_before_tool_callback(...)` | `subject="user:alice"` |
+| BeeAI Framework | Python | `pip install "prismor[beeai]"` | `guard_tool(tool)` / `guard_tools([...])` | `subject="user:alice"` |
+| Claude Code Agent SDK | Python | `pip install "prismor[claude-agent-sdk]"` | `hooks={"PreToolUse": [prismor_hook_matcher(...)]}` | `subject="user:alice"` |
 | Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
 | LangChain JS / LangGraph JS | TypeScript | `npm install prismor-warden` | `prismorLangChainTools([...])` | `useSubject("user:alice", fn)` |
+| Mastra | TypeScript | `npm install prismor-mastra` | `prismorTool(name, tool)` | `subject: "user:alice"` |
 | Any language | Any | — (HTTP client only) | `POST /v1/evaluate` | `X-Prismor-Subject` header |
 
-> The Python adapters ship inside the `prismor` package (needs `>= 1.14.2`) —
-> the extra just pulls the framework itself. `prismor[frameworks]` installs all
-> four. On npm the package is `prismor-warden`.
+> The Python adapters ship inside the `prismor` package (no separate PyPI
+> packages) — each extra just pulls the framework itself.
+> `prismor[frameworks]` installs all of them. Vercel AI SDK / LangChain JS
+> ship as the `prismor-warden` npm package; Mastra ships separately as
+> `prismor-mastra` since it wraps tools directly rather than going through
+> an eval-server client — both are genuinely separate packages since a
+> Python wheel can't bundle TypeScript.
 
 The multi-tenant pattern is the same in every language: guard once at startup
 with no bound subject, then wrap each request with `use_subject` (Python) or
@@ -49,8 +61,16 @@ Regardless of framework, every adapter does the same three things:
 | LangChain / LangGraph | `tool.func` + `tool.coroutine` | before `tool.invoke()` / `tool.ainvoke()` executes |
 | CrewAI | `tool.func` → `tool._run` → `tool.run` (first found) | before the tool implementation runs |
 | browser-use | `Registry.execute_action` | before Playwright executes any browser action |
+| Pydantic AI | `WrapperToolset.call_tool(name, tool_args, ctx, tool)` | before `super().call_tool(...)` — the single choke point for every tool |
+| AutoGen Core (Microsoft) | `InterventionHandler.on_send(message, ...)` | before any `FunctionCall` message reaches a `ToolAgent` |
+| Agno | `tool_hooks` list on `Agent`/`Team` | before `function_call(**arguments)` continues the chain |
+| Semantic Kernel (Microsoft) | filter `filter_fn(context, next)` in the invocation middleware stack | before `await next(context)` — which calls `context.function.invoke(...)` |
+| Google ADK | `before_tool_callback(tool, args, tool_context)` | before the tool call — returning a dict skips it entirely |
+| BeeAI Framework | `Tool`'s `Emitter` `"start"` event | before `self._run(...)` inside `Tool.run()` |
+| Claude Code Agent SDK | `PreToolUse` hook (`HookMatcher`) | before Claude runs the tool — same hook system as the CLI |
 | Vercel AI SDK | `tool.execute` | before the tool body runs, after the LLM emits the tool call |
 | LangChain JS / LangGraph JS | `tool.invoke` (StructuredTool) | before the tool runs — covers LangGraph's `ToolNode` / `createReactAgent` |
+| Mastra | `tool.execute` | before the tool body runs, after the LLM emits the tool call |
 | HTTP (any language) | caller-side `POST /v1/evaluate` | before calling the tool implementation |
 
 ## Eval-server (non-Python languages)
@@ -214,4 +234,12 @@ choosing which client a request belongs to is your app's authentication job.
 - [LangChain / LangGraph](frameworks-langchain.md) — `guard_tools`, `PrismorCallbackHandler`
 - [CrewAI](frameworks-crewai.md) — `guard_tools`, BaseTool and structured tool support
 - [browser-use](frameworks-browser-use.md) — `guard_controller`, network/file/shell event mapping
+- [Pydantic AI](frameworks-pydantic-ai.md) — `guard_toolsets`, `WrapperToolset.call_tool`
+- [AutoGen Core (Microsoft)](frameworks-autogen-core.md) — `PrismorInterventionHandler`, `on_send`
+- [Agno](frameworks-agno.md) — `tool_hooks`, `make_tool_hook`
+- [Semantic Kernel (Microsoft)](frameworks-semantic-kernel.md) — `make_filter`, `AUTO_FUNCTION_INVOCATION`
+- [Google ADK](frameworks-google-adk.md) — `make_before_tool_callback`, `before_tool_callback`
+- [BeeAI Framework](frameworks-beeai.md) — `guard_tool`, `Emitter` `"start"` event
+- [Claude Code Agent SDK](frameworks-claude-agent-sdk.md) — `prismor_hook_matcher`, `PreToolUse` hooks
 - [Vercel AI SDK](frameworks-vercel-ai.md) — `prismorTools`, TypeScript, eval-server HTTP protocol
+- [Mastra](frameworks-mastra.md) — `prismorTool`, TypeScript, direct `execute` wrapping
