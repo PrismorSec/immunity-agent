@@ -501,24 +501,16 @@ agents:
     notes: "guard_tool()/guard_tools() subscribe a blocking listener to a Tool's Emitter \"start\" event (emitter.on(\"start\", handler, EmitterOptions(is_blocking=True))), fired by Tool.run() before self._run(...). Verified against source (not just docs, after the Mastra lesson): Emitter._invoke runs listeners as tasks inside asyncio.TaskGroup, which always awaits every task and re-raises on failure before the surrounding block exits — a listener that raises genuinely prevents the tool body from running. Deny raises a plain RuntimeError by default, or PrismorBlocked with raise_on_block=True. Verified live (2026-07) against a real ReActAgent (Python 3.13; beeai-framework's pydantic TypedDict config hits an unrelated pydantic/3.14 rebuild issue, unrelated to this adapter) running openai:gpt-4o-mini via ChatModel.from_name with a genuine OpenAI key: a destructive shell command was denied before the tool's _run ever executed; a benign command executed normally. pip install \"prismor-beeai[beeai]\"."
     sources: ["https://framework.beeai.dev/modules/emitter", "https://framework.beeai.dev/modules/middleware", "https://framework.beeai.dev/modules/agents/requirement-agent"]
 
-  # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
-  # Each entry below was verified to have a real pre-execution interception
-  # point that can DENY a tool call, not just observe it — the same bar the
-  # shipped adapters above meet. Frameworks whose only tool-level hook is
-  # observe-only (e.g. LlamaIndex's CallbackManager, smolagents' step_callbacks)
-  # or requires an out-of-process human-approval round-trip (Letta's ToolRules)
-  # were deliberately excluded rather than added as weaker roadmap entries.
-
   - id: claude-agent-sdk
     name: Claude Code Agent SDK
     kind: framework
     surface: sdk
-    status: roadmap
+    status: shipped
     config_paths: {}
     events: [PreToolUse]
     blocking: json-permission
-    normalizer: null
-    notes: "The same hooks system as the Claude Code CLI, exposed programmatically: `hooks` option on ClaudeAgentOptions (Python) / options.hooks (TS), registered via HookMatcher(matcher=\"Write|Edit\", hooks=[cb]) against a PreToolUseHookInput (tool_name, tool_input). Deny via hookSpecificOutput.permissionDecision: \"deny\" (also \"allow\"/\"ask\"); overrides even bypassPermissions mode; can rewrite input via updatedInput. Also has a separate canUseTool permission callback. Adapter work would closely mirror this repo's own _merge_claude/_normalize_claude, just called in-process instead of via subprocess dispatch."
+    normalizer: "prismor_claude_agent_sdk"
+    notes: "prismor_hook_matcher()/prismor_pre_tool_use_hook() register via HookMatcher(matcher=None, hooks=[cb]) on ClaudeAgentOptions.hooks — the same PreToolUse hooks system as the Claude Code CLI itself, exposed programmatically. Deny via hookSpecificOutput.permissionDecision: \"deny\", overriding even bypassPermissions mode. matcher defaults to None (match every tool call, not a fixed built-in-tool-name list) specifically because custom tools registered via create_sdk_mcp_server arrive as \"mcp__<server>__<tool>\" — a narrower default would silently exempt every custom/MCP tool from policy. VERIFICATION METHODOLOGY NOTE: unlike the OpenAI-key-backed adapters, this one requires genuine Anthropic auth to run at all, so it was live-tested (2026-07) on a separate host with an authenticated Claude Code CLI session (claude-agent-sdk shells out to the installed `claude` binary) rather than the shared OpenAI key. Naive destructive commands (rm -rf /, IMDS SSRF) turned out NOT to isolate the adapter — Claude's own alignment refuses those regardless of any hook, confirmed by a baseline run with zero Prismor hooks installed that also refused. Switched to a discriminating case instead: a benign-framed write to .claude/settings.json (Prismor's own agent-config-tampering CRITICAL rule) that Claude readily executes with no hook installed, and that the Prismor hook denies once installed — isolating the adapter's actual effect from the model's own judgment. An earlier version of this adapter's default matcher (\"Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch\") silently never fired for the custom MCP tool used in testing; caught by this same discriminating test, not the naive rm -rf / case, which is why the naive case is an unreliable verification signal for this particular framework. First-run failure caveat: end-to-end verification depends on the target ClaudeAgentOptions.hooks wiring being correct in the caller's own app; this adapter's own hook logic is what was verified. pip install \"prismor-claude-agent-sdk[sdk]\"."
     sources: ["https://code.claude.com/docs/en/agent-sdk/hooks", "https://code.claude.com/docs/en/agent-sdk/permissions"]
 
   # ── Vercel AI SDK (TypeScript, via HTTP eval-server) ─────────────────────

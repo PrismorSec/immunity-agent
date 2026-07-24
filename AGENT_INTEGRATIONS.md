@@ -65,7 +65,7 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
 | Mastra (TypeScript) | framework | sdk | ✅ | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | ✅ | `throw` |
-| Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
+| Claude Code Agent SDK | framework | sdk | ✅ | `json-permission` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
 | HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
 | MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
@@ -430,13 +430,37 @@ telemetry scope to the end-user.
   `_run` ever executed, a benign command executed normally.
 - **Code:** `adapters/beeai/prismor_beeai/__init__.py`.
 
-### Framework roadmap — genuine blocking hooks confirmed, adapter not built
+### Claude Code Agent SDK
 
-The framework below was verified to expose a real pre-execution interception
-point capable of **denying** a tool call outright — not just observing it —
-the same bar the shipped adapters above meet.
-
-**Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. **Cannot be live-tested with an OpenAI key alone** — the SDK requires genuine Anthropic/Claude authentication. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
+- **Surface:** in-process hooks (`surface: sdk`).
+- **Package:** [`adapters/claude-agent-sdk/`](adapters/claude-agent-sdk/) →
+  `prismor-claude-agent-sdk`. `prismor_hook_matcher(mode="enforce",
+  subject="user:alice")` passed into `ClaudeAgentOptions(hooks={"PreToolUse": [...]})`.
+- **Hook:** the exact same `PreToolUse` hooks system the Claude Code CLI
+  itself uses, exposed programmatically — `HookMatcher(matcher=None,
+  hooks=[cb])` against a `PreToolUseHookInput` (`tool_name`, `tool_input`).
+  `matcher` defaults to `None` (every tool call) rather than a fixed
+  built-in-tool-name list, since custom tools registered via
+  `create_sdk_mcp_server` arrive as `mcp__<server>__<tool>` — a narrower
+  default would silently exempt every custom/MCP tool from policy.
+- **Blocking:** deny via `hookSpecificOutput.permissionDecision: "deny"`,
+  which overrides even `bypassPermissions` mode.
+- **Verification methodology note:** unlike the OpenAI-key-backed
+  adapters above, this one needs genuine Anthropic auth to run at all, so
+  it was live-tested on a separate host with an authenticated Claude Code
+  CLI session rather than the shared OpenAI key. Naive destructive
+  commands (`rm -rf /`, cloud-metadata SSRF) turned out to be an
+  unreliable test signal here — Claude's own alignment refuses those
+  regardless of any hook (confirmed with a baseline run that had *zero*
+  Prismor hooks installed and still refused). Switched to a discriminating
+  case instead: a benign-framed write to `.claude/settings.json`
+  (Prismor's own `agent-config-tampering` rule) that Claude readily
+  executes with no hook installed, and that the adapter denies once
+  installed — this is what actually isolates the adapter's effect from
+  the model's own judgment, and it's also what caught a real bug (an
+  earlier default `matcher` regex that never matched custom MCP tool
+  names, so the hook silently never fired).
+- **Code:** `adapters/claude-agent-sdk/prismor_claude_agent_sdk/__init__.py`.
 
 ### MCP proxy — roadmap
 

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismor-claude-agent-sdk"
+version = "0.1.0"
+description = "Prismor adapter for the Claude Agent SDK — per-user runtime tool-call policy for production agents. Live-verified against an authenticated Claude Code CLI session (see README)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Prismor" }]
+keywords = ["claude", "claude-agent-sdk", "security", "policy", "guardrail", "prismor"]
+
+dependencies = [
+    "prismor>=1.13.0",
+]
+
+[project.optional-dependencies]
+sdk = ["claude-agent-sdk>=0.1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["prismor_claude_agent_sdk", "prismor"]
