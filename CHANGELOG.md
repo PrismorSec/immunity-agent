@@ -1,3 +1,9 @@
+## [1.34.1] — 2026-07-24
+
+### Fixed
+
+- **The 7 new framework adapters (pydantic-ai, autogen-core, agno, semantic-kernel, google-adk, beeai, claude-agent-sdk) are now bundled into the main `prismor` package instead of being separate PyPI distributions.** Attempting to publish them as standalone `prismor-<name>` packages in 1.34.0 failed uniformly — including for the pre-existing `prismor-langchain`/`prismor-crewai`/`prismor-openai`/`prismor-browser-use` packages — because none of those were ever real PyPI projects; every adapter's own README already documented `pip install "prismor[<name>]"`, not a standalone install. Extended `pyproject.toml`'s `packages`/`force-include`/optional-dependencies the same way the original 4 already worked, so `pip install "prismor[beeai]"` etc. now actually installs the adapter (via `from prismor.beeai import guard_tool`). `.github/workflows/release-adapters.yml` no longer tries to publish standalone Python packages to PyPI — it only publishes the genuinely-separate npm packages (`prismor-vercel`, `prismor-mastra`), which can't be bundled into a Python wheel.
+
 ## [1.34.0] — 2026-07-23
 
 ### Added

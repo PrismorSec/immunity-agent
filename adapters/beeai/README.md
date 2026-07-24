@@ -21,14 +21,14 @@ turned out not to actually block (see the Mastra adapter's notes).
 ## Install
 
 ```bash
-pip install "prismor-beeai[beeai]"
+pip install "prismor[beeai]"      # Prismor runtime + adapter + beeai-framework
 ```
 
 ## Use
 
 ```python
 from beeai_framework.tools.search.duckduckgo import DuckDuckGoSearchTool
-from prismor_beeai import guard_tool
+from prismor.beeai import guard_tool
 
 tool = guard_tool(DuckDuckGoSearchTool(), subject="user:alice", mode="enforce")
 ```

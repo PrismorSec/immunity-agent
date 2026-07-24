@@ -19,7 +19,7 @@ it does not swallow exceptions).
 Easy path::
 
     from agno.agent import Agent
-    from prismor_agno import prismor_tool_hook
+    from prismor.agno import prismor_tool_hook
 
     agent = Agent(model=..., tools=[run_shell], tool_hooks=[prismor_tool_hook])
 """

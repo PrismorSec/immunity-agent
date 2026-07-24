@@ -236,8 +236,8 @@ telemetry scope to the end-user.
 ### OpenAI Agents SDK
 
 - **Surface:** in-process tool wrapper / guardrail (`surface: sdk`).
-- **Package:** [`adapters/openai-agents/`](adapters/openai-agents/) →
-  `prismor-openai`. `prismor_guard(tool, subject="user:alice")`.
+- **Package:** [`adapters/openai-agents/`](adapters/openai-agents/), bundled in
+  `pip install "prismor[openai-agents]"`. `from prismor.openai import prismor_guard`.
 - **Blocking:** raises `PrismorBlocked` before the tool runs; `mode="observe"` is log-only.
 - **Per-user:** `subject` → policy + IAM (`user:<id>` / `team:<id>` profiles) + telemetry.
 - **Code:** `adapters/openai-agents/prismor_openai/__init__.py`,
@@ -247,8 +247,9 @@ telemetry scope to the end-user.
 ### LangChain / LangGraph
 
 - **Surface:** in-process tool wrapper + optional callback handler (`surface: sdk`).
-- **Package:** [`adapters/langchain/`](adapters/langchain/) → `prismor-langchain`.
-  `guard_tools([...], subject="user:alice")`; or `PrismorCallbackHandler(...)` for capture.
+- **Package:** [`adapters/langchain/`](adapters/langchain/), bundled in
+  `pip install "prismor[langchain]"`. `from prismor.langchain import guard_tools`;
+  or `PrismorCallbackHandler(...)` for capture.
 - **Blocking:** wraps each tool's `func`/`coroutine`; denied call returns a denial
   string (or raises with `raise_on_block=True`). `mode="observe"` is log-only.
 - **Verified:** live against a LangGraph `create_react_agent` — `rm -rf /` and
@@ -258,8 +259,8 @@ telemetry scope to the end-user.
 ### CrewAI
 
 - **Surface:** in-process tool wrapper (`surface: sdk`).
-- **Package:** [`adapters/crewai/`](adapters/crewai/) → `prismor-crewai`.
-  `guard_tools([...], subject="user:alice")`.
+- **Package:** [`adapters/crewai/`](adapters/crewai/), bundled in
+  `pip install "prismor[crewai]"`. `from prismor.crewai import guard_tools`.
 - **Blocking:** wraps each tool's `func`/`_run`/`run`; denied call returns a
   denial string (or raises). `mode="observe"` is log-only.
 - **Verified:** live against a `Crew` with a shell tool — `rm -rf /` blocked
@@ -269,8 +270,8 @@ telemetry scope to the end-user.
 ### Pydantic AI
 
 - **Surface:** in-process `WrapperToolset` (`surface: sdk`).
-- **Package:** [`adapters/pydantic-ai/`](adapters/pydantic-ai/) → `prismor-pydantic-ai`.
-  `guard_toolsets([toolset], subject="user:alice", mode="enforce")`.
+- **Package:** [`adapters/pydantic-ai/`](adapters/pydantic-ai/), bundled in
+  `pip install "prismor[pydantic-ai]"`. `from prismor.pydantic_ai import guard_toolsets`.
 - **Hook:** `PrismorToolset(WrapperToolset)` overrides `call_tool(name, tool_args, ctx, tool)` —
   the single choke point every tool call passes through (plain functions, MCP-server
   tools, or any composed toolset). Not calling `super().call_tool(...)` means the
@@ -287,8 +288,9 @@ telemetry scope to the end-user.
 ### AutoGen (Microsoft) — Core runtime
 
 - **Surface:** in-process `InterventionHandler` (`surface: sdk`).
-- **Package:** [`adapters/autogen-core/`](adapters/autogen-core/) → `prismor-autogen-core`.
-  `PrismorInterventionHandler(subject="user:alice", mode="enforce")` passed to
+- **Package:** [`adapters/autogen-core/`](adapters/autogen-core/), bundled in
+  `pip install "prismor[autogen-core]"`. `from prismor.autogen_core import
+  PrismorInterventionHandler`, passed to
   `SingleThreadedAgentRuntime(intervention_handlers=[...])`.
 - **Hook:** overrides `on_send(message, *, message_context, recipient)` — the
   real per-message gate every `autogen-core` `AgentRuntime.send_message` call
@@ -313,7 +315,8 @@ telemetry scope to the end-user.
 ### Agno
 
 - **Surface:** in-process `tool_hooks` chain (`surface: sdk`).
-- **Package:** [`adapters/agno/`](adapters/agno/) → `prismor-agno`.
+- **Package:** [`adapters/agno/`](adapters/agno/), bundled in
+  `pip install "prismor[agno]"`. `from prismor.agno import prismor_tool_hook`;
   `Agent(tools=[...], tool_hooks=[prismor_tool_hook])`, or
   `make_tool_hook(subject="user:alice", mode="enforce")` to customize.
 - **Hook:** `tool_hooks` list on `Agent`/`Team` — distinct from the singular
@@ -337,7 +340,8 @@ telemetry scope to the end-user.
 ### Semantic Kernel (Microsoft)
 
 - **Surface:** in-process filter middleware (`surface: sdk`).
-- **Package:** [`adapters/semantic-kernel/`](adapters/semantic-kernel/) → `prismor-semantic-kernel`.
+- **Package:** [`adapters/semantic-kernel/`](adapters/semantic-kernel/), bundled in
+  `pip install "prismor[semantic-kernel]"`. `from prismor.semantic_kernel import make_filter`;
   `kernel.add_filter(FilterTypes.AUTO_FUNCTION_INVOCATION, make_filter(subject="user:alice", mode="enforce"))`.
 - **Hook:** `filter_fn(context, next)` wraps the actual invocation — every
   registered filter composes into one middleware stack whose innermost link
@@ -359,7 +363,8 @@ telemetry scope to the end-user.
 ### Google Agent Development Kit (ADK)
 
 - **Surface:** in-process `before_tool_callback` (`surface: sdk`).
-- **Package:** [`adapters/google-adk/`](adapters/google-adk/) → `prismor-google-adk`.
+- **Package:** [`adapters/google-adk/`](adapters/google-adk/), bundled in
+  `pip install "prismor[google-adk]"`. `from prismor.google_adk import make_before_tool_callback`;
   `LlmAgent(before_tool_callback=make_before_tool_callback(subject="user:alice", mode="enforce"))`.
 - **Hook:** `before_tool_callback(tool, args, tool_context)` on `LlmAgent`
   (or as a `BasePlugin` method — plugin-level callbacks take precedence
@@ -407,9 +412,9 @@ telemetry scope to the end-user.
 ### BeeAI Framework (IBM Research / Linux Foundation)
 
 - **Surface:** in-process tool wrapper (`surface: sdk`).
-- **Package:** [`adapters/beeai/`](adapters/beeai/) → `prismor-beeai`.
-  `guard_tool(tool, subject="user:alice", mode="enforce")` /
-  `guard_tools([...])`.
+- **Package:** [`adapters/beeai/`](adapters/beeai/), bundled in
+  `pip install "prismor[beeai]"`. `from prismor.beeai import guard_tool`;
+  `guard_tool(tool, subject="user:alice", mode="enforce")` / `guard_tools([...])`.
 - **Hook:** subscribes a blocking listener to a `Tool`'s `Emitter`
   `"start"` event — `emitter.on("start", handler, EmitterOptions(is_blocking=True))`
   — which `Tool.run()` awaits *before* calling `self._run(...)`.
@@ -433,8 +438,9 @@ telemetry scope to the end-user.
 ### Claude Code Agent SDK
 
 - **Surface:** in-process hooks (`surface: sdk`).
-- **Package:** [`adapters/claude-agent-sdk/`](adapters/claude-agent-sdk/) →
-  `prismor-claude-agent-sdk`. `prismor_hook_matcher(mode="enforce",
+- **Package:** [`adapters/claude-agent-sdk/`](adapters/claude-agent-sdk/), bundled
+  in `pip install "prismor[claude-agent-sdk]"`. `from prismor.claude_agent_sdk
+  import prismor_hook_matcher`; `prismor_hook_matcher(mode="enforce",
   subject="user:alice")` passed into `ClaudeAgentOptions(hooks={"PreToolUse": [...]})`.
 - **Hook:** the exact same `PreToolUse` hooks system the Claude Code CLI
   itself uses, exposed programmatically — `HookMatcher(matcher=None,

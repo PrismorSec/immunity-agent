@@ -18,7 +18,7 @@ practice — see the Mastra adapter's notes.)
 
 Easy path::
 
-    from prismor_beeai import guard_tool
+    from prismor.beeai import guard_tool
 
     tool = guard_tool(RunShellTool(), subject="user:alice", mode="enforce")
 """

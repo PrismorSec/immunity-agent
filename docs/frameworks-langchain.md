@@ -1,7 +1,8 @@
 # LangChain / LangGraph integration
 
-Prismor adapter for LangChain and LangGraph. Ships from
-[`adapters/langchain/`](../adapters/langchain/) as `prismor-langchain`.
+Prismor adapter for LangChain and LangGraph. Source lives at
+[`adapters/langchain/`](../adapters/langchain/), bundled into the main
+`prismor` package (no separate PyPI package).
 Registry entry: `id: langchain` in
 [`prismor/runtime/integrations/registry.yaml`](../prismor/runtime/integrations/registry.yaml).
 

@@ -14,7 +14,7 @@ of the above. This is a hard pre-execution gate — not calling
 Easy path::
 
     from pydantic_ai import Agent
-    from prismor_pydantic_ai import guard_toolsets
+    from prismor.pydantic_ai import guard_toolsets
 
     agent = Agent('openai:gpt-4o-mini', toolsets=guard_toolsets(
         [my_toolset], subject="user:alice", mode="enforce",

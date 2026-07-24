@@ -19,7 +19,7 @@ integrates with.
 ## Install
 
 ```bash
-pip install "prismor-semantic-kernel[semantic-kernel]"
+pip install "prismor[semantic-kernel]"      # Prismor runtime + adapter + semantic-kernel
 ```
 
 ## Use
@@ -27,7 +27,7 @@ pip install "prismor-semantic-kernel[semantic-kernel]"
 ```python
 from semantic_kernel import Kernel
 from semantic_kernel.filters import FilterTypes
-from prismor_semantic_kernel import make_filter
+from prismor.semantic_kernel import make_filter
 
 kernel = Kernel()
 kernel.add_service(...)

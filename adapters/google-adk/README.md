@@ -19,14 +19,14 @@ execute.
 ## Install
 
 ```bash
-pip install "prismor-google-adk[adk]"
+pip install "prismor[google-adk]"      # Prismor runtime + adapter + google-adk
 ```
 
 ## Use
 
 ```python
 from google.adk.agents import LlmAgent
-from prismor_google_adk import make_before_tool_callback
+from prismor.google_adk import make_before_tool_callback
 
 agent = LlmAgent(
     model="gemini-2.0-flash",  # or a LiteLlm-wrapped model, e.g. openai/gpt-4o-mini

@@ -36,7 +36,7 @@ anything but Claude's own built-in tools — ``matcher`` now defaults to
 Use::
 
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-    from prismor_claude_agent_sdk import prismor_hook_matcher
+    from prismor.claude_agent_sdk import prismor_hook_matcher
 
     options = ClaudeAgentOptions(
         hooks={"PreToolUse": [prismor_hook_matcher(mode="enforce", subject="user:alice")]},

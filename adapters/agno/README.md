@@ -20,7 +20,7 @@ message-list state, it does not swallow exceptions).
 ## Install
 
 ```bash
-pip install "prismor-agno[agno]"
+pip install "prismor[agno]"      # Prismor runtime + adapter + agno
 ```
 
 ## Use
@@ -28,7 +28,7 @@ pip install "prismor-agno[agno]"
 ```python
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from prismor_agno import prismor_tool_hook
+from prismor.agno import prismor_tool_hook
 
 agent = Agent(
     model=OpenAIChat(id="gpt-4o-mini"),

@@ -1,8 +1,8 @@
 # browser-use integration
 
 Prismor adapter for [browser-use](https://github.com/browser-use/browser-use).
-Ships from [`adapters/browser-use/`](../adapters/browser-use/) as
-`prismor-browser-use`. Registry entry: `id: browser-use` in
+Source lives at [`adapters/browser-use/`](../adapters/browser-use/), bundled
+into the main `prismor` package (no separate PyPI package). Registry entry: `id: browser-use` in
 [`prismor/runtime/integrations/registry.yaml`](../prismor/runtime/integrations/registry.yaml).
 
 Browser agents carry unique risk: they can navigate to attacker-controlled URLs,

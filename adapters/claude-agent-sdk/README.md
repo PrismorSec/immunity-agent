@@ -41,14 +41,14 @@ defaults to `None` (every tool call) for exactly this reason.
 ## Install
 
 ```bash
-pip install "prismor-claude-agent-sdk[sdk]"
+pip install "prismor[claude-agent-sdk]"      # Prismor runtime + adapter + claude-agent-sdk
 ```
 
 ## Use
 
 ```python
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from prismor_claude_agent_sdk import prismor_hook_matcher
+from prismor.claude_agent_sdk import prismor_hook_matcher
 
 options = ClaudeAgentOptions(
     hooks={"PreToolUse": [prismor_hook_matcher(mode="enforce", subject="user:alice")]},

@@ -17,7 +17,7 @@ so this adapter does not cover ``AssistantAgent`` usage.
 Easy path::
 
     from autogen_core import SingleThreadedAgentRuntime
-    from prismor_autogen_core import PrismorInterventionHandler
+    from prismor.autogen_core import PrismorInterventionHandler
 
     runtime = SingleThreadedAgentRuntime(
         intervention_handlers=[PrismorInterventionHandler(subject="user:alice", mode="enforce")],

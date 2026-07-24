@@ -17,7 +17,7 @@ observe-only callback.
 ## Install
 
 ```bash
-pip install "prismor-pydantic-ai[pydantic-ai]"
+pip install "prismor[pydantic-ai]"      # Prismor runtime + adapter + pydantic-ai-slim
 ```
 
 ## Use
@@ -25,7 +25,7 @@ pip install "prismor-pydantic-ai[pydantic-ai]"
 ```python
 from pydantic_ai import Agent
 from pydantic_ai.toolsets import FunctionToolset
-from prismor_pydantic_ai import guard_toolsets
+from prismor.pydantic_ai import guard_toolsets
 
 toolset = FunctionToolset([run_shell, read_file])
 agent = Agent(

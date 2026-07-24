@@ -26,7 +26,7 @@ primitives (`SingleThreadedAgentRuntime`, `ToolAgent`,
 ## Install
 
 ```bash
-pip install "prismor-autogen-core[autogen]"
+pip install "prismor[autogen-core]"      # Prismor runtime + adapter + autogen-core
 ```
 
 ## Use
@@ -34,7 +34,7 @@ pip install "prismor-autogen-core[autogen]"
 ```python
 from autogen_core import SingleThreadedAgentRuntime, AgentId
 from autogen_core.tool_agent import ToolAgent
-from prismor_autogen_core import PrismorInterventionHandler
+from prismor.autogen_core import PrismorInterventionHandler
 
 runtime = SingleThreadedAgentRuntime(
     intervention_handlers=[

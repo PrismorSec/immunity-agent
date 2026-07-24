@@ -18,7 +18,7 @@ Easy path::
 
     from semantic_kernel import Kernel
     from semantic_kernel.filters import FilterTypes
-    from prismor_semantic_kernel import make_filter
+    from prismor.semantic_kernel import make_filter
 
     kernel = Kernel()
     kernel.add_filter(FilterTypes.AUTO_FUNCTION_INVOCATION, make_filter(subject="user:alice", mode="enforce"))

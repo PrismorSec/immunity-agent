@@ -6,9 +6,9 @@ hook-config files, so the control point is an **in-process SDK adapter**: a thin
 wrapper around tool execution that routes every call through the same
 `prismor.runtime.runtime.evaluate_tool_call` pipeline a local coding-agent hook uses.
 
-The OpenAI Agents SDK adapter ships from
-[`adapters/openai-agents/`](../adapters/openai-agents/) as the
-`prismor-openai` distribution. Registry entry:
+The OpenAI Agents SDK adapter's source lives at
+[`adapters/openai-agents/`](../adapters/openai-agents/), bundled into the
+main `prismor` package (no separate PyPI package). Registry entry:
 [`prismor/runtime/integrations/registry.yaml`](../prismor/runtime/integrations/registry.yaml)
 (`id: openai-agents`).
 

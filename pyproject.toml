@@ -46,11 +46,30 @@ langchain = ["langchain-core>=0.2"]
 crewai = ["crewai>=0.30"]
 openai-agents = ["openai-agents>=0.0.1"]
 browser-use = ["browser-use>=0.1.0"]
+pydantic-ai = ["pydantic-ai-slim>=0.1"]
+autogen-core = ["autogen-core>=0.4"]
+agno = ["agno>=1.0"]
+semantic-kernel = ["semantic-kernel>=1.0"]
+google-adk = ["google-adk>=1.0"]
+beeai = ["beeai-framework>=0.1"]
+# Live-verified separately from the rest of this list, against an
+# authenticated Claude Code CLI session rather than the shared OpenAI key
+# (the SDK needs real Anthropic auth to run at all) — see
+# prismor.claude_agent_sdk's module docstring and
+# adapters/claude-agent-sdk/README.md for the verification methodology.
+claude-agent-sdk = ["claude-agent-sdk>=0.1"]
 frameworks = [
     "langchain-core>=0.2",
     "crewai>=0.30",
     "openai-agents>=0.0.1",
     "browser-use>=0.1.0",
+    "pydantic-ai-slim>=0.1",
+    "autogen-core>=0.4",
+    "agno>=1.0",
+    "semantic-kernel>=1.0",
+    "google-adk>=1.0",
+    "beeai-framework>=0.1",
+    "claude-agent-sdk>=0.1",
 ]
 
 [project.urls]
@@ -79,6 +98,13 @@ packages = [
     "adapters/crewai/prismor_crewai",
     "adapters/openai-agents/prismor_openai",
     "adapters/browser-use/prismor_browser_use",
+    "adapters/pydantic-ai/prismor_pydantic_ai",
+    "adapters/autogen-core/prismor_autogen_core",
+    "adapters/agno/prismor_agno",
+    "adapters/semantic-kernel/prismor_semantic_kernel",
+    "adapters/google-adk/prismor_google_adk",
+    "adapters/beeai/prismor_beeai",
+    "adapters/claude-agent-sdk/prismor_claude_agent_sdk",
 ]
 
 # Bundle runtime data into the wheel under prismor/runtime/data/
@@ -89,6 +115,13 @@ packages = [
 "adapters/crewai/prismor/crewai/__init__.py" = "prismor/crewai/__init__.py"
 "adapters/openai-agents/prismor/openai/__init__.py" = "prismor/openai/__init__.py"
 "adapters/browser-use/prismor/browser_use/__init__.py" = "prismor/browser_use/__init__.py"
+"adapters/pydantic-ai/prismor/pydantic_ai/__init__.py" = "prismor/pydantic_ai/__init__.py"
+"adapters/autogen-core/prismor/autogen_core/__init__.py" = "prismor/autogen_core/__init__.py"
+"adapters/agno/prismor/agno/__init__.py" = "prismor/agno/__init__.py"
+"adapters/semantic-kernel/prismor/semantic_kernel/__init__.py" = "prismor/semantic_kernel/__init__.py"
+"adapters/google-adk/prismor/google_adk/__init__.py" = "prismor/google_adk/__init__.py"
+"adapters/beeai/prismor/beeai/__init__.py" = "prismor/beeai/__init__.py"
+"adapters/claude-agent-sdk/prismor/claude_agent_sdk/__init__.py" = "prismor/claude_agent_sdk/__init__.py"
 "immunity-agent.pth" = "immunity-agent.pth"
 "advisories/immunity-feed.json" = "prismor/runtime/data/advisories/immunity-feed.json"
 "advisories/immunity-feed.json.sig" = "prismor/runtime/data/advisories/immunity-feed.json.sig"

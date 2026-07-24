@@ -1,7 +1,8 @@
 # CrewAI integration
 
-Prismor adapter for CrewAI. Ships from
-[`adapters/crewai/`](../adapters/crewai/) as `prismor-crewai`.
+Prismor adapter for CrewAI. Source lives at
+[`adapters/crewai/`](../adapters/crewai/), bundled into the main `prismor`
+package (no separate PyPI package).
 Registry entry: `id: crewai` in
 [`prismor/runtime/integrations/registry.yaml`](../prismor/runtime/integrations/registry.yaml).
 

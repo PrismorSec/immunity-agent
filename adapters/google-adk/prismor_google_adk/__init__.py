@@ -13,7 +13,7 @@ result instead — the model never sees the tool actually execute.
 Easy path::
 
     from google.adk.agents import LlmAgent
-    from prismor_google_adk import make_before_tool_callback
+    from prismor.google_adk import make_before_tool_callback
 
     agent = LlmAgent(
         model="gemini-2.0-flash", name="ops", tools=[run_shell],
