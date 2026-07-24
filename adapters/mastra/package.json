@@ -1,7 +1,7 @@
 {
   "name": "prismor-mastra",
   "version": "0.1.0",
-  "description": "Prismor for Mastra — policy-controlled tool calls via an output-step processor and the Prismor eval-server",
+  "description": "Prismor for Mastra — policy-controlled tool calls via a wrapped execute function and the Prismor eval-server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

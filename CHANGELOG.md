@@ -1,3 +1,10 @@
+## [1.34.0] — 2026-07-23
+
+### Added
+
+- **5 new shipped coding-agent integrations: Crush, OpenHands, Qwen Code, Continue CLI, and Goose.** Each verified live against a real install, not just docs — surfaced several discrepancies between what each agent's own docs describe and what actually dispatches (Crush only fires `PreToolUse`, deny reason comes from stderr; OpenHands' shell tool is `terminal` with an `event_type` field instead of `hook_event_name`; Qwen Code's shell tool is `run_shell_command` with a nested `hookSpecificOutput.permissionDecision` deny envelope; Continue CLI hooks did not fire at all in headless `cn -p` mode, shipped with a prominent warning; Goose's shell tool is `shell`, not `developer__shell` as goose's own docs example shows). Plus accurate `roadmap` registry entries for 7 more coding agents not previously catalogued here (Pi Agent, Amazon Q Developer CLI, Amp, Auggie CLI, Kimi Code, Devin CLI) and Warp (sweep-only). (#212)
+- **8 new framework adapter packages, each individually live-verified against a real model-backed agent run before shipping:** `prismor-pydantic-ai`, `prismor-autogen-core`, `prismor-agno`, `prismor-semantic-kernel`, `prismor-google-adk`, `prismor-mastra` (npm), `prismor-beeai`, and `prismor-claude-agent-sdk`. Every one denies a destructive tool call and allows a benign one before its policy engine call returns — see each package's README for the exact hook mechanism. The Mastra adapter was rewritten mid-development after its originally-planned `processOutputStep` + `abort()` hook was found live-tested to not actually block tool execution; it now wraps `tool.execute` directly instead, which is reliable. The Claude Code Agent SDK adapter required a discriminating test methodology (a benign-framed `.claude/settings.json` write, since naive destructive commands trigger Claude's own alignment refusal independent of any hook) — that test also caught a real bug where the adapter's default hook matcher never fired for custom MCP tools. (#213)
+
 ## [1.33.0] — 2026-07-23
 
 ### Added

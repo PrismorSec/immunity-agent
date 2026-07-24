@@ -5,11 +5,16 @@ name: Release Adapters
 #
 # PyPI side (trusted publishing, no tokens): each package needs a (pending)
 # publisher on pypi.org pointing at this repo + this workflow file + the
-# `pypi` environment: prismor-langchain, prismor-crewai,
-# prismor-openai, prismor-browser-use.
+# `pypi` environment: prismor-langchain, prismor-crewai, prismor-openai,
+# prismor-browser-use, prismor-pydantic-ai, prismor-autogen-core,
+# prismor-agno, prismor-semantic-kernel, prismor-google-adk, prismor-beeai,
+# prismor-claude-agent-sdk. A package whose trusted publisher isn't set up
+# yet just fails that one matrix leg (fail-fast: false) — it doesn't block
+# the others.
 #
 # npm side: set an automation token as the NPM_TOKEN repo secret; the job
-# skips cleanly when it's absent.
+# skips cleanly when it's absent. Publishes prismor-vercel and
+# prismor-mastra.
 
 on:
   workflow_dispatch:
@@ -28,7 +33,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        adapter: [langchain, crewai, openai-agents, browser-use]
+        adapter:
+          [
+            langchain,
+            crewai,
+            openai-agents,
+            browser-use,
+            pydantic-ai,
+            autogen-core,
+            agno,
+            semantic-kernel,
+            google-adk,
+            beeai,
+            claude-agent-sdk,
+          ]
 
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +70,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [vercel-ai, mastra]
     steps:
       - uses: actions/checkout@v4
 
@@ -65,9 +87,9 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Build and publish prismor
+      - name: Build and publish ${{ matrix.adapter }}
         if: env.NPM_TOKEN != ''
-        working-directory: adapters/vercel-ai
+        working-directory: adapters/${{ matrix.adapter }}
         run: |
           npm install
           npm run build
