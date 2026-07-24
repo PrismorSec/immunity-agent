@@ -417,6 +417,109 @@ agents:
     notes: "Patches Registry.execute_action — single dispatch point for all browser actions. go_to_url/search_google → network event; upload_file/save_pdf → file_write; everything else → shell. pip install prismor-browser-use."
     sources: ["https://github.com/browser-use/browser-use"]
 
+  # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
+  # Each entry below was verified to have a real pre-execution interception
+  # point that can DENY a tool call, not just observe it — the same bar the
+  # shipped adapters above meet. Frameworks whose only tool-level hook is
+  # observe-only (e.g. LlamaIndex's CallbackManager, smolagents' step_callbacks)
+  # or requires an out-of-process human-approval round-trip (Letta's ToolRules)
+  # were deliberately excluded rather than added as weaker roadmap entries.
+  - id: semantic-kernel
+    name: Semantic Kernel (Microsoft)
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [function_invocation, auto_function_invocation]
+    blocking: throw
+    normalizer: null
+    notes: "IFunctionInvocationFilter.OnFunctionInvocationAsync(context, next) (C#) / @kernel.filter(FilterTypes.FUNCTION_INVOCATION) + kernel.add_filter(...) (Python); for LLM-initiated tool calls specifically, IAutoFunctionInvocationFilter.OnAutoFunctionInvocationAsync / FilterTypes.AUTO_FUNCTION_INVOCATION. Deny by simply not calling the injected `next` delegate — cleanest gate-then-continue semantics of any framework surveyed. Can also override context.Result or set context.Terminate=true to halt the auto-tool loop."
+    sources: ["https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters"]
+
+  - id: claude-agent-sdk
+    name: Claude Code Agent SDK
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [PreToolUse]
+    blocking: json-permission
+    normalizer: null
+    notes: "The same hooks system as the Claude Code CLI, exposed programmatically: `hooks` option on ClaudeAgentOptions (Python) / options.hooks (TS), registered via HookMatcher(matcher=\"Write|Edit\", hooks=[cb]) against a PreToolUseHookInput (tool_name, tool_input). Deny via hookSpecificOutput.permissionDecision: \"deny\" (also \"allow\"/\"ask\"); overrides even bypassPermissions mode; can rewrite input via updatedInput. Also has a separate canUseTool permission callback. Adapter work would closely mirror this repo's own _merge_claude/_normalize_claude, just called in-process instead of via subprocess dispatch."
+    sources: ["https://code.claude.com/docs/en/agent-sdk/hooks", "https://code.claude.com/docs/en/agent-sdk/permissions"]
+
+  - id: pydantic-ai
+    name: Pydantic AI
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [call_tool]
+    blocking: throw
+    normalizer: null
+    notes: "Subclass WrapperToolset, override call_tool(self, name, tool_args, ctx, tool); or the standalone process_tool_call (ProcessToolCallback) hook on toolset/MCP classes. PreparedToolset/FilteredToolset can additionally filter tools out of the model's view entirely before any call happens. Deny by raising ModelRetry (feeds a corrective message back to the model) or ToolException before calling super().call_tool(...) — the real tool never runs."
+    sources: ["https://ai.pydantic.dev/toolsets/", "https://ai.pydantic.dev/api/toolsets/"]
+
+  - id: google-adk
+    name: Google Agent Development Kit (ADK)
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [before_tool_callback, after_tool_callback]
+    blocking: throw
+    normalizer: null
+    notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) or as a BasePlugin method (plugin-level callbacks run first and take precedence over agent-level ones). Deny-by-substitution rather than an exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead."
+    sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
+
+  - id: autogen-core
+    name: AutoGen (Microsoft) — Core runtime
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [on_send]
+    blocking: throw
+    normalizer: null
+    notes: "Subclass DefaultInterventionHandler, override on_send(message, *, message_context, recipient); tool calls arrive as FunctionCall messages. Register via intervention_handlers=[...] on SingleThreadedAgentRuntime. Deny by raising ToolException (returned to the caller as a failed tool result) or returning DropMessage. IMPORTANT: this hook lives in the low-level autogen-core runtime — the high-level AgentChat AssistantAgent (what most users actually build with) has no equivalent clean per-tool block hook, so an adapter here would only cover autogen-core users."
+    sources: ["https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/cookbook/tool-use-with-intervention.html"]
+
+  - id: agno
+    name: Agno
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [tool_hook]
+    blocking: throw
+    normalizer: null
+    notes: "tool_hooks list on Agent/Team (wraps every tool) or per-tool @tool(pre_hook=..., post_hook=...). Hook signature (function_name, function_call, arguments); call function_call(**arguments) to continue. Deny by raising an exception, or returning a different result to replace the call outright, before invoking function_call. Separate from pre_hooks/guardrails, which gate LLM input rather than individual tool calls."
+    sources: ["https://docs.agno.com/tools/hooks"]
+
+  - id: mastra
+    name: Mastra (TypeScript)
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: [processOutputStep]
+    blocking: throw
+    normalizer: null
+    notes: "Implement the Processor interface; processOutputStep runs after the LLM response but before tool execution. Call the injected abort(reason, { retry }) to deny, which throws a TripWire. CAVEAT: this halts the entire step/agent loop, not just the one tool call in place — coarser-grained than every other framework in this table. ToolCallFilter only strips tool calls out of messages; it is not a runtime deny gate."
+    sources: ["https://mastra.ai/reference/processors/processor-interface", "https://mastra.ai/docs/agents/processors"]
+
+  - id: beeai
+    name: BeeAI Framework (IBM Research / Linux Foundation)
+    kind: framework
+    surface: sdk
+    status: roadmap
+    config_paths: {}
+    events: ["start"]
+    blocking: throw
+    normalizer: null
+    notes: "Tool Emitter fires a \"start\" event (ToolStartEvent) before execution — subscribe via emitter.on(\"start\", handler) or emitter.match(pattern, handler). Alternatively implement RunMiddlewareProtocol.bind(ctx), wiring ctx.emitter, and register with .middleware(...). A declarative gate also exists: ConditionalRequirement(Tool, only_before=, max_invocations=, ...). Deny by aborting the in-flight run via AbortSignal from a blocking \"start\" handler. NOT independently verified against source — confirm the exact deny/data.output field shape before writing adapter code; this entry is one step less confident than the others in this table."
+    sources: ["https://framework.beeai.dev/modules/emitter", "https://framework.beeai.dev/modules/middleware", "https://framework.beeai.dev/modules/agents/requirement-agent"]
+
   # ── Vercel AI SDK (TypeScript, via HTTP eval-server) ─────────────────────
   - id: vercel-ai
     name: Vercel AI SDK

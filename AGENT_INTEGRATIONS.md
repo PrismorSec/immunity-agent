@@ -58,6 +58,14 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | CrewAI | framework | sdk | ✅ | `throw` |
 | LangChain / LangGraph | framework | sdk | ✅ | `throw` |
 | browser-use | framework | sdk | ✅ | `throw` |
+| Semantic Kernel (Microsoft) | framework | sdk | 🟡 | `throw` |
+| Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
+| Pydantic AI | framework | sdk | 🟡 | `throw` |
+| Google Agent Development Kit (ADK) | framework | sdk | 🟡 | `throw` |
+| AutoGen (Microsoft) — Core runtime | framework | sdk | 🟡 | `throw` |
+| Agno | framework | sdk | 🟡 | `throw` |
+| Mastra (TypeScript) | framework | sdk | 🟡 | `throw` |
+| BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | 🟡 | `throw` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
 | HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
 | MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
@@ -257,6 +265,34 @@ telemetry scope to the end-user.
 - **Verified:** live against a `Crew` with a shell tool — `rm -rf /` blocked
   before execution, `echo` allowed.
 - **Code:** `adapters/crewai/prismor_crewai/__init__.py`.
+
+### Framework roadmap — genuine blocking hooks confirmed, adapter not built
+
+Every framework below was verified to expose a real pre-execution interception
+point capable of **denying** a tool call outright — not just observing it —
+the same bar the four shipped adapters above meet. This list intentionally
+excludes frameworks whose only tool-level hook is observe-only (LlamaIndex's
+`CallbackManager`, smolagents' `step_callbacks`, which both run after the
+tool already executed) or that require an out-of-process human-approval
+round-trip instead of an in-process deny (Letta's `ToolRules`) — those
+aren't a real adapter target and are omitted rather than listed as weak
+roadmap entries.
+
+**Semantic Kernel (Microsoft)** — cleanest gate in this table: `IFunctionInvocationFilter.OnFunctionInvocationAsync(context, next)` (C#) or `@kernel.filter(FilterTypes.FUNCTION_INVOCATION)` (Python) wraps every function call with a `next` delegate — simply not calling it denies before execution. For LLM-initiated tool calls specifically, `IAutoFunctionInvocationFilter` / `FilterTypes.AUTO_FUNCTION_INVOCATION` is the more targeted filter; `context.Terminate = true` halts the whole auto-tool loop. [Docs.](https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters)
+
+**Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
+
+**Pydantic AI** — subclass `WrapperToolset`, override `call_tool(self, name, tool_args, ctx, tool)` (or the standalone `process_tool_call` hook on toolset/MCP classes); `PreparedToolset`/`FilteredToolset` can additionally hide tools from the model entirely. Deny by raising `ModelRetry` (feeds a corrective message back to the model) or `ToolException` before calling `super().call_tool(...)`. [Docs.](https://ai.pydantic.dev/toolsets/)
+
+**Google ADK** — `before_tool_callback(tool, args, tool_context)` on `LlmAgent(before_tool_callback=fn)` or as a `BasePlugin` method (plugin-level callbacks take precedence over agent-level ones). Deny-by-substitution, not exception: returning `None` proceeds normally; returning a `dict` **skips** the real tool call and that dict becomes the result. [Docs.](https://adk.dev/callbacks/types-of-callbacks/)
+
+**AutoGen (Microsoft) — Core runtime only** — subclass `DefaultInterventionHandler`, override `on_send(message, *, message_context, recipient)` (tool calls arrive as `FunctionCall` messages); register via `intervention_handlers=[...]` on `SingleThreadedAgentRuntime`. Deny by raising `ToolException` or returning `DropMessage`. **Caveat:** this lives in the low-level `autogen-core` runtime — the high-level `AgentChat` `AssistantAgent`, what most AutoGen users actually build with, has no equivalent clean per-tool block hook, so an adapter here would only cover `autogen-core` users directly. [Docs.](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/cookbook/tool-use-with-intervention.html)
+
+**Agno** — `tool_hooks` on `Agent`/`Team` (wraps every tool) or per-tool `@tool(pre_hook=..., post_hook=...)`, signature `(function_name, function_call, arguments)`; call `function_call(**arguments)` to continue. Deny by raising, or by returning a different result to replace the call outright, before invoking `function_call`. Distinct from `pre_hooks`/guardrails, which gate LLM input rather than individual tool calls. [Docs.](https://docs.agno.com/tools/hooks)
+
+**Mastra (TypeScript)** — implement the `Processor` interface; `processOutputStep` runs after the LLM response but before tool execution, and calls the injected `abort(reason, { retry })` to deny (throws a `TripWire`). **Caveat:** this aborts the entire step/agent loop, not just the one tool call in place — coarser-grained than every other framework here. `ToolCallFilter` only strips tool calls out of messages; it's not a runtime deny gate. [Docs.](https://mastra.ai/reference/processors/processor-interface)
+
+**BeeAI Framework (IBM Research / Linux Foundation)** — tool `Emitter` fires a `"start"` event (`ToolStartEvent`) before execution, subscribed via `emitter.on("start", handler)`; alternatively implement `RunMiddlewareProtocol.bind(ctx)` and register with `.middleware(...)`. A declarative gate also exists (`ConditionalRequirement(Tool, only_before=, max_invocations=, ...)`). Deny by aborting the in-flight run via `AbortSignal` from a blocking `"start"` handler. **Not independently verified against source** — confirm the exact deny/`data.output` field shape before writing adapter code; treat this entry as one notch less confident than the rest of this table. [Docs.](https://framework.beeai.dev/modules/emitter)
 
 ### MCP proxy — roadmap
 
