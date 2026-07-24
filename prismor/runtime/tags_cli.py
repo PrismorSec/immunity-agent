@@ -362,8 +362,10 @@ class _ReplayLedger(TagLedger):
     def _load(self) -> None:  # pragma: no cover - trivially empty
         pass
 
-    def _save(self) -> None:
-        pass
+    def _commit(self, new_tags, index: int, tool: str) -> None:
+        # Persistence seam: apply to the in-memory view only, so a replay can
+        # never write into (or be polluted by) real enforcement state.
+        self._apply(new_tags, index, tool)
 
 
 def tags_test(

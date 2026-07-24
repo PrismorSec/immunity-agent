@@ -163,28 +163,47 @@ class _TaintStore:
         except Exception:
             pass
 
-    def _save(self) -> None:
+    def _update(self, **fields: Any) -> None:
+        """Merge ``fields`` into the session's taint file under an exclusive lock.
+
+        Taint is monotonic — it is only ever set, never cleared — so merging
+        with OR/union semantics is safe under concurrency and never resurrects
+        state a writer intended to drop. Concurrent subagents write this file
+        from separate processes; an unlocked read-modify-write silently drops
+        an injection flag, which is a fail-open.
+        """
+        from prismor.runtime.store import locked_json_update
+
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                json.dumps({
-                    "injection_detected": self.injection_detected,
-                    "injection_event_index": self.injection_event_index,
-                    "seen_domains": sorted(self.seen_domains),
-                }, indent=2),
-                encoding="utf-8",
-            )
+            with locked_json_update(self._path) as state:
+                if fields.get("injection_detected"):
+                    state["injection_detected"] = True
+                    index = fields.get("injection_event_index")
+                    prior = state.get("injection_event_index")
+                    if isinstance(index, int) and (
+                        not isinstance(prior, int) or index < prior
+                    ):
+                        state["injection_event_index"] = index
+                domain = fields.get("domain")
+                if domain:
+                    domains = state.get("seen_domains")
+                    if not isinstance(domains, list):
+                        domains = []
+                    if domain not in domains:
+                        domains.append(domain)
+                    state["seen_domains"] = sorted(domains)
         except Exception:
+            # Never break the tool call being screened over a taint write.
             pass
 
     def mark_injection(self, event_index: int) -> None:
         self.injection_detected = True
         self.injection_event_index = event_index
-        self._save()
+        self._update(injection_detected=True, injection_event_index=event_index)
 
     def add_domain(self, domain: str) -> None:
         self.seen_domains.add(domain.lower())
-        self._save()
+        self._update(domain=domain.lower())
 
     def is_new_domain(self, domain: str) -> bool:
         return domain.lower() not in self.seen_domains

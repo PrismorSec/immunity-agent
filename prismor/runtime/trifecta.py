@@ -361,17 +361,74 @@ class TagLedger:
                 return idx
         return None
 
-    def record(self, new_tags: Set[str], index: int, tool: str) -> None:
-        changed = False
-        for tag in new_tags:
-            if tag not in self.seen:
-                self.seen[tag] = {"index": index, "tool": tool}
-                changed = True
-            h = self.hist.setdefault(tag, [])
-            if index not in h and len(h) < self._HIST_CAP:
-                import bisect
+    def _apply(self, new_tags: Set[str], index: int, tool: str) -> None:
+        """Mutate the in-memory view only. The persistence seam for subclasses
+        that must not touch the real ledger files (see ``tags_cli._ReplayLedger``)."""
+        import bisect
 
-                bisect.insort(h, index)
-                changed = True
-        if changed:
-            self._save()
+        for tag in new_tags:
+            prior = self.seen.get(tag)
+            if not isinstance(prior, dict) or index < prior.get("index", 1 << 62):
+                self.seen[tag] = {"index": index, "tool": tool}
+            indexes = self.hist.setdefault(tag, [])
+            if index not in indexes and len(indexes) < self._HIST_CAP:
+                bisect.insort(indexes, index)
+
+    def record(self, new_tags: Set[str], index: int, tool: str) -> None:
+        """Record ``new_tags`` for this session, in memory and on disk."""
+        if not new_tags:
+            return
+        self._commit(new_tags, index, tool)
+
+    def _commit(self, new_tags: Set[str], index: int, tool: str) -> None:
+        """Persist ``new_tags`` to the session's ledger file.
+
+        The read-modify-write happens inside an exclusive lock and lands
+        atomically, so concurrent subagents cannot drop each other's records.
+        Merging into the file's *current* contents rather than writing this
+        process's in-memory view is the part that matters: the in-memory copy
+        was loaded before the race and may already be stale.
+        """
+        from prismor.runtime.store import locked_json_update
+
+        try:
+            with locked_json_update(self._path) as state:
+                seen = state.get("seen")
+                if not isinstance(seen, dict):
+                    seen = {}
+                hist = state.get("hist")
+                if not isinstance(hist, dict):
+                    hist = {}
+                for tag in new_tags:
+                    prior = seen.get(tag)
+                    if not isinstance(prior, dict) or index < prior.get("index", 1 << 62):
+                        seen[tag] = {"index": index, "tool": tool}
+                    indexes = hist.get(tag)
+                    if not isinstance(indexes, list):
+                        indexes = []
+                    if index not in indexes and len(indexes) < self._HIST_CAP:
+                        import bisect
+
+                        bisect.insort(indexes, index)
+                    hist[tag] = indexes
+                state["seen"] = seen
+                state["hist"] = hist
+                # Keep the in-memory view consistent with what was committed, so
+                # a caller that records then re-checks sees the merged truth.
+                s = state.get("seen")
+                if isinstance(s, dict):
+                    for tag, info in s.items():
+                        if not isinstance(info, dict):
+                            continue
+                        prior = self.seen.get(tag)
+                        if prior is None or info.get("index", 1 << 62) < prior.get("index", 1 << 62):
+                            self.seen[tag] = info
+                h = state.get("hist")
+                if isinstance(h, dict):
+                    for tag, indexes in h.items():
+                        if isinstance(indexes, (list, tuple)):
+                            merged = set(self.hist.get(tag, ())) | {int(i) for i in indexes}
+                            self.hist[tag] = sorted(merged)[: self._HIST_CAP]
+        except Exception:
+            # Never break the tool call being screened over a ledger write.
+            pass

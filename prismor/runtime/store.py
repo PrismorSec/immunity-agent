@@ -42,6 +42,57 @@ def _locked(handle) -> Iterator[None]:
             pass
 
 
+@contextmanager
+def locked_json_update(path: Path) -> Iterator[Dict[str, Any]]:
+    """Read-modify-write a small JSON state file atomically, under a lock.
+
+    Yields the decoded dict; whatever the caller leaves in it is written back on
+    a clean exit. The read happens *inside* the lock, so a caller's in-memory
+    copy can never clobber a concurrent writer's committed change — the classic
+    lost update. Subagents make this the common case, not the rare one: every
+    hook invocation is a separate process, and Claude runs subagents
+    concurrently, so several processes race on one session's state file.
+
+    Two properties matter for security state:
+
+    * **No lost updates.** A dropped tag record silently un-taints a session —
+      ``TagLedger.completes`` then sees a clean slate and the forbidden
+      combination is never blocked. That is a fail-*open*.
+    * **No torn reads.** The write goes to a sibling temp file and lands via
+      ``os.replace`` (atomic on POSIX and Windows), so a reader either sees the
+      whole previous version or the whole new one — never a half-written file
+      that ``json.loads`` rejects. Callers treat a corrupt file as empty state,
+      which is also a fail-open, so tearing must be impossible rather than rare.
+
+    The lock is held on a sibling ``.lock`` file rather than on ``path`` itself:
+    ``os.replace`` swaps the inode, so a lock taken on the data file would be
+    dropped by the very write it is meant to serialize.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "a+") as lock_handle:
+        with _locked(lock_handle):
+            state: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    loaded = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        state = loaded
+                except (json.JSONDecodeError, OSError):
+                    state = {}
+            yield state
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            try:
+                tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+                os.replace(tmp, path)
+            except OSError:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
+
+
 def prismor_home() -> Path:
     """Return Prismor's state directory, honoring $PRISMOR_HOME (default ~/.prismor).
 
