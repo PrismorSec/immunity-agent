@@ -59,10 +59,10 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | LangChain / LangGraph | framework | sdk | ✅ | `throw` |
 | browser-use | framework | sdk | ✅ | `throw` |
 | Pydantic AI | framework | sdk | ✅ | `throw` |
+| AutoGen (Microsoft) — Core runtime | framework | sdk | ✅ | `throw` |
 | Semantic Kernel (Microsoft) | framework | sdk | 🟡 | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
 | Google Agent Development Kit (ADK) | framework | sdk | 🟡 | `throw` |
-| AutoGen (Microsoft) — Core runtime | framework | sdk | 🟡 | `throw` |
 | Agno | framework | sdk | 🟡 | `throw` |
 | Mastra (TypeScript) | framework | sdk | 🟡 | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | 🟡 | `throw` |
@@ -284,6 +284,32 @@ telemetry scope to the end-user.
   ever ran, `echo hello` executed normally.
 - **Code:** `adapters/pydantic-ai/prismor_pydantic_ai/__init__.py`.
 
+### AutoGen (Microsoft) — Core runtime
+
+- **Surface:** in-process `InterventionHandler` (`surface: sdk`).
+- **Package:** [`adapters/autogen-core/`](adapters/autogen-core/) → `prismor-autogen-core`.
+  `PrismorInterventionHandler(subject="user:alice", mode="enforce")` passed to
+  `SingleThreadedAgentRuntime(intervention_handlers=[...])`.
+- **Hook:** overrides `on_send(message, *, message_context, recipient)` — the
+  real per-message gate every `autogen-core` `AgentRuntime.send_message` call
+  passes through. Tool calls reach a `ToolAgent` as individual `FunctionCall`
+  messages via exactly this path.
+- **Blocking:** raises `autogen_core.tool_agent.ToolException` by default —
+  `tool_agent_caller_loop` specifically catches this exception type and
+  converts it into a failed `FunctionExecutionResult` fed back to the model,
+  so the conversation continues with the denial visible (same UX as the other
+  adapters). `drop_instead_of_raise=True` returns `DropMessage` instead
+  (silently cancels delivery, no result fed back). `mode="observe"` is log-only.
+- **Scope caveat (unchanged from the roadmap entry):** this only covers the
+  low-level `autogen-core` runtime — the high-level `AgentChat`
+  `AssistantAgent`, what most AutoGen users actually build with, does not
+  route tool execution through this same `send_message`/`ToolAgent` path.
+- **Verified:** live against a real `SingleThreadedAgentRuntime` + `ToolAgent`
+  + `tool_agent_caller_loop` calling `openai:gpt-4o-mini` with a genuine
+  OpenAI API key — a destructive shell command was denied before the tool's
+  Python implementation ever ran, a benign command executed normally.
+- **Code:** `adapters/autogen-core/prismor_autogen_core/__init__.py`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
 Every framework below was verified to expose a real pre-execution interception
@@ -301,8 +327,6 @@ roadmap entries.
 **Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
 
 **Google ADK** — `before_tool_callback(tool, args, tool_context)` on `LlmAgent(before_tool_callback=fn)` or as a `BasePlugin` method (plugin-level callbacks take precedence over agent-level ones). Deny-by-substitution, not exception: returning `None` proceeds normally; returning a `dict` **skips** the real tool call and that dict becomes the result. [Docs.](https://adk.dev/callbacks/types-of-callbacks/)
-
-**AutoGen (Microsoft) — Core runtime only** — subclass `DefaultInterventionHandler`, override `on_send(message, *, message_context, recipient)` (tool calls arrive as `FunctionCall` messages); register via `intervention_handlers=[...]` on `SingleThreadedAgentRuntime`. Deny by raising `ToolException` or returning `DropMessage`. **Caveat:** this lives in the low-level `autogen-core` runtime — the high-level `AgentChat` `AssistantAgent`, what most AutoGen users actually build with, has no equivalent clean per-tool block hook, so an adapter here would only cover `autogen-core` users directly. [Docs.](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/cookbook/tool-use-with-intervention.html)
 
 **Agno** — `tool_hooks` on `Agent`/`Team` (wraps every tool) or per-tool `@tool(pre_hook=..., post_hook=...)`, signature `(function_name, function_call, arguments)`; call `function_call(**arguments)` to continue. Deny by raising, or by returning a different result to replace the call outright, before invoking `function_call`. Distinct from `pre_hooks`/guardrails, which gate LLM input rather than individual tool calls. [Docs.](https://docs.agno.com/tools/hooks)
 

@@ -429,6 +429,18 @@ agents:
     notes: "PrismorToolset(WrapperToolset) overrides call_tool(name, tool_args, ctx, tool) — the single choke point every tool call passes through. Deny raises ToolFailed (definitive failure, no retry-budget consumption) by default, or PrismorBlocked with raise_on_block=True. Verified live (2026-07) against a real `openai:gpt-4o-mini` Agent with a genuine OpenAI key: a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install prismor-pydantic-ai."
     sources: ["https://ai.pydantic.dev/toolsets/", "https://ai.pydantic.dev/api/toolsets/"]
 
+  - id: autogen-core
+    name: AutoGen (Microsoft) — Core runtime
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [on_send]
+    blocking: throw
+    normalizer: "prismor_autogen_core"
+    notes: "PrismorInterventionHandler(DefaultInterventionHandler) overrides on_send(message, *, message_context, recipient), the real per-message gate every autogen-core AgentRuntime send passes through; tool calls arrive as FunctionCall messages en route to a ToolAgent. Deny raises ToolException by default (tool_agent_caller_loop specifically catches this and converts it to a failed FunctionExecutionResult fed back to the model — conversation continues); drop_instead_of_raise=True returns DropMessage instead. Verified live (2026-07) against a real SingleThreadedAgentRuntime + ToolAgent + tool_agent_caller_loop calling openai:gpt-4o-mini with a genuine OpenAI key: a destructive shell command was denied before the tool ever ran; a benign command executed normally. SCOPE CAVEAT (unchanged from roadmap): only covers the low-level autogen-core runtime — the high-level AgentChat AssistantAgent does not route tool execution through this same path. pip install prismor-autogen-core."
+    sources: ["https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/cookbook/tool-use-with-intervention.html"]
+
   # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
   # Each entry below was verified to have a real pre-execution interception
   # point that can DENY a tool call, not just observe it — the same bar the
@@ -472,17 +484,6 @@ agents:
     notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) or as a BasePlugin method (plugin-level callbacks run first and take precedence over agent-level ones). Deny-by-substitution rather than an exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead."
     sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
 
-  - id: autogen-core
-    name: AutoGen (Microsoft) — Core runtime
-    kind: framework
-    surface: sdk
-    status: roadmap
-    config_paths: {}
-    events: [on_send]
-    blocking: throw
-    normalizer: null
-    notes: "Subclass DefaultInterventionHandler, override on_send(message, *, message_context, recipient); tool calls arrive as FunctionCall messages. Register via intervention_handlers=[...] on SingleThreadedAgentRuntime. Deny by raising ToolException (returned to the caller as a failed tool result) or returning DropMessage. IMPORTANT: this hook lives in the low-level autogen-core runtime — the high-level AgentChat AssistantAgent (what most users actually build with) has no equivalent clean per-tool block hook, so an adapter here would only cover autogen-core users."
-    sources: ["https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/cookbook/tool-use-with-intervention.html"]
 
   - id: agno
     name: Agno
