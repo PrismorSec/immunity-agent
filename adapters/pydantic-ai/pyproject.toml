@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismor-pydantic-ai"
+version = "0.1.0"
+description = "Prismor adapter for Pydantic AI — per-user runtime tool-call policy for production agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Prismor" }]
+keywords = ["pydantic-ai", "security", "policy", "guardrail", "prismor"]
+
+dependencies = [
+    "prismor>=1.13.0",
+]
+
+[project.optional-dependencies]
+pydantic-ai = ["pydantic-ai-slim>=0.1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["prismor_pydantic_ai", "prismor"]

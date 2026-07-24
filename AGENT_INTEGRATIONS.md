@@ -58,9 +58,9 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | CrewAI | framework | sdk | ✅ | `throw` |
 | LangChain / LangGraph | framework | sdk | ✅ | `throw` |
 | browser-use | framework | sdk | ✅ | `throw` |
+| Pydantic AI | framework | sdk | ✅ | `throw` |
 | Semantic Kernel (Microsoft) | framework | sdk | 🟡 | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
-| Pydantic AI | framework | sdk | 🟡 | `throw` |
 | Google Agent Development Kit (ADK) | framework | sdk | 🟡 | `throw` |
 | AutoGen (Microsoft) — Core runtime | framework | sdk | 🟡 | `throw` |
 | Agno | framework | sdk | 🟡 | `throw` |
@@ -266,6 +266,24 @@ telemetry scope to the end-user.
   before execution, `echo` allowed.
 - **Code:** `adapters/crewai/prismor_crewai/__init__.py`.
 
+### Pydantic AI
+
+- **Surface:** in-process `WrapperToolset` (`surface: sdk`).
+- **Package:** [`adapters/pydantic-ai/`](adapters/pydantic-ai/) → `prismor-pydantic-ai`.
+  `guard_toolsets([toolset], subject="user:alice", mode="enforce")`.
+- **Hook:** `PrismorToolset(WrapperToolset)` overrides `call_tool(name, tool_args, ctx, tool)` —
+  the single choke point every tool call passes through (plain functions, MCP-server
+  tools, or any composed toolset). Not calling `super().call_tool(...)` means the
+  wrapped tool never runs.
+- **Blocking:** raises `pydantic_ai.exceptions.ToolFailed` by default (a definitive
+  failure the model sees and adapts to, without consuming `ModelRetry`'s retry
+  budget — this is a policy denial, not a transient error); `raise_on_block=True`
+  raises `PrismorBlocked` instead for a hard stop. `mode="observe"` is log-only.
+- **Verified:** live against a real `Agent("openai:gpt-4o-mini")` with a genuine
+  OpenAI API key — `sudo rm -rf /` denied before the tool's Python implementation
+  ever ran, `echo hello` executed normally.
+- **Code:** `adapters/pydantic-ai/prismor_pydantic_ai/__init__.py`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
 Every framework below was verified to expose a real pre-execution interception
@@ -281,8 +299,6 @@ roadmap entries.
 **Semantic Kernel (Microsoft)** — cleanest gate in this table: `IFunctionInvocationFilter.OnFunctionInvocationAsync(context, next)` (C#) or `@kernel.filter(FilterTypes.FUNCTION_INVOCATION)` (Python) wraps every function call with a `next` delegate — simply not calling it denies before execution. For LLM-initiated tool calls specifically, `IAutoFunctionInvocationFilter` / `FilterTypes.AUTO_FUNCTION_INVOCATION` is the more targeted filter; `context.Terminate = true` halts the whole auto-tool loop. [Docs.](https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters)
 
 **Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
-
-**Pydantic AI** — subclass `WrapperToolset`, override `call_tool(self, name, tool_args, ctx, tool)` (or the standalone `process_tool_call` hook on toolset/MCP classes); `PreparedToolset`/`FilteredToolset` can additionally hide tools from the model entirely. Deny by raising `ModelRetry` (feeds a corrective message back to the model) or `ToolException` before calling `super().call_tool(...)`. [Docs.](https://ai.pydantic.dev/toolsets/)
 
 **Google ADK** — `before_tool_callback(tool, args, tool_context)` on `LlmAgent(before_tool_callback=fn)` or as a `BasePlugin` method (plugin-level callbacks take precedence over agent-level ones). Deny-by-substitution, not exception: returning `None` proceeds normally; returning a `dict` **skips** the real tool call and that dict becomes the result. [Docs.](https://adk.dev/callbacks/types-of-callbacks/)
 
