@@ -477,6 +477,18 @@ agents:
     notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) (or as a BasePlugin method, which take precedence over agent-level callbacks). Deny-by-substitution by default, not exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead — the model never sees the tool actually run. raise_on_block=True raises PrismorBlocked instead. Verified live (2026-07) against a real LlmAgent using ADK's LiteLlm wrapper for openai/gpt-4o-mini with a genuine OpenAI key (pip install \"google-adk[extensions]\"): a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install prismor-google-adk."
     sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
 
+  - id: mastra
+    name: Mastra (TypeScript)
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [execute]
+    blocking: throw
+    normalizer: "prismor-mastra (npm)"
+    notes: "prismorTool()/prismorTools() wrap a tool's execute function directly (CrewAI/LangChain-style), calling the Prismor eval-server (surface: http sidecar, prismor eval-server --port 7071) before the body runs. CORRECTED FROM ROADMAP: the originally-planned processOutputStep + abort() hook was tested live and found NOT reliable — abort() throws a workflow-level error but the tool's execute function runs anyway regardless (confirmed with timestamped logging against a real agent run, @mastra/core v0.x, 2026-07). Direct execute-wrapping does reliably block, since the wrapped function is what Mastra actually calls. Verified live against a real Agent running gpt-4o-mini (via @ai-sdk/openai) with a genuine OpenAI key and a local eval-server: a destructive shell command was denied before the tool's JS implementation ever ran; a benign command executed normally. npm install prismor-mastra."
+    sources: ["https://mastra.ai/reference/processors/processor-interface", "https://mastra.ai/docs/agents/processors"]
+
   # ── Production frameworks — roadmap (genuine blocking hook confirmed, adapter not built) ──
   # Each entry below was verified to have a real pre-execution interception
   # point that can DENY a tool call, not just observe it — the same bar the
@@ -499,18 +511,6 @@ agents:
 
 
 
-
-  - id: mastra
-    name: Mastra (TypeScript)
-    kind: framework
-    surface: sdk
-    status: roadmap
-    config_paths: {}
-    events: [processOutputStep]
-    blocking: throw
-    normalizer: null
-    notes: "Implement the Processor interface; processOutputStep runs after the LLM response but before tool execution. Call the injected abort(reason, { retry }) to deny, which throws a TripWire. CAVEAT: this halts the entire step/agent loop, not just the one tool call in place — coarser-grained than every other framework in this table. ToolCallFilter only strips tool calls out of messages; it is not a runtime deny gate."
-    sources: ["https://mastra.ai/reference/processors/processor-interface", "https://mastra.ai/docs/agents/processors"]
 
   - id: beeai
     name: BeeAI Framework (IBM Research / Linux Foundation)

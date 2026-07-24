@@ -63,8 +63,8 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Agno | framework | sdk | ✅ | `throw` |
 | Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
 | Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
+| Mastra (TypeScript) | framework | sdk | ✅ | `throw` |
 | Claude Code Agent SDK | framework | sdk | 🟡 | `json-permission` |
-| Mastra (TypeScript) | framework | sdk | 🟡 | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | 🟡 | `throw` |
 | Vercel AI SDK | framework | http | ✅ | `throw` |
 | HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
@@ -376,6 +376,34 @@ telemetry scope to the end-user.
   normally.
 - **Code:** `adapters/google-adk/prismor_google_adk/__init__.py`.
 
+### Mastra (TypeScript)
+
+- **Surface:** in-process tool wrapper, via the Prismor eval-server sidecar (`surface: sdk`).
+- **Package:** [`adapters/mastra/`](adapters/mastra/) → `prismor-mastra` (npm).
+  `prismorTool("run_shell", runShell, { mode: "enforce", subject: "user:alice" })`.
+- **Hook:** wraps a tool's `execute` function directly — the same pattern
+  the CrewAI/LangChain adapters use — calling the Prismor eval-server
+  (`prismor eval-server --port 7071`) before the body runs.
+- **⚠️ Corrected from the roadmap entry:** the originally-planned
+  `processOutputStep` + `abort()` hook (Mastra's own documented "after LLM
+  response, before tool execution" mechanism) was tried first and found
+  **not reliable** when tested against a real agent run
+  (`@mastra/core` v0.x, 2026-07): calling `abort()` throws a
+  workflow-level error, but the tool's `execute` function runs anyway
+  regardless — confirmed with timestamped logging showing `execute` firing
+  *after* `abort()` was called. Direct `execute`-wrapping does reliably
+  block, since the wrapped function is what Mastra actually calls.
+- **Blocking:** a denied call throws `PrismorBlocked`; Mastra's
+  tool-execution step catches it and feeds the error back to the model as
+  the tool's result. `mode="observe"` is log-only; `failMode` controls
+  eval-server-unreachable behavior (`"closed"` by default in enforce mode).
+- **Verified:** live against a real Mastra `Agent` running `gpt-4o-mini`
+  (via `@ai-sdk/openai`) with a genuine OpenAI API key and a local
+  `prismor eval-server` — a destructive shell command was denied before
+  the tool's JavaScript implementation ever ran, a benign command executed
+  normally.
+- **Code:** `adapters/mastra/src/index.ts`.
+
 ### Framework roadmap — genuine blocking hooks confirmed, adapter not built
 
 Every framework below was verified to expose a real pre-execution interception
@@ -389,8 +417,6 @@ aren't a real adapter target and are omitted rather than listed as weak
 roadmap entries.
 
 **Claude Code Agent SDK** — the exact same hooks system as the Claude Code CLI, exposed programmatically: `hooks` on `ClaudeAgentOptions` (Python) / `options.hooks` (TS), `HookMatcher(matcher="Write|Edit", hooks=[cb])` against a `PreToolUseHookInput`. Deny via `hookSpecificOutput.permissionDecision: "deny"` — overrides even `bypassPermissions` mode, can rewrite input via `updatedInput`. An adapter here would closely mirror this repo's own `_merge_claude`/`_normalize_claude`, called in-process instead of subprocess-dispatched. [Docs.](https://code.claude.com/docs/en/agent-sdk/hooks)
-
-**Mastra (TypeScript)** — implement the `Processor` interface; `processOutputStep` runs after the LLM response but before tool execution, and calls the injected `abort(reason, { retry })` to deny (throws a `TripWire`). **Caveat:** this aborts the entire step/agent loop, not just the one tool call in place — coarser-grained than every other framework here. `ToolCallFilter` only strips tool calls out of messages; it's not a runtime deny gate. [Docs.](https://mastra.ai/reference/processors/processor-interface)
 
 **BeeAI Framework (IBM Research / Linux Foundation)** — tool `Emitter` fires a `"start"` event (`ToolStartEvent`) before execution, subscribed via `emitter.on("start", handler)`; alternatively implement `RunMiddlewareProtocol.bind(ctx)` and register with `.middleware(...)`. A declarative gate also exists (`ConditionalRequirement(Tool, only_before=, max_invocations=, ...)`). Deny by aborting the in-flight run via `AbortSignal` from a blocking `"start"` handler. **Not independently verified against source** — confirm the exact deny/`data.output` field shape before writing adapter code; treat this entry as one notch less confident than the rest of this table. [Docs.](https://framework.beeai.dev/modules/emitter)
 

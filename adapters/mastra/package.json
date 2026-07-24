@@ -1,0 +1,42 @@
+{
+  "name": "prismor-mastra",
+  "version": "0.1.0",
+  "description": "Prismor for Mastra — policy-controlled tool calls via an output-step processor and the Prismor eval-server",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "peerDependencies": {
+    "@mastra/core": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@mastra/core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@mastra/core": "^0.1.0",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "prismor",
+    "ai-security",
+    "mastra",
+    "tool-call"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PrismorSec/prismor.git",
+    "directory": "adapters/mastra"
+  },
+  "homepage": "https://prismor.dev/docs/frameworks-mastra"
+}
