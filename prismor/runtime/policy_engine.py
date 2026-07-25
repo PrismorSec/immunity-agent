@@ -12,7 +12,7 @@ import re
 import shlex
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -669,6 +669,19 @@ class PolicyEngine:
         # default_policy.yaml. On by default; an org can disable it in
         # .prismor/policy.yaml if the extra network round-trips are
         # unacceptable latency.
+        # Resolve what a command actually runs (script argument, sourced file,
+        # npm script, make recipe, Dockerfile) and evaluate that content too.
+        # Findings are advisory until an operator promotes them -- see
+        # execution_target_action.
+        self.inspect_execution_targets: bool = bool(
+            settings.get("inspect_execution_targets", True)
+        )
+        # "observe" reports without ever blocking (default, so upgrading an
+        # install cannot start breaking builds). "enforce" lets a finding from
+        # inspected content block exactly as an inline one would.
+        self.execution_target_action: str = str(
+            settings.get("execution_target_action", "observe")
+        ).strip().lower()
         self.supply_chain_install_check: bool = bool(
             settings.get("supply_chain_install_check", True)
         )
@@ -850,6 +863,23 @@ class PolicyEngine:
                 # position. should_block() never blocks on such a finding.
                 "contextInert": context_inert,
             })
+
+        # ── Execution-target content inspection ─────────────────────────
+        # A rule only sees the command string, so `bash deploy.sh` is opaque no
+        # matter what the script holds. Resolve what the command would actually
+        # run and evaluate those lines too. Observe-only by default: findings
+        # are reported with `contextInert` semantics and an `execTarget` origin,
+        # but never block, until the real false-positive rate is known from
+        # fleet telemetry. Enable blocking per-category once warmed up.
+        if event_type == "shell" and self.inspect_execution_targets:
+            _cmd = field_values.get("command", "")
+            if _cmd:
+                try:
+                    findings.extend(
+                        self._check_execution_targets(_cmd, index, session_id, subject_dict)
+                    )
+                except Exception as exc:
+                    sys.stderr.write(f"[prismor] execution target check error: {exc}\n")
 
         # ── Supply-chain install risk (OSV CVEs, typosquat, IOC) ────────
         # Wires the same scoring `prismor supplychain npm install <pkg>`
@@ -1433,6 +1463,81 @@ class PolicyEngine:
             # explicit `mode` would.
             "mode": self.device_mode or self.default_mode,
         }
+
+    def _check_execution_targets(
+        self,
+        command: str,
+        index: int,
+        session_id: str,
+        subject_dict: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Evaluate the CONTENT a command would run, not just the command.
+
+        Each recovered line is checked against the same rules as an inline
+        command, and through the same contextual verifier, so a rule table or a
+        docstring that merely mentions a dangerous command stays inert. Findings
+        carry ``execTarget`` (the file:line they came from) and are marked
+        ``contextInert`` while ``execution_target_action`` is "observe", which
+        keeps them out of every blocking path.
+        """
+        from prismor.runtime.exec_targets import collect
+        from prismor.runtime.shell_context import is_inert_match
+
+        cwd = self.workspace or Path.cwd()
+        advisory = self.execution_target_action != "enforce"
+        findings: List[Dict[str, Any]] = []
+        seen: Set[Tuple[str, str]] = set()
+
+        for line in collect(command, cwd):
+            for rule in self.rules:
+                if "shell" not in rule.event_types:
+                    continue
+                match = rule.patterns.search(line.text)
+                if match is None:
+                    continue
+                if self._is_allowlisted(rule.id, line.text):
+                    continue
+                if is_inert_match(line.text, match.start(), match.end()):
+                    continue
+                key = (rule.id, line.origin)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                finding_id = f"{rule.id}-target-{index}-{len(findings)}"
+                findings.append({
+                    "id": f"{session_id}:{finding_id}" if session_id else finding_id,
+                    "severity": rule.severity,
+                    "category": rule.category,
+                    "title": f"{rule.title} (in {line.origin})",
+                    "evidence": _truncate(f"{line.origin}: {line.text}"),
+                    "pattern": rule.matched_pattern(line.text),
+                    "eventIndex": index,
+                    "ruleId": rule.id,
+                    "action": "warn" if advisory else rule.action,
+                    "transform": rule.transform,
+                    "subject": subject_dict,
+                    "source": "execution_target",
+                    # Where the dangerous content actually lives, so a reviewer
+                    # sees the file and line rather than only the invocation.
+                    "execTarget": line.origin,
+                    # Once promoted to enforce, resolve mode exactly as an
+                    # inline finding does -- including the non-overridable
+                    # floor -- so a root wipe hidden in a script is treated the
+                    # same as one typed at the prompt.
+                    "mode": "observe" if advisory else (
+                        "enforce"
+                        if (
+                            rule.id in _NON_OVERRIDABLE_RULE_IDS
+                            or rule.category in _CORE_BLOCK_CATEGORIES
+                        )
+                        else (self.device_mode or rule.mode or self.default_mode)
+                    ),
+                    # Advisory findings never block, by the same flag the
+                    # inline contextual verifier uses.
+                    "contextInert": advisory,
+                })
+        return findings
 
     def _check_supply_chain(
         self,

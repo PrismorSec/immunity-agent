@@ -134,6 +134,37 @@ settings:
   # Findings land in category "dependency_risk" (see block_categories
   # above). Disable if the extra registry/OSV network round-trips are
   # unacceptable latency for your environment.
+  # ── Execution-target content inspection ─────────────────────────────────
+  # A rule only sees the command string, so `bash deploy.sh` is opaque no
+  # matter what the script contains — the whole ruleset is one level of
+  # indirection away from irrelevant. When enabled, Prismor resolves what a
+  # command would actually run and evaluates that content with the same rules:
+  #
+  #   bash/sh/python/node <script>   the script argument
+  #   source <file> / . <file>       the sourced file
+  #   ./script.sh                    a directly executed file
+  #   npm|pnpm|yarn run <name>       that entry in package.json scripts
+  #   make [-f File] <target>        the recipe lines
+  #   docker build [-f File]         the Dockerfile RUN lines
+  #
+  # Nested scripts are followed (depth 3, cycle-safe), files over 256 KB are
+  # skipped, and a missing or unreadable target is never an error. Content is
+  # checked through the same contextual verifier as inline commands, comments
+  # are dropped, `case` branch labels are stripped, and for Python/Ruby/Node
+  # only strings handed to a shell (os.system, subprocess, child_process) are
+  # treated as commands — scanning such a file line-wise as shell makes its own
+  # string literals look like attacks.
+  inspect_execution_targets: true
+
+  # How findings from inspected content are treated:
+  #   observe (default) — reported with file:line provenance, never blocking.
+  #   enforce           — blocks exactly as the same finding would inline,
+  #                       including the non-overridable floor.
+  # Deliberately observe by default so upgrading an install cannot start
+  # breaking builds. Promote it once your telemetry shows the real
+  # false-positive rate for your repositories.
+  execution_target_action: observe
+
   supply_chain_install_check: true
 
   # Detective (not preventive) follow-up: after an `npm install` finishes,
