@@ -789,6 +789,25 @@ class PolicyEngine:
             if rule.severity_on_manifest and self._is_manifest(field_values.get("path", "")):
                 severity = rule.severity_on_manifest
 
+            # Contextual verification: a pattern can match inside an inert
+            # string literal -- a commit message, a PR body, a grep pattern --
+            # where it describes an action rather than performing one. Such a
+            # finding is still reported, but never blocks. See
+            # shell_context.is_inert_match for the conditions, all of which
+            # must hold; anything ambiguous keeps its blocking verdict.
+            context_inert = False
+            if event_type == "shell" and matched_evidence:
+                try:
+                    from prismor.runtime.shell_context import is_inert_match
+                    _m = rule.patterns.search(matched_evidence)
+                    if _m is not None:
+                        context_inert = is_inert_match(
+                            matched_evidence, _m.start(), _m.end()
+                        )
+                except Exception as exc:  # never let context checking drop a finding
+                    sys.stderr.write(f"[prismor] context check error: {exc}\n")
+                    context_inert = False
+
             finding_id = f"{rule.id}-{index}"
             prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
 
@@ -827,6 +846,9 @@ class PolicyEngine:
                     )
                     else (self.device_mode or rule.mode or self.default_mode)
                 ),
+                # True when the match sits in inert text rather than executable
+                # position. should_block() never blocks on such a finding.
+                "contextInert": context_inert,
             })
 
         # ── Supply-chain install risk (OSV CVEs, typosquat, IOC) ────────

@@ -201,19 +201,19 @@ rules:
     fields: [command]
     patterns:
       # Root wipe: rm -rf /, rm -rf /*
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/["'']?(\s|\*|$)'
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/["'']?(\s|\*|$)'
       # System-critical paths — block at any depth (optional surrounding quotes)
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
       # Top-level user/system dirs — block only when target IS the dir
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(["'']|\s|$|&|;|\|)'
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(["'']|\s|$|&|;|\|)'
       # HOME wipe
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?(\$\{?HOME\}?|~)(/\*?)?(["'']|\s|$|&|;|\|)'
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?(\$\{?HOME\}?|~)(/\*?)?(["'']|\s|$|&|;|\|)'
       # Cwd wildcard wipe: rm -rf *
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\*(\s|$|;|&|\|)'
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\*(\s|$|;|&|\|)'
       # Parent-dir escape chain: rm -rf .. or ../.. (but NOT ../build)
-      - '(?:^|\s|;|&|\|)rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\.\.(?:/\.\.)*/?(\s|$|&|;|\|)'
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\.\.(?:/\.\.)*/?(\s|$|&|;|\|)'
       # sudo elevates blast radius — always block sudo rm -rf (any flag form)
-      - '(?:^|\s|;|&|\|)sudo\s+rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))'
+      - '(?:^|\s|;|&|\||\(|["''])sudo\s+rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))'
       # World-writable chmod — numeric modes whose "other" digit grants write
       # (…2/3/6/7, e.g. 777, 666, 0777, 1777), any path — plus symbolic grants
       # of write to other/all (o+w, a+w, a+rwx). Group-only and read-only

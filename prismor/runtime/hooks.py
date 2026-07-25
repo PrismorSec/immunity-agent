@@ -376,6 +376,10 @@ def should_block(
     _ACTION_RANK = {"block": 0, "step_up": 1, "defer": 2, "modify": 3}
     eligible: List[Dict[str, Any]] = []
     for finding in findings:
+        # A match inside inert text (commit message, PR body, grep pattern)
+        # describes an action instead of performing it -- report, never block.
+        if finding.get("contextInert"):
+            continue
         if str(finding.get("mode", "observe")).lower() == "enforce":
             # Reads are generally safe, so they only block for secret access —
             # except for IAM, where an operator has explicitly scoped which
@@ -407,6 +411,8 @@ def legacy_should_block(
     if not _is_pre_action(str(event.get("agent_event", ""))):
         return None
     for finding in findings:
+        if finding.get("contextInert"):
+            continue
         if finding.get("category") in block_categories:
             if (
                 event.get("type") == "file_read"
