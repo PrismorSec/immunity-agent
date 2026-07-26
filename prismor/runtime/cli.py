@@ -2693,7 +2693,52 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
         mode = getattr(engine, "default_mode", "observe")
         add("ok", "policy", f"{n_rules} rules loaded (default mode: {mode})")
     except Exception as exc:
+        engine = None
         add("fail", "policy", f"policy failed to load: {exc}")
+
+    # 2b. Detection coverage — which layers actually screen traffic, and how
+    # many rules can actually stop it. Several layers ship opt-in and
+    # observe-first, so "70 rules loaded" on its own reads as far more
+    # protection than a default install has. Report the real figure.
+    if engine is not None:
+        try:
+            from prismor.runtime.policy_engine import (
+                _CORE_BLOCK_CATEGORIES,
+                _NON_OVERRIDABLE_RULE_IDS,
+            )
+
+            # Mirrors the effective-mode resolution in PolicyEngine.evaluate().
+            enforcing = [
+                r for r in engine.rules
+                if (r.id in _NON_OVERRIDABLE_RULE_IDS
+                    or r.category in _CORE_BLOCK_CATEGORIES
+                    or (getattr(engine, "device_mode", None) or r.mode or engine.default_mode) == "enforce")
+            ]
+            total = len(engine.rules)
+            n_enf = len(enforcing)
+
+            if engine.is_legacy_policy:
+                detail = (f"{n_enf}/{total} rules can block "
+                          f"(legacy category gating: {len(engine.block_categories)} blocking categories)")
+            else:
+                detail = f"{n_enf}/{total} rules can block; the rest observe only"
+            add("ok" if n_enf > len(_NON_OVERRIDABLE_RULE_IDS) else "warn", "enforcement", detail)
+
+            # Optional layers, in the order an event passes through them.
+            layers: List[str] = []
+            for label, cfg in (("semantic guard", engine.semantic_guard_config),
+                               ("tool tags", engine.tool_tags),
+                               ("sandbox", engine.sandbox_config)):
+                if not isinstance(cfg, dict) or not cfg.get("enabled"):
+                    layers.append(f"{label}: off")
+                else:
+                    layers.append(f"{label}: {cfg.get('mode') or 'on'}")
+            layers.append(
+                "supply chain: on" if engine.supply_chain_install_check else "supply chain: off")
+            n_off = sum(1 for entry in layers if entry.endswith(": off"))
+            add("warn" if n_off else "ok", "detection layers", "; ".join(layers))
+        except Exception as exc:
+            add("warn", "detection layers", f"could not summarize coverage: {exc}")
 
     # 3–4. Enrollment + remote policy signature.
     ident = None

@@ -206,6 +206,125 @@ def read_npm_lockfile_full(workspace: Path) -> Dict[str, str]:
     return pins
 
 
+# "<name>@<version>" / "/<name>@<version>" pnpm keys, where <name> may be a
+# scoped "@scope/pkg". Anchored on the LAST '@' so the scope's own '@' is safe.
+_PNPM_KEY_RE = re.compile(r'^/?(?P<name>(?:@[^/@\s]+/)?[^@/\s][^@\s]*)@(?P<version>[0-9][^\s(]*)')
+# yarn v1: an indented `version "1.2.3"` line under a `pkg@range:` header.
+_YARN_V1_VERSION_RE = re.compile(r'^\s+version\s+"?([^"\s]+)"?\s*$')
+# yarn v1 header: one or more comma-separated `name@range` specs ending in ':'.
+_YARN_V1_HEADER_RE = re.compile(r'^"?(?P<name>(?:@[^/@\s]+/)?[^@\s"]+)@')
+
+
+def _lockfiles(workspace: Path, filename: str):
+    """Yield candidate lockfiles, skipping vendored and VCS directories."""
+    for lock in workspace.glob(f"**/{filename}"):
+        if ".git" in lock.parts or "node_modules" in lock.parts:
+            continue
+        yield lock
+
+
+def read_pnpm_lockfile_full(workspace: Path) -> Dict[str, str]:
+    """Read pnpm-lock.yaml and return the full resolved tree as {name: version}.
+
+    pnpm flattens every resolved package — direct and transitive alike — under
+    a single top-level ``packages:`` map, so there is no tree to walk. Key
+    shapes differ across lockfile versions (``/lodash@4.17.21`` in v6,
+    ``lodash@4.17.21`` in v9, with an optional ``(peer)`` suffix on both), which
+    the key regex normalizes.
+    """
+    pins: Dict[str, str] = {}
+    try:
+        import yaml
+    except Exception:
+        return pins
+    for lock in _lockfiles(workspace, "pnpm-lock.yaml"):
+        try:
+            data = yaml.safe_load(lock.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        packages = data.get("packages") or {}
+        if not isinstance(packages, dict):
+            continue
+        for key, meta in packages.items():
+            match = _PNPM_KEY_RE.match(str(key))
+            if not match:
+                continue
+            version = match.group("version")
+            # v9 moved the resolved version into the entry for some shapes;
+            # prefer an explicit one when present.
+            if isinstance(meta, dict) and isinstance(meta.get("version"), str):
+                version = meta["version"]
+            pins[match.group("name")] = version
+    return pins
+
+
+def read_yarn_lockfile_full(workspace: Path) -> Dict[str, str]:
+    """Read yarn.lock and return the full resolved tree as {name: version}.
+
+    Handles both dialects: classic v1 (a bespoke text format) and Berry v2+
+    (YAML). Like pnpm, yarn resolves every package into one flat map, so the
+    result already includes transitive dependencies.
+    """
+    pins: Dict[str, str] = {}
+    for lock in _lockfiles(workspace, "yarn.lock"):
+        try:
+            text = lock.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        # Berry lockfiles are valid YAML and declare a __metadata block.
+        if "__metadata" in text:
+            try:
+                import yaml
+                data = yaml.safe_load(text)
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                for key, meta in data.items():
+                    if key == "__metadata" or not isinstance(meta, dict):
+                        continue
+                    version = meta.get("version")
+                    # "lodash@npm:^4.17.0, lodash@npm:^4.17.21" -> lodash
+                    header = _YARN_V1_HEADER_RE.match(str(key).split(",")[0].strip())
+                    if header and isinstance(version, str):
+                        pins[header.group("name")] = version
+                continue  # parsed as YAML; don't also run the v1 scanner
+
+        # Classic v1: a `name@range:` header followed by an indented `version`.
+        current: Optional[str] = None
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if not line[0].isspace():
+                header = _YARN_V1_HEADER_RE.match(line.split(",")[0].strip())
+                current = header.group("name") if header else None
+                continue
+            if current:
+                version_match = _YARN_V1_VERSION_RE.match(line)
+                if version_match:
+                    pins[current] = version_match.group(1)
+                    current = None
+    return pins
+
+
+def read_js_lockfiles_full(workspace: Path) -> Dict[str, str]:
+    """Union of every JS lockfile's resolved tree as {name: version}.
+
+    npm, pnpm and yarn all resolve from the same registry, so OSV treats them
+    as one ``npm`` ecosystem — a CVE in a transitive dependency is the same
+    finding regardless of which client installed it. Merged newest-parser-last;
+    duplicates across lockfiles in one workspace are rare and either version is
+    adequate for "does any resolved version of this name have a known CVE".
+    """
+    pins: Dict[str, str] = {}
+    pins.update(read_npm_lockfile_full(workspace))
+    pins.update(read_pnpm_lockfile_full(workspace))
+    pins.update(read_yarn_lockfile_full(workspace))
+    return pins
+
+
 def _parse_requirements_txt(text: str) -> List[Dict[str, str]]:
     """Parse requirements.txt (simple format)."""
     deps: List[Dict[str, str]] = []

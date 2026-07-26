@@ -363,6 +363,22 @@
             "LOW"
           ],
           "description": "Override severity when the matched path is a dependency manifest file"
+        },
+        "pattern_groups": {
+          "type": "object",
+          "description": "Named groups of regex patterns, referenced by name from `condition`. Ignored unless `condition` is also set. The rule's own `patterns` list is always addressable as the group name `patterns`.",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "condition": {
+          "type": "string",
+          "description": "Optional boolean expression over pattern-group names, e.g. \"patterns and not benign_context\" or \"2 of (curl_use, env_read, base64_encode)\". Supports and/or/not, parentheses, and 'any of'/'all of'/'N of' quantifiers. When omitted the rule fires if ANY pattern matches (the default). Ignored on core protections, which cannot be narrowed.",
+          "minLength": 1
         }
       },
       "additionalProperties": false

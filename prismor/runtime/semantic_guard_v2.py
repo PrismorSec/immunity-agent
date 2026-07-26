@@ -97,6 +97,43 @@ Scoring guide:
 """
 
 
+def _extract_json_object(raw: str) -> Optional[str]:
+    """Return the first complete top-level JSON object in ``raw``, or None.
+
+    Brace-balancing rather than a regex: the verdict schema is flat today,
+    but a model that wraps its answer (e.g. ``{"verdict": {...}}``) or emits
+    any nested value would defeat a ``\\{[^{}]*\\}`` match and silently drop
+    the whole LLM result. String literals are tracked so a brace inside a
+    quoted reason string does not unbalance the scan.
+    """
+    start = raw.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start:i + 1]
+    return None
+
+
 def _llm_analyze(text: str, heuristic_score: float, heuristic_signals: List[str]) -> SemanticRisk:
     """Call local Claude Code CLI as semantic subagent. Returns SemanticRisk."""
     t0 = time.perf_counter_ns()
@@ -118,9 +155,15 @@ def _llm_analyze(text: str, heuristic_score: float, heuristic_signals: List[str]
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
         # Extract JSON even if there's surrounding text
-        m = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
-        if m:
-            data = json.loads(m.group(0))
+        blob = _extract_json_object(raw)
+        if blob:
+            data = json.loads(blob)
+            # Tolerate a single wrapper key (e.g. {"verdict": {...}}) rather
+            # than discarding the verdict and falling back to heuristic.
+            if isinstance(data, dict) and "risk_score" not in data:
+                nested = [v for v in data.values() if isinstance(v, dict)]
+                if len(nested) == 1 and "risk_score" in nested[0]:
+                    data = nested[0]
             return SemanticRisk(
                 risk_score=float(data.get("risk_score", 0.0)),
                 category=str(data.get("category", "unknown")),

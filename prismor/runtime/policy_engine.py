@@ -6,11 +6,13 @@ evaluates events. Replaces the hardcoded patterns in policies.py.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import shlex
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -214,6 +216,111 @@ def _check_cloaked_secrets_in_url(url: str) -> Optional[str]:
     return _check_cloaked_secrets_in_text(url)
 
 
+_QUANT_ANY_RE = re.compile(r'\bany\s+of\s*\(', re.IGNORECASE)
+_QUANT_ALL_RE = re.compile(r'\ball\s+of\s*\(', re.IGNORECASE)
+_QUANT_N_RE = re.compile(r'\b(\d+)\s+of\s*\(', re.IGNORECASE)
+_ALLOWED_CONDITION_CALLS = frozenset({"any_of", "all_of", "n_of"})
+
+
+class ConditionError(ValueError):
+    """Raised when a rule's `condition:` expression is malformed."""
+
+
+class RuleCondition:
+    """A boolean expression over a rule's named pattern groups.
+
+    Grammar (a deliberately small subset — `and`, `or`, `not`, parentheses,
+    and counting quantifiers)::
+
+        condition: "patterns and not benign_context"
+        condition: "exfil_verb and (secret_ref or credential_ref)"
+        condition: "2 of (curl_use, env_read, base64_encode)"
+        condition: "any of (aws_key, gcp_key) and not test_fixture"
+
+    Parsed once at rule-compile time into a validated AST and evaluated per
+    event against a {group_name: bool} map. Python's `eval` is never used and
+    the node whitelist rejects anything that is not boolean logic, so a policy
+    file — including a signed org overlay — cannot smuggle in code execution.
+    """
+
+    __slots__ = ("source", "_tree", "groups")
+
+    def __init__(self, source: str, known_groups: set) -> None:
+        self.source = source
+        # Rewrite the human-friendly quantifiers into ordinary call syntax so
+        # the stdlib parser can do the heavy lifting.
+        expr = _QUANT_ANY_RE.sub("any_of(", source)
+        expr = _QUANT_ALL_RE.sub("all_of(", expr)
+        expr = _QUANT_N_RE.sub(lambda m: f"n_of({m.group(1)}, ", expr)
+        try:
+            self._tree = ast.parse(expr, mode="eval").body
+        except SyntaxError as exc:
+            raise ConditionError(f"invalid condition {source!r}: {exc.msg}") from exc
+        self.groups: set = set()
+        self._validate(self._tree, known_groups)
+        if not self.groups:
+            raise ConditionError(f"condition {source!r} references no pattern groups")
+
+    def _validate(self, node, known_groups: set) -> None:
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            for value in node.values:
+                self._validate(value, known_groups)
+            return
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            self._validate(node.operand, known_groups)
+            return
+        if isinstance(node, ast.Name):
+            if node.id not in known_groups:
+                raise ConditionError(
+                    f"condition {self.source!r} references unknown group '{node.id}' "
+                    f"(defined: {', '.join(sorted(known_groups)) or 'none'})")
+            self.groups.add(node.id)
+            return
+        if isinstance(node, ast.Call):
+            fname = getattr(node.func, "id", None)
+            if fname not in _ALLOWED_CONDITION_CALLS or node.keywords:
+                raise ConditionError(f"condition {self.source!r}: unsupported call")
+            args = node.args
+            if fname == "n_of":
+                if not args or not isinstance(args[0], ast.Constant) or not isinstance(args[0].value, int):
+                    raise ConditionError(f"condition {self.source!r}: 'N of (...)' needs an integer count")
+                args = args[1:]
+            if not args:
+                raise ConditionError(f"condition {self.source!r}: quantifier needs at least one group")
+            for arg in args:
+                self._validate(arg, known_groups)
+            return
+        raise ConditionError(
+            f"condition {self.source!r}: only and/or/not, parentheses and "
+            f"'N of (...)' quantifiers are allowed")
+
+    def evaluate(self, matched: Dict[str, bool]) -> bool:
+        return self._eval(self._tree, matched)
+
+    def _eval(self, node, matched: Dict[str, bool]) -> bool:
+        if isinstance(node, ast.BoolOp):
+            values = (self._eval(v, matched) for v in node.values)
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+        if isinstance(node, ast.UnaryOp):
+            return not self._eval(node.operand, matched)
+        if isinstance(node, ast.Name):
+            return bool(matched.get(node.id, False))
+        # Call — validated to be one of the three quantifiers.
+        fname = node.func.id
+        if fname == "n_of":
+            need = node.args[0].value
+            args = node.args[1:]
+        else:
+            need = None
+            args = node.args
+        hits = sum(1 for a in args if self._eval(a, matched))
+        if fname == "any_of":
+            return hits > 0
+        if fname == "all_of":
+            return hits == len(args)
+        return hits >= need
+
+
 class CompiledRule:
     """A single policy rule with compiled regex patterns."""
 
@@ -222,6 +329,7 @@ class CompiledRule:
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
         "transform",
         "severity_on_write", "severity_on_manifest",
+        "pattern_groups", "condition",
     )
 
     def __init__(self, raw: Dict[str, Any]) -> None:
@@ -296,6 +404,70 @@ class CompiledRule:
         self.patterns: re.Pattern[str] = re.compile(
             joined, re.IGNORECASE | re.DOTALL
         )
+
+        # ── Optional named groups + boolean condition ────────────────────
+        # Absent `condition:` => self.condition stays None and matching takes
+        # the flat any-pattern-wins path above, byte-for-byte as before. Only a
+        # rule that opts in pays for any of this.
+        self.pattern_groups: Dict[str, re.Pattern[str]] = {}
+        self.condition: Optional[RuleCondition] = None
+        raw_condition = raw.get("condition")
+        if raw_condition:
+            # A condition can only ever NARROW when a rule fires, so allowing it
+            # on a floor-protected rule would hand overlays the rule-disabling
+            # power the floor exists to deny (`condition: "patterns and never"`).
+            # Refuse it there rather than silently accepting a weakened core rule.
+            if self.id in _NON_OVERRIDABLE_RULE_IDS or self.category in _CORE_BLOCK_CATEGORIES:
+                sys.stderr.write(
+                    f"[prismor] rule '{self.id}': `condition` ignored — core rules "
+                    f"cannot be narrowed by a condition expression\n")
+            else:
+                groups: Dict[str, re.Pattern[str]] = {}
+                for gname, gpats in (raw.get("pattern_groups") or {}).items():
+                    plist = [str(p) for p in (gpats or []) if str(p)]
+                    if not plist:
+                        continue
+                    try:
+                        groups[str(gname)] = re.compile(
+                            "|".join(f"(?:{p})" for p in plist), re.IGNORECASE | re.DOTALL)
+                    except re.error as exc:
+                        sys.stderr.write(
+                            f"[prismor] rule '{self.id}': ignoring invalid pattern group "
+                            f"'{gname}' ({exc})\n")
+                # The rule's own `patterns:` is always addressable as `patterns`,
+                # so the common case — keep the detection, subtract a known
+                # false positive — needs no restructuring of the existing rule.
+                groups.setdefault("patterns", self.patterns)
+                try:
+                    self.condition = RuleCondition(str(raw_condition), set(groups))
+                    self.pattern_groups = groups
+                except ConditionError as exc:
+                    # Fail toward MORE detection: drop the condition, keep the
+                    # flat alternation. A typo must never silently disable a rule.
+                    sys.stderr.write(f"[prismor] rule '{self.id}': {exc} — condition ignored\n")
+
+    def evaluate_condition(self, values: List[str]) -> Optional[str]:
+        """Evaluate this rule's condition across ``values`` (the checked fields).
+
+        A group counts as matched if it matches ANY checked field. Returns the
+        field value to report as evidence when the condition holds, else None.
+        """
+        matched: Dict[str, bool] = {}
+        evidence: Optional[str] = None
+        for gname, gpat in self.pattern_groups.items():
+            for value in values:
+                if value and gpat.search(value):
+                    matched[gname] = True
+                    if evidence is None:
+                        evidence = value
+                    break
+            else:
+                matched[gname] = False
+        if not self.condition.evaluate(matched):
+            return None
+        # A condition that holds purely through negation ("not benign") has no
+        # positive match to quote; fall back to the first non-empty field.
+        return evidence or next((v for v in values if v), "")
 
     def matched_pattern(self, value: str) -> Optional[str]:
         """Return the specific pattern that matches ``value``, if any.
@@ -688,6 +860,19 @@ class PolicyEngine:
         field_values = _extract_fields(event)
         findings: List[Dict[str, Any]] = []
 
+        # Memoized ASCII-folds of field values, shared across all rules for this
+        # event. Without this the fold is recomputed per rule (up to 70x for the
+        # same 64KB memory blob). Populated lazily — an all-ASCII event never
+        # folds anything. Maps field name -> folded text, or None when folding
+        # changed nothing (so the evasion rescan can skip it).
+        folded_cache: Dict[str, Optional[str]] = {}
+
+        def _folded(field_name: str, value: str) -> Optional[str]:
+            if field_name not in folded_cache:
+                folded = _fold_confusables(value)
+                folded_cache[field_name] = folded if folded != value else None
+            return folded_cache[field_name]
+
         for rule in self.rules:
             # A synthetic "text" event has no rules of its own; route it through
             # the agent-I/O content rules so check_text / `--type text` actually
@@ -701,14 +886,68 @@ class PolicyEngine:
             # Determine which fields to check.
             check_fields = rule.fields if rule.fields else _DEFAULT_FIELDS.get(event_type, [])
             matched_evidence = None
+            folded_evidence = None
+            evasion = None
 
-            for field_name in check_fields:
-                value = field_values.get(field_name, "")
-                if not value:
-                    continue
-                if rule.patterns.search(value):
-                    matched_evidence = value
-                    break
+            if rule.condition is not None:
+                # Opt-in path: boolean expression over named pattern groups.
+                # Evaluated across all checked fields at once, since a condition
+                # like "exfil_verb and secret_ref" may legitimately be satisfied
+                # by two different fields of the same event.
+                matched_evidence = rule.evaluate_condition(
+                    [field_values.get(f, "") for f in check_fields])
+            else:
+                for field_name in check_fields:
+                    value = field_values.get(field_name, "")
+                    if not value:
+                        continue
+                    if rule.patterns.search(value):
+                        matched_evidence = value
+                        break
+
+            if matched_evidence is None:
+                # Homoglyph / invisible-character evasion rescan. Every rule
+                # pattern matches literal ASCII, so `іgnore previous
+                # instructions` (Cyrillic і) or `r​m -rf /` slips past the
+                # scan above. Re-run against an ASCII-folded copy so the rule
+                # that *should* have fired does.
+                #
+                # Deliberately a fallback, not a replacement: the raw scan runs
+                # first and is untouched, so no input that matches today can
+                # change classification. `isascii()` is a C-level check, which
+                # keeps this at roughly zero cost on the overwhelmingly common
+                # all-ASCII path — folding only ever runs on non-ASCII text
+                # that already failed to match.
+                if rule.condition is not None:
+                    folded_fields = [
+                        (_folded(f, v) or v) if (v and not v.isascii()) else v
+                        for f, v in ((f, field_values.get(f, "")) for f in check_fields)
+                    ]
+                    hit = rule.evaluate_condition(folded_fields)
+                    if hit is not None and any(
+                        v and not v.isascii() for v in
+                        (field_values.get(f, "") for f in check_fields)
+                    ):
+                        # Report the original text for whichever field the fold
+                        # produced this evidence from.
+                        originals = [field_values.get(f, "") for f in check_fields]
+                        matched_evidence = next(
+                            (o for o, f in zip(originals, folded_fields) if f == hit), hit)
+                        folded_evidence = hit
+                        evasion = "unicode_obfuscation"
+                else:
+                    for field_name in check_fields:
+                        value = field_values.get(field_name, "")
+                        if not value or value.isascii():
+                            continue
+                        folded = _folded(field_name, value)
+                        if folded is not None and rule.patterns.search(folded):
+                            # Evidence stays the ORIGINAL text — operators need
+                            # to see the bytes that arrived, not our fold.
+                            matched_evidence = value
+                            folded_evidence = folded
+                            evasion = "unicode_obfuscation"
+                            break
 
             if matched_evidence is None:
                 continue
@@ -727,7 +966,7 @@ class PolicyEngine:
             finding_id = f"{rule.id}-{index}"
             prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
 
-            findings.append({
+            finding = {
                 "id": prefixed_id,
                 "severity": severity,
                 "category": rule.category,
@@ -735,7 +974,9 @@ class PolicyEngine:
                 "evidence": _truncate(matched_evidence),
                 # Which of the rule's patterns fired — static policy text (never
                 # event content), so telemetry may carry it even when redacted.
-                "pattern": rule.matched_pattern(matched_evidence),
+                # Attributed against the folded copy when that is what matched,
+                # otherwise the pattern would re-scan text it cannot match.
+                "pattern": rule.matched_pattern(folded_evidence or matched_evidence),
                 "eventIndex": index,
                 "ruleId": rule.id,
                 "action": rule.action,
@@ -755,7 +996,17 @@ class PolicyEngine:
                     if (rule.id in _NON_OVERRIDABLE_RULE_IDS or rule.category in _CORE_BLOCK_CATEGORIES)
                     else (rule.mode or self.default_mode)
                 ),
-            })
+            }
+
+            # Only present when the rule matched an ASCII-folded copy rather
+            # than the raw text — i.e. the payload was deliberately obfuscated.
+            # Added conditionally so the finding shape is byte-identical to
+            # before for every non-evasion match. The value is a fixed constant,
+            # never event content, so redacted telemetry may carry it.
+            if evasion:
+                finding["evasion"] = evasion
+
+            findings.append(finding)
 
         # ── Supply-chain install risk (OSV CVEs, typosquat, IOC) ────────
         # Wires the same scoring `prismor supplychain npm install <pkg>`
@@ -1454,12 +1705,12 @@ class PolicyEngine:
         if self.workspace is None:
             return findings
         try:
-            from prismor.runtime.deps import _read_npm_lockfile, read_npm_lockfile_full
+            from prismor.runtime.deps import _read_npm_lockfile, read_js_lockfiles_full
             from supplychain.scoring.osv_lookup import fetch_vulns_batch
         except Exception:
             return findings
 
-        full_tree = read_npm_lockfile_full(self.workspace)
+        full_tree = read_js_lockfiles_full(self.workspace)
         if not full_tree:
             return findings
         top_level = _read_npm_lockfile(self.workspace)
@@ -1654,6 +1905,61 @@ def _has_suspicious_unicode(text: str) -> bool:
     return has_ascii_letter and has_confusable
 
 
+# Visual-confusable → ASCII folding table, used to re-scan text that evaded
+# the literal-ASCII rule patterns. Mirrors _CONFUSABLE_CODEPOINTS above (that
+# set answers "is this suspicious?"; this map answers "what did it imitate?").
+# Only unambiguous visual lookalikes are mapped — a wrong entry would invent
+# matches, so semantic equivalents that don't LOOK like their ASCII counterpart
+# are deliberately omitted.
+_CONFUSABLE_FOLD = {
+    # Cyrillic lowercase
+    0x0430: "a", 0x0432: "b", 0x0435: "e", 0x043A: "k", 0x043C: "m",
+    0x043D: "h", 0x043E: "o", 0x0440: "p", 0x0441: "c", 0x0442: "t",
+    0x0443: "y", 0x0445: "x", 0x0455: "s", 0x0456: "i", 0x0458: "j",
+    # Cyrillic uppercase
+    0x0410: "A", 0x0412: "B", 0x0415: "E", 0x041A: "K", 0x041C: "M",
+    0x041D: "H", 0x041E: "O", 0x0420: "P", 0x0421: "C", 0x0422: "T",
+    0x0425: "X", 0x0406: "I", 0x0474: "V",
+    # Greek lowercase
+    0x03B1: "a", 0x03B2: "b", 0x03B3: "y", 0x03B5: "e", 0x03B6: "z",
+    0x03B7: "n", 0x03B9: "i", 0x03BA: "k", 0x03BD: "v", 0x03BF: "o",
+    0x03C1: "p", 0x03C5: "u", 0x03C7: "x",
+    # Greek uppercase
+    0x0391: "A", 0x0392: "B", 0x0395: "E", 0x0396: "Z", 0x0397: "H",
+    0x0399: "I", 0x039A: "K", 0x039C: "M", 0x039D: "N", 0x039F: "O",
+    0x03A1: "P", 0x03A4: "T", 0x03A5: "Y", 0x03A7: "X",
+    # Latin-extended lookalikes
+    0x0131: "i", 0x0142: "l", 0x0251: "a", 0x0254: "o", 0x0257: "d",
+    0x0261: "g", 0x0274: "n", 0x0280: "r",
+    # Invisible / formatting characters — deleted outright. These are the
+    # cheapest evasion (`r​m -rf /`) and have no legitimate use inside
+    # a command, path, or injected instruction.
+    0x200B: None, 0x200C: None, 0x200D: None, 0x200E: None, 0x200F: None,
+    0x2060: None, 0x2061: None, 0x2062: None, 0x2063: None, 0x2064: None,
+    0xFEFF: None, 0x00AD: None,
+}
+
+
+def _fold_confusables(text: str) -> str:
+    """Fold Unicode homoglyphs and invisible characters down to ASCII.
+
+    NFKC first (collapses fullwidth forms, ligatures, and compatibility
+    variants), then the visual-confusable table (which NFKC does not touch —
+    Cyrillic 'е' and Latin 'e' are distinct characters, not compatibility
+    variants of one another).
+
+    Callers must treat the result as match-only text: it is not equivalent to
+    the original and must never be shown as evidence or executed.
+    """
+    if not text:
+        return text
+    try:
+        folded = unicodedata.normalize("NFKC", text)
+    except Exception:
+        folded = text
+    return folded.translate(_CONFUSABLE_FOLD)
+
+
 def _normalize_command(cmd: str) -> str:
     """Normalize a shell command for consistent pattern matching.
 
@@ -1846,17 +2152,26 @@ _TRANSITIVE_SCAN_MAX_PACKAGES = 250
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
-def _is_completed_npm_install(command: str) -> bool:
-    """True if `command` contains an `npm install`/`i`/`add` sub-command
-    — used to trigger the post-install transitive scan regardless of
-    whether explicit packages were given on the command line (a bare
-    `npm install` is exactly the case that scan exists for).
+_JS_INSTALL_ECOSYSTEMS = frozenset({"npm", "pnpm", "yarn"})
+# `yarn install` / `pnpm install` with no package argument resolve to no
+# ecosystem via detect_install (there is nothing to name), yet a bare install is
+# precisely the case the transitive scan exists for. Match the client directly.
+_BARE_JS_INSTALL_RE = re.compile(
+    r'\b(?:npm|pnpm|yarn)\s+(?:install|i|add|ci)\b', re.IGNORECASE)
 
-    Deliberately npm-only, not pnpm/yarn/bun: `detect_install` maps those
-    to their own ecosystem strings, and the transitive lockfile reader
-    below only parses `package-lock.json` — pnpm/yarn ship a different
-    lockfile format this round doesn't cover (see Limitations).
+
+def _is_completed_npm_install(command: str) -> bool:
+    """True if `command` contains a JS-ecosystem install sub-command — used to
+    trigger the post-install transitive scan regardless of whether explicit
+    packages were given on the command line (a bare `npm install` is exactly
+    the case that scan exists for).
+
+    Covers npm, pnpm and yarn: all three resolve from the same registry, so OSV
+    treats them as one `npm` ecosystem and `read_js_lockfiles_full` parses all
+    three lockfile formats. Bun is still excluded — its lockfile is binary.
     """
+    if _BARE_JS_INSTALL_RE.search(command or ""):
+        return True
     try:
         from supplychain.ecosystems.detector import detect_install
     except Exception:
@@ -1866,7 +2181,7 @@ def _is_completed_npm_install(command: str) -> bool:
             install_event = detect_install(argv)
         except Exception:
             continue
-        if install_event is not None and install_event.ecosystem == "npm":
+        if install_event is not None and install_event.ecosystem in _JS_INSTALL_ECOSYSTEMS:
             return True
     return False
 
