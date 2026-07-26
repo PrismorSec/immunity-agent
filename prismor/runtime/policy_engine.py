@@ -1407,12 +1407,19 @@ class PolicyEngine:
         # If this event produced any prompt_injection findings, persist that
         # fact so subsequent network events can be escalated regardless of
         # their destination.
-        taint = self._get_taint(session_id)
-        if taint is not None and any(
+        # Test the cheap condition first: _get_taint() reads the session's
+        # taint file from disk, so loading it unconditionally paid a file read
+        # on every event, while only events carrying a prompt-injection finding
+        # ever mark. Left None otherwise — the network block below lazily loads
+        # it on its own when it needs it.
+        taint = None
+        if any(
             f.get("category") in ("prompt_injection", "prompt_injection_semantic")
             for f in findings
         ):
-            taint.mark_injection(index)
+            taint = self._get_taint(session_id)
+            if taint is not None:
+                taint.mark_injection(index)
 
         # ── Network event: cloaking-secret check + taint escalation ───────
         if event_type == "network":
