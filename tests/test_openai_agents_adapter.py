@@ -148,9 +148,9 @@ class TestRealAgentSDK:
     callable fallback path, which is a different code path entirely. See
     PrismorSec/prismor#138."""
 
-    def _make_ctx(self, tool_name="run_shell"):
+    def _make_ctx(self, tool_name="run_shell", agent=None):
         from agents.tool_context import ToolContext
-        return ToolContext(context=None, tool_name=tool_name, tool_call_id="call_1", tool_arguments="{}")
+        return ToolContext(context=None, tool_name=tool_name, tool_call_id="call_1", tool_arguments="{}", agent=agent)
 
     def test_guard_agent_wraps_real_function_tool(self, tmp_path):
         import asyncio
@@ -196,3 +196,45 @@ class TestRealAgentSDK:
 
         with use_subject("user:bob"), pytest.raises(PrismorBlocked):
             asyncio.run(tool.on_invoke_tool(self._make_ctx(), json.dumps({"command": "echo hi"})))
+
+    def test_handoff_call_carries_subagent_attribution(self, tmp_path, monkeypatch):
+        """ctx.agent identifies the SDK's active agent for this call. When it
+        differs from the top-level agent the tool was guarded under — a
+        handoff or an agent-as-tool nested run — the event must carry
+        subagent_id/subagent_type so telemetry attributes the action to the
+        subagent that actually took it, not the primary agent."""
+        import asyncio
+        import json
+        from agents import Agent, function_tool
+        import prismor_openai as po
+
+        captured = []
+        real_evaluate = po.evaluate_tool_call
+
+        def spy(*, event, **kwargs):
+            captured.append(event)
+            return real_evaluate(event=event, **kwargs)
+
+        monkeypatch.setattr(po, "evaluate_tool_call", spy)
+
+        @function_tool
+        def run_shell(command: str) -> str:
+            return f"ran: {command}"
+
+        primary = Agent(name="primary", tools=[run_shell])
+        po.guard_agent(primary, workspace=tmp_path, name="primary", mode="observe", raise_on_block=True)
+        tool = primary.tools[0]
+
+        # Call from the primary agent itself: no subagent.
+        asyncio.run(tool.on_invoke_tool(self._make_ctx(agent=primary), json.dumps({"command": "echo hi"})))
+        # Call from a handed-off-to / nested subagent: attributed.
+        researcher = Agent(name="researcher")
+        asyncio.run(tool.on_invoke_tool(self._make_ctx(agent=researcher), json.dumps({"command": "echo hi"})))
+
+        assert len(captured) == 2
+        primary_meta = captured[0]["metadata"]
+        sub_meta = captured[1]["metadata"]
+        assert primary_meta["subagent_id"] is None
+        assert primary_meta["subagent_type"] is None
+        assert sub_meta["subagent_type"] == "researcher"
+        assert sub_meta["subagent_id"] is not None

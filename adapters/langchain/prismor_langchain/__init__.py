@@ -65,7 +65,7 @@ def _payload(args: tuple, kwargs: dict) -> str:
     return " ".join(parts).strip()
 
 
-def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), kwargs=None):
+def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), kwargs=None, subagent_id=None, subagent_type=None):
     field = _TYPE_FIELD.get(event_type, "command")
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -79,11 +79,18 @@ def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), 
             "framework": "langchain",
             "args": list(args),
             "kwargs": dict(kwargs or {}),
+            # LangGraph's current graph node for this call, when running inside
+            # a multi-agent StateGraph — that framework's equivalent of a
+            # spawned subagent. Only PrismorCallbackHandler has access to this
+            # (LangChain's run-time callback metadata); the plain func/coroutine
+            # wrap in prismor_guard_tool has no per-call context to draw it from.
+            "subagent_id": subagent_id,
+            "subagent_type": subagent_type,
         },
     }
 
 
-def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="") -> Decision:
+def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="", subagent_id=None, subagent_type=None) -> Decision:
     event = _build_event(
         tool_name=tool_name,
         payload=_payload(args, kwargs),
@@ -92,6 +99,8 @@ def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_t
         agent=agent,
         args=args,
         kwargs=kwargs,
+        subagent_id=subagent_id,
+        subagent_type=subagent_type,
     )
     return evaluate_tool_call(
         event=event, workspace=ws, agent=agent, agent_name=agent_name,
@@ -239,10 +248,18 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         name = (serialized or {}).get("name", "tool")
+        # LangGraph stamps the executing graph node onto callback metadata for
+        # every run inside a StateGraph; a multi-agent graph names each agent
+        # node distinctly, so this is that framework's subagent identity.
+        run_metadata = kwargs.get("metadata") or {}
+        node = run_metadata.get("langgraph_node") if isinstance(run_metadata, dict) else None
+        run_id = kwargs.get("run_id")
+        sub_type = str(node) if node else None
+        sub_id = f"{node}-{run_id}" if node and run_id else None
         decision = _evaluate(
             tool_name=name, args=(input_str,), kwargs={}, subject=self._subject,
             ws=self._ws, agent=self._agent, mode=self._mode, sid=self._sid,
-            event_type=self._event_type,
+            event_type=self._event_type, subagent_id=sub_id, subagent_type=sub_type,
         )
         log_observe_findings(decision, mode=self._mode, tool_name=name)
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode

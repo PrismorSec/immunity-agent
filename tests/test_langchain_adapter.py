@@ -90,6 +90,36 @@ def test_callback_handler_blocks_on_tool_start(tmp_path):
         handler.on_tool_start({"name": "run_shell"}, "rm -rf /")
 
 
+def test_callback_handler_captures_langgraph_node_as_subagent(tmp_path, monkeypatch):
+    """LangGraph stamps the executing graph node onto callback run metadata.
+    In a multi-agent StateGraph each node is a distinct agent, so this is that
+    framework's subagent identity — must flow into event metadata."""
+    import prismor_langchain as pl
+
+    captured = []
+    real_evaluate = pl.evaluate_tool_call
+
+    def spy(*, event, **kwargs):
+        captured.append(event)
+        return real_evaluate(event=event, **kwargs)
+
+    monkeypatch.setattr(pl, "evaluate_tool_call", spy)
+
+    handler = PrismorCallbackHandler(mode="observe", workspace=tmp_path)
+    # No LangGraph metadata: a plain single-agent call, no subagent.
+    handler.on_tool_start({"name": "run_shell"}, "echo hi")
+    # Inside a LangGraph node named "researcher": attributed to that subagent.
+    handler.on_tool_start(
+        {"name": "run_shell"}, "echo hi",
+        run_id="run-1", metadata={"langgraph_node": "researcher"},
+    )
+
+    assert len(captured) == 2
+    assert captured[0]["metadata"]["subagent_type"] is None
+    assert captured[1]["metadata"]["subagent_type"] == "researcher"
+    assert captured[1]["metadata"]["subagent_id"] == "researcher-run-1"
+
+
 def _write_iam(workspace: Path) -> None:
     iam_dir = workspace / ".prismor"
     iam_dir.mkdir(parents=True, exist_ok=True)

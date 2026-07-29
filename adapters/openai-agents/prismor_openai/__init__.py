@@ -86,6 +86,8 @@ def build_event(
     agent: str,
     args: tuple = (),
     kwargs: Optional[dict] = None,
+    subagent_id: Optional[str] = None,
+    subagent_type: Optional[str] = None,
 ) -> dict:
     """Construct a canonical Prismor event for a tool call (see prismor/runtime/hooks.py)."""
     field = _TYPE_FIELD.get(event_type, "command")
@@ -101,6 +103,12 @@ def build_event(
             "framework": "openai-agents",
             "args": list(args),
             "kwargs": dict(kwargs or {}),
+            # The SDK's active agent for this specific call, when it differs
+            # from the top-level agent the tool was guarded under — a handoff
+            # or an agent-as-tool nested run. Absent on calls made by the
+            # primary agent, mirroring hooks.py's Claude Code subagent fields.
+            "subagent_id": subagent_id,
+            "subagent_type": subagent_type,
         },
     }
     return event
@@ -249,6 +257,17 @@ def _guard_function_tool(
 
     @functools.wraps(original)
     async def guarded(ctx: Any, input_str: Any) -> Any:
+        # ctx (a ToolContext) carries the SDK's active agent for this call.
+        # It differs from the statically-guarded top-level agent when the run
+        # reached this tool via a handoff or an agent-as-tool nested run —
+        # that's the Agents SDK's equivalent of Claude Code's subagent spawn.
+        active_agent = getattr(ctx, "agent", None)
+        active_name = getattr(active_agent, "name", None)
+        sub_id: Optional[str] = None
+        sub_type: Optional[str] = None
+        if active_name and active_name != (_agent_name or agent):
+            sub_type = active_name
+            sub_id = f"{active_name}-{id(active_agent)}"
         event = build_event(
             tool_name=tool_name,
             payload=_payload_from_tool_input(input_str),
@@ -256,6 +275,8 @@ def _guard_function_tool(
             session_id=sid,
             agent=agent,
             kwargs={"input": input_str},
+            subagent_id=sub_id,
+            subagent_type=sub_type,
         )
         decision = evaluate_tool_call(
             event=event,
