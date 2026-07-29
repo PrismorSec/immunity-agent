@@ -509,13 +509,20 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path) -> Dict
         hooks.get("UserPromptSubmit", []),
         {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
     )
+    # `Task` is Claude's subagent-spawn tool. Matching it means the delegated
+    # charter (subagent prompt) is scanned before the subagent runs, and the
+    # spawn is recorded — otherwise a subagent is an unlogged laundering path
+    # for prompt-injection/exfiltration. A subagent's *inner* tool calls fire
+    # their own Pre/PostToolUse hooks (Bash/Read/...) and are already matched;
+    # they arrive tagged with the payload's agent_id/agent_type (see
+    # _normalize_claude) so they can be attributed to the subagent.
     hooks["PreToolUse"] = _merge_claude_entries(
         hooks.get("PreToolUse", []),
-        {"matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
+        {"matcher": "Task|Agent|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
     )
     hooks["PostToolUse"] = _merge_claude_entries(
         hooks.get("PostToolUse", []),
-        {"matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
+        {"matcher": "Task|Agent|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
     )
     # SessionStart carries the project-memory files (CLAUDE.md/AGENTS.md) that
     # Claude auto-loads before any tool call. Scanning them here brings their
@@ -1592,10 +1599,25 @@ def _normalize_goose(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
 
 def _merge_claude_entries(entries: List[Dict[str, Any]], new_entry: Dict[str, Any]) -> List[Dict[str, Any]]:
     next_entries = list(entries)
+    new_commands = {hook.get("command") for hook in new_entry.get("hooks", [])}
     existing = next((entry for entry in next_entries if entry.get("matcher") == new_entry["matcher"]), None)
     if existing is None:
-        next_entries.append(new_entry)
-        return next_entries
+        # No entry has today's exact matcher, but an older install may already
+        # carry our command(s) under a now-stale (narrower) matcher — e.g. a
+        # matcher widened to add "Task|Agent" for subagent coverage. Widen that
+        # entry's matcher in place rather than appending a duplicate: two
+        # entries with the same command would fire the dispatcher twice per
+        # tool call. An entry is only ever a migration target if it already
+        # runs one of *our* commands — an entry for someone else's tool/command
+        # is left untouched.
+        existing = next(
+            (entry for entry in next_entries if any(h.get("command") in new_commands for h in entry.get("hooks", []))),
+            None,
+        )
+        if existing is None:
+            next_entries.append(new_entry)
+            return next_entries
+        existing["matcher"] = new_entry["matcher"]
 
     existing_commands = {hook.get("command") for hook in existing.get("hooks", [])}
     for hook in new_entry["hooks"]:
@@ -1840,7 +1862,17 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
         "session_id": session_id,
         "agent": "claude",
         "agent_event": hook_event,
-        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+        "metadata": {
+            "cwd": payload.get("cwd"),
+            "tool_name": tool_name,
+            # Claude tags tool calls made *inside* a spawned subagent with the
+            # subagent's id/persona. These are absent on main-agent calls, so
+            # promoting them here lets telemetry attribute an action to the
+            # subagent that took it instead of flattening it into the parent.
+            "subagent_id": payload.get("agent_id"),
+            "subagent_type": payload.get("agent_type"),
+            "raw": payload,
+        },
     }
     if hook_event == "SessionStart":
         # payload["cwd"] is the live directory of *this* session, sent by
@@ -1859,6 +1891,20 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
         return {**base, "type": "memory", "content": memory["content"]}
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if tool_name in {"Task", "Agent"}:
+        # Subagent-spawn (named "Task" in the hook matcher, surfaced as "Agent"
+        # in newer Claude payloads). The delegated charter (prompt + description) is
+        # untrusted instruction text that will drive an autonomous agent, so it
+        # is scanned by the same content rules as a user prompt / tool output
+        # (see _UNTRUSTED_CONTENT_ALIASES in policy_engine.py). subagent_type
+        # names the persona being launched.
+        return {
+            **base,
+            "type": "subagent_spawn",
+            "subagent_type": tool_input.get("subagent_type", ""),
+            "description": tool_input.get("description", ""),
+            "prompt": tool_input.get("prompt", ""),
+        }
     if tool_name == "Bash":
         return {**base, "type": "shell", "command": tool_input.get("command", ""), "stdout": payload.get("stdout", ""), "stderr": payload.get("stderr", "")}
     if tool_name == "Read":

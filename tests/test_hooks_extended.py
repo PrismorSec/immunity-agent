@@ -591,12 +591,27 @@ class TestNormalizePayloadClaude(unittest.TestCase):
         payload = {
             "hook_event_name": "PostToolUse",
             "session_id": "sess-1",
-            "tool_name": "Agent",
+            "tool_name": "NotARealTool",
             "tool_input": {},
         }
         result = normalize_payload(agent="claude", payload=payload, workspace=Path("/tmp"))
         event = result["event"]
         self.assertEqual(event["type"], "tool_result")
+
+    def test_agent_tool_becomes_subagent_spawn(self):
+        # "Agent" is the newer-payload name for Claude's subagent-spawn tool
+        # (matcher-level name is "Task"); both must classify as subagent_spawn
+        # rather than falling through to the generic tool_result bucket.
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "session_id": "sess-1",
+            "tool_name": "Agent",
+            "tool_input": {"subagent_type": "general-purpose"},
+        }
+        result = normalize_payload(agent="claude", payload=payload, workspace=Path("/tmp"))
+        event = result["event"]
+        self.assertEqual(event["type"], "subagent_spawn")
+        self.assertEqual(event["subagent_type"], "general-purpose")
 
     def test_ephemeral_session_id_when_missing(self):
         payload = {"hook_event_name": "Stop"}

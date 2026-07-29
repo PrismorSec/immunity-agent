@@ -189,6 +189,15 @@ def build_record(
         "category": finding.get("category"),
         "rule_id": finding.get("ruleId"),
         "tool_name": _tool_name(event, extra),
+        # Subagent attribution: which spawned subagent took this action, and its
+        # persona. Non-sensitive identifiers — agent_id is a runtime-assigned
+        # opaque id, subagent_type is a static persona name (e.g.
+        # "general-purpose") — so they survive redaction. Null on main-agent
+        # calls and agents without subagents, letting the dashboard attribute an
+        # inner tool call to its subagent instead of flattening it into the
+        # parent session. See hooks.py (_normalize_claude).
+        "subagent_id": _subagent_id(event),
+        "subagent_type": _subagent_type(event),
         # Repo + policy scope so the org dashboard can show which repo an event
         # came from and whether it ran under an admin-granted exemption (vs full
         # org policy). Only managed/company repos report, so the repo identifier
@@ -236,6 +245,26 @@ def _tool_name(event: Dict[str, Any], extra: Dict[str, Any]) -> Optional[str]:
         return str(meta["tool_name"])
     # Fall back to the normalized event type as a coarse tool name.
     return str(event.get("type")) if event.get("type") else None
+
+
+def _subagent_id(event: Dict[str, Any]) -> Optional[str]:
+    """Opaque id of the subagent that took this action, if any. Set by the
+    normalizer on tool calls made *inside* a spawned subagent."""
+    meta = event.get("metadata")
+    sid = meta.get("subagent_id") if isinstance(meta, dict) else None
+    return str(sid) if sid else None
+
+
+def _subagent_type(event: Dict[str, Any]) -> Optional[str]:
+    """Persona of the subagent. On a spawn event it is the top-level
+    ``subagent_type`` (the persona being launched); on an inner tool call it is
+    ``metadata.subagent_type`` (the persona that took the action)."""
+    top = event.get("subagent_type")
+    if top:
+        return str(top)
+    meta = event.get("metadata")
+    st = meta.get("subagent_type") if isinstance(meta, dict) else None
+    return str(st) if st else None
 
 
 def assert_redacted(record: Dict[str, Any]) -> None:
