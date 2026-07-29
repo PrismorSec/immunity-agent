@@ -1,3 +1,13 @@
+## [1.35.0] — 2026-07-29
+
+### Added
+
+- **Per-agent tool-tag overlays.** `settings.tool_tags.agents[<agent>]` mirrors the shape `settings.egress.agents` already uses, so the two channels behave identically: a policy attached to one agent in the control plane arrives here and applies to that agent alone. The overlay is **tighten-only** by design — it may add tag mappings and rules and raise the mode to enforce, but can never remove a tag, drop a rule, or lower the mode. An agent's name arrives in the event asserted by its own process rather than by any credential, so a permissive overlay would be a way for a compromised agent to name itself out of the fleet's policy; adding restrictions is safe under that assumption, removing them is not. `validate_policy` now walks the per-agent overlays too, since a broken rule expression hidden in an overlay is exactly as broken as one in the fleet block and considerably harder to notice. (#225)
+
+### Fixed
+
+- **`toolTagsSig` is now compared on the device, so a new tag rule actually reaches it.** The control plane has always sent the signature and nothing here read it, so a tag change only propagated when some *other* channel happened to churn — an admin adding a blocking tag rule would watch it do nothing. The signature hashes the resolved `settings.tool_tags` block as canonical JSON, the way `_current_egress_sig` already does. That detail is what made the comparison possible at all: the device only ever holds the resolved block, never the rows behind it, so a row-derived signature is one it cannot reproduce. Expect one re-pull per org as the signature format settles. (#225)
+
 ## [1.34.1] — 2026-07-24
 
 ### Fixed
