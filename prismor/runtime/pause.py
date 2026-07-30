@@ -152,12 +152,73 @@ def _read_raw() -> Optional[Dict[str, Any]]:
         return None
 
 
-def active_state() -> Optional[Dict[str, Any]]:
-    """The pause record if this machine is currently paused, else None.
+def _parse_iso(text: Any) -> Optional[float]:
+    """Epoch seconds from an ISO-8601 timestamp, or None. Accepts the trailing
+    ``Z`` the control plane emits, which fromisoformat rejects before 3.11."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
-    If a ``--for`` window has elapsed the marker is cleared (auto-resume) and
-    None is returned, so the caller falls through to normal screening. Never
-    raises."""
+
+def org_state() -> Optional[Dict[str, Any]]:
+    """The org's pause/resume for this machine from the cached SIGNED policy,
+    normalized to the same shape as a local marker, or None.
+
+    Only ever read from a verified policy (see remote_policy.remote_pause), so
+    an unsigned or tampered file can't talk this machine out of enforcing. An
+    org pause past its ``until`` resolves to None — protection heals itself even
+    if nobody clears it in the console."""
+    try:
+        from prismor.runtime.enterprise import remote_policy as _remote
+        rec = _remote.remote_pause()
+    except Exception:
+        return None
+    if not rec:
+        return None
+    at = _parse_iso(rec.get("at"))
+    if at is None:
+        return None
+    state = rec.get("state")
+    until = _parse_iso(rec.get("until"))
+    if state == "paused" and until is not None and _now() >= until:
+        return None
+    return {
+        "schema": _SCHEMA,
+        "paused": state == "paused",
+        "state": state,
+        "source": "org",
+        "hard": until is None,
+        "at": at,
+        "until": until,
+        "reason": rec.get("reason") or "",
+        "by": rec.get("by") or "",
+    }
+
+
+def active_state() -> Optional[Dict[str, Any]]:
+    """The pause record if enforcement is currently paused on this machine,
+    else None. Never raises.
+
+    Two sources, resolved by timestamp:
+
+    * An ORG pause (pushed from the console) wins outright. ``prismor resume``
+      cannot lift it — same precedence as the org agent kill switch, where a
+      local re-enable can't override a fleet-wide disable.
+    * An ORG resume clears a local pause marker OLDER than it, so an admin can
+      bring back a machine they have no shell access to. A later local
+      ``prismor pause`` still wins, so developers keep the ability to pause
+      their own box.
+
+    A local ``--for`` window that has elapsed clears the marker (auto-resume)
+    and returns None, so the caller falls through to normal screening.
+    """
+    org = org_state()
+    if org is not None and org.get("paused"):
+        return org
+
     rec = _read_raw()
     if rec is None:
         return None
@@ -169,6 +230,21 @@ def active_state() -> Optional[Dict[str, Any]]:
                 return None
         except (TypeError, ValueError):
             pass
+
+    # An org resume issued after this marker was written overrides it. Clear the
+    # marker rather than just ignoring it, so the machine converges on one
+    # answer and `prismor status` doesn't keep claiming a pause that isn't
+    # in effect.
+    if org is not None and org.get("state") == "resumed":
+        try:
+            local_at = float(rec.get("at") or 0)
+        except (TypeError, ValueError):
+            local_at = 0.0
+        if float(org.get("at") or 0) >= local_at:
+            clear_paused()
+            return None
+
+    rec.setdefault("source", "local")
     return rec
 
 
@@ -183,6 +259,12 @@ def beat(agent: Optional[str] = None, state: Optional[Dict[str, Any]] = None) ->
     uploaded a record."""
     rec = state or active_state()
     if rec is None:
+        return False
+    # An ORG pause came FROM the control plane, so reporting it back tells it
+    # nothing it doesn't already know — and there's no local marker to stamp
+    # last_beat onto, so every call would re-upload. Normal screening telemetry
+    # keeps lastSeenAt fresh in that case.
+    if rec.get("source") == "org":
         return False
     now = _now()
     try:

@@ -258,10 +258,20 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_tool_tags_sig is not None
         and str(latest_tool_tags_sig) != str(_current_tool_tags_sig())
     )
+    # The org's pause/resume for THIS machine (settings.device_pause) is served
+    # in the resolved policy without a version bump. Only its signature appears
+    # here — never the pause itself — because this endpoint is unsigned, and a
+    # pause the runtime obeys is a remote off-switch for enforcement. Seeing the
+    # signature change is enough to trigger a signed re-pull.
+    latest_pause_sig = body.get("pauseSig")
+    pause_changed = (
+        latest_pause_sig is not None
+        and str(latest_pause_sig) != str(_current_pause_sig())
+    )
     if (version_changed or profile_changed or capture_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
-            or device_mode_changed or tool_tags_changed):
+            or device_mode_changed or tool_tags_changed or pause_changed):
         return fetch(force=True)
     return False
 
@@ -390,6 +400,44 @@ def _current_device_mode() -> str:
         return mode if mode in ("observe", "enforce") else ""
     except Exception:
         return ""
+
+
+def _current_pause_sig() -> str:
+    """Signature of the cached policy's org pause/resume (settings.device_pause),
+    matching the server's ``pauseSig`` format (canonical JSON → sha256 → 16 hex;
+    empty when the org has no pause opinion) so the device re-pulls the moment
+    an admin pauses or resumes it from the console."""
+    try:
+        pol = verify_and_load()
+        pause = ((pol or {}).get("settings") or {}).get("device_pause")
+        if not isinstance(pause, dict) or not pause:
+            return ""
+        import hashlib
+        blob = json.dumps(pause, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def remote_pause() -> Optional[Dict[str, Any]]:
+    """The org's pause/resume record for this machine from the cached SIGNED
+    policy, or None when the org has no opinion.
+
+    Read through ``verify_and_load`` so an unverified or tampered policy file
+    yields nothing rather than a forged pause — this is the one setting whose
+    whole job is to stop Prismor blocking, so it must never be honored unsigned.
+    """
+    try:
+        pol = verify_and_load()
+        pause = ((pol or {}).get("settings") or {}).get("device_pause")
+        if not isinstance(pause, dict):
+            return None
+        state = str(pause.get("state") or "")
+        if state not in ("paused", "resumed") or not pause.get("at"):
+            return None
+        return pause
+    except Exception:
+        return None
 
 
 def _current_egress_sig() -> str:

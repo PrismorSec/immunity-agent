@@ -485,6 +485,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "resume":
         from prismor.runtime import pause as _pause
         existed = _pause.clear_paused()
+        # An org pause is not ours to lift — clearing the local marker above is
+        # still right (it stops a stale local pause outliving the org one), but
+        # enforcement stays off, so say so rather than printing "resumed" over a
+        # machine that is still paused.
+        _org = _pause.org_state()
+        if _org is not None and _org.get("paused"):
+            why = f' Reason: "{_org.get("reason")}".' if _org.get("reason") else ""
+            print(f"  {_color('⏸  Still paused by your organization', _YELLOW)} — this was pushed from the Prismor console.{why}")
+            print(f"  {_color('Ask an admin to resume it there; `prismor resume` cannot lift an org pause.', _DIM)}")
+            return
         if existed:
             # Push the resume immediately so the console clears its "paused"
             # badge now, instead of waiting on the next real tool call.
@@ -1123,6 +1133,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                         sys.stderr.write(
                             f"[prismor] re-asserted guard for unhooked agent(s): {', '.join(_repaired)}\n"
                         )
+                # An org pause/resume arrives INSIDE that freshly pulled policy,
+                # and _pstate above was read from the previous one. Re-read it so
+                # a console pause (or resume) takes effect on THIS call rather
+                # than the next — the admin flips it, the agent's very next tool
+                # call already honors it.
+                from prismor.runtime import pause as _pause_mod
+                _was = _pstate
+                _pstate = _pause_mod.active_state()
+                if (_pstate is None) != (_was is None):
+                    if _pstate is not None and _pstate.get("source") == "org":
+                        _why = f" ({_pstate.get('reason')})" if _pstate.get("reason") else ""
+                        sys.stderr.write(
+                            f"[prismor] enforcement paused by your organization{_why} — "
+                            "screening and telemetry continue; blocking is off.\n"
+                        )
+                    elif _pstate is None and _was is not None:
+                        sys.stderr.write("[prismor] enforcement resumed by your organization.\n")
         except Exception:
             pass
 
@@ -3689,9 +3716,15 @@ def _print_status_overview(workspace: Path) -> None:
     except Exception:
         _pstate = None
     if _pstate is not None:
+        _by_org = _pstate.get("source") == "org"
         if _pstate.get("until"):
             _until = datetime.fromtimestamp(float(_pstate["until"])).strftime("%H:%M")
             _pmsg = f"yes — auto-resumes {_until}"
+            if _by_org:
+                _pmsg = f"by your organization — auto-resumes {_until}"
+        elif _by_org:
+            # `prismor resume` can't lift this one; don't suggest it.
+            _pmsg = "by your organization — ask an admin to resume it in the console"
         else:
             _pmsg = "yes — run `prismor resume` to re-enable"
         if _pstate.get("reason"):
