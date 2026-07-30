@@ -22,9 +22,12 @@ except ImportError:  # pragma: no cover - mirrors policy_engine's hard requireme
 _REGISTRY_PATH = Path(__file__).resolve().parent / "registry.yaml"
 
 # Allowed enum values — kept in sync with registry.schema.json.
-KINDS = frozenset({"coding-agent", "framework"})
+# multiplexer = terminal session manager that spawns other agents (e.g. Herdr) —
+# not itself a coding agent or a framework, and never intercepted directly.
+KINDS = frozenset({"coding-agent", "framework", "multiplexer"})
 # http = language-agnostic eval-server / Vercel AI sidecar (POST /v1/evaluate)
-SURFACES = frozenset({"hook-config", "sdk", "mcp", "rules-only", "http"})
+# pass-through = no interception surface at all; wrapped agents' own hooks fire unchanged
+SURFACES = frozenset({"hook-config", "sdk", "mcp", "rules-only", "http", "pass-through"})
 STATUSES = frozenset({"shipped", "roadmap", "sweep-only"})
 # client-side = HTTP eval-server adapters that enforce in the caller (Node/Ruby/Java/Rust)
 BLOCKING = frozenset({"exit-2", "json-permission", "throw", "proxy-deny", "none", "client-side"})

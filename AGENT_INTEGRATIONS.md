@@ -70,7 +70,13 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
 | MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
 
-Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · `mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails).
+**Multiplexers**
+
+| Tool | Kind | Surface | Status | Blocking |
+|---|---|---|---|---|
+| Herdr | multiplexer | pass-through | — | — |
+
+Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · `mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails) · `pass-through` (spawns other agents; no interception surface of its own).
 
 <!-- END GENERATED: coverage-matrix -->
 
@@ -602,9 +608,16 @@ API.
   scrollback/session recording to disk beyond what `pane read` exposed here was not checked.
   Recommend re-testing with `--source visible` immediately after the approval prompt renders
   (before advancing the pane) if cloaking is deployed on a shared/remote Herdr session.
-- **Sweep target:** not yet identified — Herdr's own config directory (referenced in its
-  docs at `herdr.dev/docs/configuration/`, observed locally as `~/.config/herdr/`) has not
-  been checked for anything sweep-worthy (no secrets expected there, but not verified).
+- **Sweep target:** `~/.config/herdr/` — registered in `prismor/runtime/integrations/registry.yaml`
+  (`id: herdr`) and `TOOL_DIRS` in `prismor/runtime/sweep.py`, so `prismor sweep` now scans
+  it alongside every other agent's config dir. No secrets were found there in this test; the
+  directory mainly held `config.toml` and logs, but registering it means a future auth
+  token or socket credential Herdr starts persisting there gets swept automatically.
+- **Registry:** `kind: multiplexer` / `surface: pass-through` are new enum values added to
+  `registry.schema.json` and `registry.py`'s `KINDS`/`SURFACES` — the first entry that isn't
+  a `coding-agent` or `framework`. `scripts/gen_integration_matrix.py` gained a third
+  generated table ("Multiplexers") to render it; run `scripts/verify_registry.sh` after
+  editing `registry.yaml` to confirm the schema and generated doc stay in sync.
 
 ---
 

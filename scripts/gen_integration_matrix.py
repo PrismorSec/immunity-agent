@@ -41,6 +41,7 @@ def render_matrix() -> str:
     items = load_registry()
     coding = [i for i in items if i.kind == "coding-agent"]
     frameworks = [i for i in items if i.kind == "framework"]
+    multiplexers = [i for i in items if i.kind == "multiplexer"]
 
     lines = [
         _BEGIN,
@@ -58,10 +59,24 @@ def render_matrix() -> str:
         "| Framework | Kind | Surface | Status | Blocking |",
         "|---|---|---|---|---|",
         *[_row(i) for i in frameworks],
+    ]
+
+    if multiplexers:
+        lines += [
+            "",
+            "**Multiplexers**",
+            "",
+            "| Tool | Kind | Surface | Status | Blocking |",
+            "|---|---|---|---|---|",
+            *[_row(i) for i in multiplexers],
+        ]
+
+    lines += [
         "",
         "Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. "
         "Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · "
-        "`mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails).",
+        "`mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails) · "
+        "`pass-through` (spawns other agents; no interception surface of its own).",
         "",
         _END,
     ]

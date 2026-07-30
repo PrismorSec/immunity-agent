@@ -551,3 +551,17 @@ agents:
     normalizer: prismor.runtime.mcp_gateway
     notes: "stdio/HTTP shim in front of downstream MCP servers; covers any MCP client."
     sources: ["https://modelcontextprotocol.io/"]
+
+  # ── Multiplexers — pass-through, no dedicated adapter ────────────────────
+  - id: herdr
+    name: Herdr
+    kind: multiplexer
+    surface: pass-through
+    status: sweep-only
+    config_paths: { user: "~/.config/herdr/" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.config/herdr/"
+    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged, so there is no Herdr-specific interception surface. Verified live 2026-07-30 against herdr 0.7.5 + prismor 1.32.1 — hook dispatch and cloaking decloak/scrub both confirmed working identically inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
+    sources: ["https://herdr.dev/"]

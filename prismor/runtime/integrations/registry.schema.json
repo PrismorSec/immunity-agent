@@ -20,8 +20,8 @@
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
         "name": { "type": "string" },
-        "kind": { "enum": ["coding-agent", "framework"] },
-        "surface": { "enum": ["hook-config", "sdk", "mcp", "rules-only", "http"] },
+        "kind": { "enum": ["coding-agent", "framework", "multiplexer"] },
+        "surface": { "enum": ["hook-config", "sdk", "mcp", "rules-only", "http", "pass-through"] },
         "status": { "enum": ["shipped", "roadmap", "sweep-only"] },
         "blocking": { "enum": ["exit-2", "json-permission", "throw", "proxy-deny", "none", "client-side"] },
         "events": { "type": "array", "items": { "type": "string" } },

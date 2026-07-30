@@ -54,6 +54,7 @@ TOOL_DIRS: dict[str, Path] = {
     "trae": Path.home() / ".trae",
     "kilocode": Path.home() / ".kilocode",
     "grok": Path.home() / ".grok",
+    "herdr": Path.home() / ".config" / "herdr",
     "kiro": Path.home() / ".kiro",
     "crush": Path.home() / ".config" / "crush",
     "openhands": Path.home() / ".openhands",
