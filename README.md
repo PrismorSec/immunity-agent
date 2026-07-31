@@ -102,13 +102,17 @@ These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.
   ```bash
   curl -sSL https://prismor.dev/install | sh
   ```
+- **pip**
+  ```bash
+  pip install prismor && prismor setup
+  ```
 - **git clone**
   ```bash
   git clone https://github.com/PrismorSec/prismor.git ~/.prismor
   bash ~/.prismor/scripts/init.sh .
   ```
 
-Full install guide (pip, PEP 668 systems, source-checkout testing, secret cloaking setup): [docs/installation.md](docs/installation.md)
+Full install guide (PEP 668 systems, source-checkout testing, secret cloaking setup): [docs/installation.md](docs/installation.md)
 
 ### Command Reference
 
