@@ -94,6 +94,10 @@ These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.
 
 ### Install
 
+- **pip**
+  ```bash
+  pip install prismor
+  ```
 - **Skill** — point your agent at [`SKILL.md`](SKILL.md); it installs itself at session start, no interruption to your workflow
   ```markdown
   Read `SKILL.md` and follow its instructions for runtime security.
@@ -101,10 +105,6 @@ These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.
 - **curl**
   ```bash
   curl -sSL https://prismor.dev/install | sh
-  ```
-- **pip**
-  ```bash
-  pip install prismor && prismor setup
   ```
 - **git clone**
   ```bash
