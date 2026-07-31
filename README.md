@@ -57,39 +57,6 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 
 ---
 
-## Capabilities<a name="capabilities" />
-
-![Prismor Architecture](assets/immunity-highlevel.png)
-
-- 🛡️ [Prismor](docs/prismor-runtime.md) covers the policy engine, session logs, security audit, and CLI reference
-- 📦 [Supply Chain](docs/supply-chain.md) covers install-time enforcement, IOC matching, and risk scoring
-- 🛜 [Network Isolation](docs/network-isolation.md) covers policy-driven egress control, raw IP detection, and tunnel blocking
-- 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
-- 🚦 [MCP Guardrails](docs/prismor-runtime.md#custom-guardrails-for-mcp-tools) let you block a specific MCP server or tool, or require human approval before the agent calls it, with a policy rule you write yourself
-- 🔐 [Sweep and Cloak](docs/sweep-and-cloak.md) covers secret prevention at tool boundaries, practical setup, best practices, threat model, and cleanup for leaked secrets
-- 🦞 [OpenClaw Integration](docs/openclaw.md) covers runtime hooks, prompt-injection scanning, and project or user-scope setup for OpenClaw
-- 🤖 [Hermes Agent Cloaking](docs/hermes.md) covers Hermes-specific secret cloaking with pip entry-point auto-discovery, filesystem install, and pre_gateway_dispatch paste guard
-- 🧠 [Semantic Guard](docs/semantic-guard.md): opt-in hybrid layer that adds an LLM-assisted intent check for paraphrased prompt-injection attempts the regex rules cannot catch
-- 🪤 [Canary](docs/canary.md) plants honeytoken credential files that trip a CRITICAL finding the moment an agent reads them, catching recon behavior
-- 🪪 [IAM](docs/iam.md) gives each agent a named identity and least-privilege permission profile when several agents share a workspace
-- 🧩 [Framework Agents](docs/frameworks-overview.md) guards production agents (OpenAI Agents SDK, LangChain/LangGraph in Python and JS, CrewAI, browser-use, Pydantic AI, AutoGen Core, Agno, Semantic Kernel, Google ADK, BeeAI, Claude Agent SDK, Vercel AI SDK, Mastra) with one call — wrap each request in `use_subject("user:alice")` and a multi-tenant agent gets per-user attribution, per-user IAM profiles, and per-user suspension
-- 🎯 [Scoped Agent](docs/scoped-agent.md) synthesizes minimal, task-specific rules per session so an injected pivot off-task gets blocked
-- 🧬 [Learning](docs/learning.md) mines session history to propose new rules, flag false positives, and detect evasion
-- ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
-- 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
-- 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
-- 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
-- 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
-- 🔦 [Host Discovery](docs/attestation-bundle.md#host-discovery) sweeps the machine with `prismor discover` and flags any AI agent running without Prismor hooks (shadow AI)
-- 🗺️ [Agentic AI Architecture Review](docs/agentic-architecture-review.md) is a design-time checklist for multi-agent/tool-using systems — permission scope, memory integrity, inter-agent trust, human-oversight placement — each item mapped to a real control ID and, where one exists, the Prismor rule that backstops it
-- 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
-
-Full command map across every capability: [CLI Reference](docs/cli-reference.md).
-
-These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.owasp.org/llm-top-10/) - covering prompt injection (LLM01), sensitive information disclosure (LLM02), supply chain (LLM03), improper output handling (LLM05), and excessive agency (LLM06).
-
----
-
 ## Quick Start<a name="quick-start" />
 
 ### Install
@@ -245,6 +212,39 @@ flowchart TD
     Store -->|"redacted telemetry"| Telemetry
     Telemetry --> OrgDashboard
 ```
+
+---
+
+## Capabilities<a name="capabilities" />
+
+![Prismor Architecture](assets/immunity-highlevel.png)
+
+- 🛡️ [Prismor](docs/prismor-runtime.md) covers the policy engine, session logs, security audit, and CLI reference
+- 📦 [Supply Chain](docs/supply-chain.md) covers install-time enforcement, IOC matching, and risk scoring
+- 🛜 [Network Isolation](docs/network-isolation.md) covers policy-driven egress control, raw IP detection, and tunnel blocking
+- 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
+- 🚦 [MCP Guardrails](docs/prismor-runtime.md#custom-guardrails-for-mcp-tools) let you block a specific MCP server or tool, or require human approval before the agent calls it, with a policy rule you write yourself
+- 🔐 [Sweep and Cloak](docs/sweep-and-cloak.md) covers secret prevention at tool boundaries, practical setup, best practices, threat model, and cleanup for leaked secrets
+- 🦞 [OpenClaw Integration](docs/openclaw.md) covers runtime hooks, prompt-injection scanning, and project or user-scope setup for OpenClaw
+- 🤖 [Hermes Agent Cloaking](docs/hermes.md) covers Hermes-specific secret cloaking with pip entry-point auto-discovery, filesystem install, and pre_gateway_dispatch paste guard
+- 🧠 [Semantic Guard](docs/semantic-guard.md): opt-in hybrid layer that adds an LLM-assisted intent check for paraphrased prompt-injection attempts the regex rules cannot catch
+- 🪤 [Canary](docs/canary.md) plants honeytoken credential files that trip a CRITICAL finding the moment an agent reads them, catching recon behavior
+- 🪪 [IAM](docs/iam.md) gives each agent a named identity and least-privilege permission profile when several agents share a workspace
+- 🧩 [Framework Agents](docs/frameworks-overview.md) guards production agents (OpenAI Agents SDK, LangChain/LangGraph in Python and JS, CrewAI, browser-use, Pydantic AI, AutoGen Core, Agno, Semantic Kernel, Google ADK, BeeAI, Claude Agent SDK, Vercel AI SDK, Mastra) with one call — wrap each request in `use_subject("user:alice")` and a multi-tenant agent gets per-user attribution, per-user IAM profiles, and per-user suspension
+- 🎯 [Scoped Agent](docs/scoped-agent.md) synthesizes minimal, task-specific rules per session so an injected pivot off-task gets blocked
+- 🧬 [Learning](docs/learning.md) mines session history to propose new rules, flag false positives, and detect evasion
+- ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
+- 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
+- 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
+- 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
+- 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
+- 🔦 [Host Discovery](docs/attestation-bundle.md#host-discovery) sweeps the machine with `prismor discover` and flags any AI agent running without Prismor hooks (shadow AI)
+- 🗺️ [Agentic AI Architecture Review](docs/agentic-architecture-review.md) is a design-time checklist for multi-agent/tool-using systems — permission scope, memory integrity, inter-agent trust, human-oversight placement — each item mapped to a real control ID and, where one exists, the Prismor rule that backstops it
+- 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
+
+Full command map across every capability: [CLI Reference](docs/cli-reference.md).
+
+These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.owasp.org/llm-top-10/) - covering prompt injection (LLM01), sensitive information disclosure (LLM02), supply chain (LLM03), improper output handling (LLM05), and excessive agency (LLM06).
 
 ---
 
