@@ -53,7 +53,29 @@ settings:
     allow_private: true   # loopback/RFC1918/.local skip the check. Cloud metadata
                           # endpoints (169.254.169.254 et al) NEVER count as private.
     allow: []             # entries: "*.github.com" | {host, ports, schemes, agents, reason}
-    deny: []              # same shape; an explicit deny always beats an allow
+    deny:
+      # Cloud metadata endpoints — these are the classic SSRF pivot for AI
+      # agents. Even though the code already marks them "NEVER count as private",
+      # an allow_private carve-out alone doesn't stop them when the agent's
+      # traffic is already routed through a cloud VPC. An agent with shell
+      # access in AWS/Azure/GCP can exfiltrate instance credentials (IMDSv1/v2)
+      # with a simple curl unless the destination is explicitly denied.
+      #
+      # These are default deny entries, not hardcoded blocks — operators can
+      # remove or override individual entries in .prismor/policy.yaml when
+      # legitimate access is needed (e.g. a deployment agent that reads EC2
+      # tags, or a GCP workload that queries the metadata server for its
+      # service account email).
+      - host: "169.254.169.254"
+        reason: "AWS IMDS — hands out instance credentials (IMDSv1/v2)"
+      - host: "169.254.169.253"
+        reason: "AWS Route 53 resolver — DNS rebinding surface"
+      - host: "metadata.google.internal"
+        reason: "GCP metadata server — hands out service account credentials"
+      - host: "100.100.100.200"
+        reason: "Alibaba Cloud metadata endpoint"
+      - host: "169.254.0.0/16"
+        reason: "link-local block — belt-and-braces catch-all for cloud metadata"
     agents: {}            # per-agent overrides, layered over the lists above
     # Example:
     #   egress:

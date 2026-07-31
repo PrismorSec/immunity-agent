@@ -176,6 +176,85 @@ def test_cloud_metadata_is_never_treated_as_private():
     assert pol.evaluate(_shell("curl http://metadata.google.internal/x"), 0)
 
 
+def test_default_deny_blocks_cloud_metadata_endpoints_in_enforce_mode():
+    """When the default deny entries are active, cloud metadata endpoints
+    produce an explicit-deny finding in enforce mode."""
+    pol = _policy(
+        default="allow", mode="enforce",
+        deny=[
+            {"host": "169.254.169.254", "reason": "AWS IMDS"},
+            {"host": "metadata.google.internal", "reason": "GCP metadata"},
+            {"host": "100.100.100.200", "reason": "Alibaba Cloud metadata"},
+            {"host": "169.254.0.0/16", "reason": "link-local block"},
+        ],
+    )
+    for dest in (
+        _shell("curl http://169.254.169.254/latest/meta-data/"),
+        _net("http://169.254.169.254/latest/meta-data/"),
+        _shell("curl http://metadata.google.internal/x"),
+        _shell("curl http://100.100.100.200/latest/meta-data/"),
+        # 169.254.169.253 is inside the /16 CIDR — use nc so the extractor catches it
+        _shell("nc 169.254.169.253 53"),
+    ):
+        findings = pol.evaluate(dest, 0)
+        assert findings, f"expected blocking findings for {dest}"
+        assert findings[0]["ruleId"] == RULE_EXPLICIT_DENY
+
+
+def test_cloud_metadata_deny_is_overridable():
+    """Operators can remove or override default deny entries in project policy.
+    An empty deny list means no explicit denies — the endpoint is still screened
+    by default/allow but the explicit deny is gone."""
+    # Fleet default: deny metadata endpoints.
+    default = _policy(
+        default="allow", mode="enforce",
+        deny=[
+            {"host": "169.254.169.254", "reason": "AWS IMDS"},
+            {"host": "metadata.google.internal", "reason": "GCP metadata"},
+            {"host": "169.254.0.0/16", "reason": "link-local"},
+        ],
+    )
+    assert default.evaluate(_shell("curl http://169.254.169.254/"), 0)
+
+    # Project override: empty deny list removes the block.
+    # (In practice, the project's .prismor/policy.yaml would set deny: [].)
+    project = _policy(default="allow", mode="enforce", deny=[])
+    assert project.evaluate(_shell("curl http://169.254.169.254/"), 0) == []
+
+
+def test_cloud_metadata_deny_single_endpoint_allowlist():
+    """An operator who needs a specific metadata endpoint (e.g., a deployment
+    agent reading EC2 tags) can remove the /16 CIDR and add back only the
+    non-AWS metadata endpoints they want blocked."""
+    pol = _policy(
+        default="allow", mode="enforce",
+        deny=[
+            # Removed 169.254.0.0/16 — operator needs AWS IMDS access.
+            # Removed 169.254.169.254 — operator's deployment agent reads EC2 tags.
+            # Kept only non-AWS endpoints.
+            {"host": "metadata.google.internal", "reason": "GCP metadata"},
+            {"host": "100.100.100.200", "reason": "Alibaba Cloud metadata"},
+        ],
+    )
+    # 169.254.169.254 is no longer in the deny list, so it passes.
+    assert pol.evaluate(_shell("curl http://169.254.169.254/latest/meta-data/"), 0) == []
+    # GCP metadata is still denied.
+    assert pol.evaluate(_shell("curl http://metadata.google.internal/x"), 0)
+    # Alibaba Cloud metadata is still denied.
+    assert pol.evaluate(_shell("curl http://100.100.100.200/latest/meta-data/"), 0)
+
+
+def test_cloud_metadata_deny_respects_observe_mode():
+    """In observe mode, the deny entries produce warnings but don't block."""
+    pol = _policy(
+        default="allow", mode="observe",
+        deny=[{"host": "169.254.169.254", "reason": "AWS IMDS"}],
+    )
+    findings = pol.evaluate(_shell("curl http://169.254.169.254/"), 0)
+    assert findings[0]["mode"] == "observe"
+    assert findings[0]["action"] == "warn"
+
+
 def test_allow_private_false_screens_internal_hosts():
     pol = _policy(default="deny", mode="enforce", allow=[], allow_private=False)
     assert pol.evaluate(_shell("curl http://10.1.2.3/x"), 0)

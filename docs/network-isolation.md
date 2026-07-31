@@ -60,6 +60,44 @@ Matching supports exact hosts, wildcards (`*.github.com` matches the apex and ev
 
 By default (`allow_private: true`) loopback, RFC1918, link-local, and `.internal`/`.local` destinations skip the check, so local dev servers and internal services don't need allowlisting. Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, …) are **never** treated as private — they are unroutable, which makes them look private, but they hand out cloud credentials and are the classic SSRF pivot. Set `allow_private: false` to screen internal destinations too.
 
+### Cloud metadata endpoint defense
+
+The default policy includes explicit deny entries for the common cloud metadata endpoints. An agent with shell access in AWS, GCP, or Alibaba Cloud can exfiltrate instance credentials (IMDSv1/v2) with a simple `curl` — and because these endpoints are link-local, they bypass `allow_private` carve-outs unless explicitly denied.
+
+The default deny entries are:
+
+```yaml
+deny:
+  - host: "169.254.169.254"      # AWS IMDS
+    reason: "AWS IMDS — hands out instance credentials (IMDSv1/v2)"
+  - host: "169.254.169.253"      # AWS Route 53 resolver
+    reason: "AWS Route 53 resolver — DNS rebinding surface"
+  - host: "metadata.google.internal"  # GCP metadata
+    reason: "GCP metadata server — hands out service account credentials"
+  - host: "100.100.100.200"      # Alibaba Cloud metadata
+    reason: "Alibaba Cloud metadata endpoint"
+  - host: "169.254.0.0/16"       # link-local belt-and-braces
+    reason: "link-local block — belt-and-braces catch-all for cloud metadata"
+```
+
+These are **default deny entries, not hardcoded blocks.** Operators who need legitimate metadata access can remove individual entries in their project's `.prismor/policy.yaml`:
+
+```yaml
+# .prismor/policy.yaml — allow AWS IMDS access for a deployment agent
+settings:
+  egress:
+    deny:
+      - host: "metadata.google.internal"
+        reason: "GCP metadata server"
+      - host: "100.100.100.200"
+        reason: "Alibaba Cloud metadata endpoint"
+      - host: "169.254.0.0/16"
+        reason: "link-local block"
+      # 169.254.169.254 intentionally omitted — this agent needs EC2 tags
+```
+
+This keeps the belt-and-braces `/16` block while allowing the specific endpoint the agent needs. The agent's session is still screened by the `allow` list and `default` verdict — removing the deny entry just means the endpoint returns to normal evaluation instead of an automatic block.
+
 ### Rolling it out
 
 Egress is off by default and observe-first. The intended sequence:
