@@ -2100,6 +2100,15 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
         # memory-invisible-text / memory-oversized-instruction-file rules (#153).
         base["metadata"]["truncated"] = memory["truncated"]
         base["metadata"]["has_invisible_controls"] = memory["has_invisible_controls"]
+        # Integrity check (#154): verify instruction files against TOFU baseline.
+        # Runs after content scanning — integrity findings supplement, never
+        # replace, the content-based rules above. All integrity actions are
+        # warn-level; mismatches feed the counter-instruction in cli.py.
+        _read_entries = [{"path": p} for p in memory.get("_paths", [])]
+        if _read_entries:
+            from prismor.runtime.memory_guard import verify_memory_files
+            _integrity_findings = verify_memory_files(_read_entries, memory_root)
+            base.setdefault("integrity_findings", []).extend(_integrity_findings)
         return {**base, "type": "memory", "content": memory["content"]}
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}

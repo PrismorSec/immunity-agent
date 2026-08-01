@@ -52,6 +52,10 @@ _NON_OVERRIDABLE_RULE_IDS = frozenset({
     # this rule would let an agent erase its own history undetected.
     "audit-trail-tampering",
     "tool-category-crossover",
+    # An override that disables memory-integrity checking would let a
+    # poisoned .prismor/policy.yaml also disable detection of itself.
+    # See FIX_PLAN.md §3.5.
+    "memory-integrity-mismatch",
 })
 
 # Categories that must stay in settings.block_categories no matter what an
@@ -117,6 +121,7 @@ _EVENT_SOURCE: Dict[str, str] = {
     "prompt": "user_prompt",
     "tool_result": "tool_output",
     "memory": "project_memory",
+    "memory_integrity": "memory_integrity",
 }
 
 # Provenance stamped on a finding raised from the body of a script the agent

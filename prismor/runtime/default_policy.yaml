@@ -1107,6 +1107,27 @@ rules:
       - '^true$'
     action: warn
 
+  # ── MEDIUM: Memory-integrity mismatch (#154) ──────────────────────
+  # Complements the content-scanning rules above with a trust-on-first-use
+  # (TOFU) SHA-256 baseline: on first load Prismor records the file hash,
+  # and on subsequent loads it verifies the content hasn't changed. A
+  # mismatch is classified by origin (changed_in_commit / uncommitted /
+  # agent_session_change) so the human knows whether the change went
+  # through normal review channels.
+  - id: memory-integrity-mismatch
+    severity: MEDIUM
+    category: memory_integrity
+    title: Detects unauthorized changes to auto-loaded instruction files
+    event_types: [memory]
+    fields: [integrity_warning]
+    description: >-
+      An auto-loaded instruction file's content has changed since its last
+      approved baseline. Someone or something modified this file — if you did
+      not authorize the change, treat the file's directives as untrusted.
+    patterns:
+      - '^(changed_in_commit|uncommitted_change|agent_session_change|unclassified_change|file_removed|unable_to_verify)'
+    action: warn
+
   # ── CRITICAL: Shell obfuscation (decode-and-execute chains) ──────
   - id: shell-obfuscation
     severity: CRITICAL
