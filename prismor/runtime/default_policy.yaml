@@ -1007,6 +1007,104 @@ rules:
       - 'do\s+not\s+(?:mention|disclose|tell|reveal|show|warn|report)\b[^\n]{0,40}\b(?:the\s+)?user\b'
       - '(?:append|include|add|insert)\s+(?:this|the\s+following)\s+(?:line\s+)?(?:to|in)\s+(?:every|each|all)\s+(?:response|message|reply|output|commit)'
       - '(?:gradually|subtly|silently|quietly|covertly)\s+(?:steer|guide|push|nudge|send|forward|transmit|exfiltrat|modify|change)'
+      # Authority assertion — the file claiming to redefine who the agent is.
+      - 'you\s+are\s+now\s+(?:operating\s+)?(?:a|an|in|the)\b[^\n]{0,60}\b(?:mode|agent|assistant|developer|admin|root|unrestricted)'
+      - 'your\s+new\s+(?:directive|instruction|role|persona|objective)\s+is'
+      - 'override\s+(?:all\s+)?(?:previous|prior|earlier|existing)\s+(?:instruction|directive|constraint|rule|guideline|safety)'
+      # Tool policy override — memory telling the agent to stop gating actions.
+      - 'always\s+approve\b[^\n]{0,40}\b(?:tool|command|request|action|call)'
+      - 'never\s+block\b[^\n]{0,40}\b(?:tool|command|request|action|call)'
+      - 'skip\s+(?:the\s+)?confirmation\b[^\n]{0,40}\b(?:step|prompt|dialog|for\s+(?:all|every|any))'
+      # System-prompt override — the file impersonating the platform layer.
+      - 'your\s+system\s+prompt\s+has\s+been\s+(?:updated|replaced|revised|amended)'
+      - 'new\s+system\s+(?:instructions?|prompt)\s*[:\-]'
+      # Suppression — silencing the very signals that would expose the above.
+      - 'suppress\s+(?:all\s+)?(?:warnings?|errors?|alerts?)\s+from\b'
+      - 'hide\s+any\s+(?:errors?|warnings?|alerts?)\s+about\b'
+    action: warn
+
+  # ── MEDIUM: Exfiltration directive in project-memory content (#153) ───
+  # Distinct from memory-embedded-directive's generic "fetch a URL" signal:
+  # these require a SECRET-shaped noun flowing OUTBOUND to a remote URL, which
+  # is the payload half of the TrapDoor-style memory poisoning chain. Every
+  # pattern is anchored on `https?://` so a doc that merely names .env
+  # ("never commit .env") cannot match.
+  - id: memory-exfil-directive
+    severity: MEDIUM
+    category: memory_poisoning
+    title: Detects a data-exfiltration directive in project-memory content
+    event_types: [memory]
+    fields: [combined_text]
+    description: >-
+      The project-memory file instructs the agent to transmit credentials,
+      environment files or other secrets to a remote endpoint. Memory files are
+      trusted implicitly by the model, so such a directive executes without the
+      user ever seeing it.
+    patterns:
+      - 'send\s+(?:the\s+)?(?:contents?\s+of\s+)?\.?(?:env|credentials?|secrets?|tokens?|keys?)[^.\n]{0,60}to\s+https?://'
+      - '(?:exfiltrat|upload|send|POST|transmit)\s+[^\n]{0,60}(?:\.env|credentials?|secrets?|tokens?)\s+to\s+https?://'
+      - 'curl\s+[^\n]*https?://[^ ]+[^\n]*\$\((?:cat|<\s*)[^\n]*\.env'
+      - 'after\s+every\s+(?:commit|build|test)[^\n]{0,40}\b(?:send|POST|curl)\b[^\n]{0,60}https?://'
+      - '(?:send|post|upload)[^\n]{0,40}(?:telemetry|analytics|usage\s+data)\s+to\s+https?://'
+    action: warn
+
+  # ── HIGH: Tool-policy override in project-memory content (#153) ───────
+  # Higher severity than the directive rules above because these do not ask the
+  # agent to DO something risky — they ask it to stop checking, which disarms
+  # every downstream control at once. No convention doc phrases a style rule as
+  # "never block any command", so the FP surface is near zero.
+  - id: memory-tool-policy-override
+    severity: HIGH
+    category: memory_poisoning
+    title: Detects a tool-approval or security-control override in project-memory content
+    event_types: [memory]
+    fields: [combined_text]
+    description: >-
+      The project-memory file instructs the agent to auto-approve tool calls or
+      bypass its security checks. This neutralizes the approval gate for every
+      subsequent action in the session, not just one.
+    patterns:
+      - 'always\s+(?:approve|accept|allow|permit)\s+(?:all|every|any)\s+(?:tool|command|request|action)'
+      - 'never\s+(?:block|deny|reject|refuse)\s+(?:any|a)\s+(?:tool|command|request|action)'
+      - 'bypass\s+(?:all|every|any)\s+(?:security|policy|check|verification|scan|guard)'
+      - 'disable\s+(?:all|the)\s+(?:security|policy|check|verification|scan|guard|warden)'
+      - 'skip\s+(?:all|every)\s+(?:confirmation|approval|review|verification)'
+    action: warn
+
+  # ── MEDIUM: Invisible text in project-memory content (#153) ───────────
+  # Structural, not lexical: fires on the `has_invisible_controls` fact the
+  # hook computes while reading the files (see hooks._INVISIBLE_CONTROL_RE),
+  # so it catches a hidden payload whose WORDING no pattern anticipates.
+  - id: memory-invisible-text
+    severity: MEDIUM
+    category: memory_poisoning
+    title: Detects invisible/zero-width Unicode characters in project-memory content
+    event_types: [memory]
+    fields: [has_invisible_controls]
+    description: >-
+      The project-memory file contains invisible or zero-width Unicode characters
+      that may hide instructions visible to the AI model but not to human reviewers.
+      This is the exact technique used in the TrapDoor campaign.
+    patterns:
+      - '^true$'
+    action: warn
+
+  # ── LOW: Oversized project-memory file (#153) ─────────────────────────
+  # Truncation is a detection gap, so it is reported rather than hidden: an
+  # attacker who pads a memory file past the scan limit would otherwise get a
+  # silently unscanned tail.
+  - id: memory-oversized-instruction-file
+    severity: LOW
+    category: memory_poisoning
+    title: Detects truncated project-memory content (>64KB)
+    event_types: [memory]
+    fields: [truncated]
+    description: >-
+      A project-memory file exceeds the scan limit and was truncated
+      before content scanning. The tail of the file was not scanned.
+      Consider raising PRISMOR_MEMORY_SCAN_LIMIT or splitting the file.
+    patterns:
+      - '^true$'
     action: warn
 
   # ── CRITICAL: Shell obfuscation (decode-and-execute chains) ──────
