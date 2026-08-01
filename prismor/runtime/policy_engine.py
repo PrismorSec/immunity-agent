@@ -1489,23 +1489,32 @@ class PolicyEngine:
                         "action": "block",
                     })
 
-            # MCP / request-body exfiltration: a remote MCP tool call carries
-            # its arguments in the request body, not the URL. Scan the serialized
-            # arguments for any enrolled cloaking secret so secrets shipped as
-            # tool parameters are caught the same way as secrets in a URL.
+            # Request-body exfiltration: a call that carries its arguments in
+            # the body rather than the URL. Two lanes reach here — a remote MCP
+            # tool call (arguments) and a model API call through the LLM gateway
+            # (the prompt) — so the finding names the surface it actually saw.
+            # The ruleId stays `cloaked-secret-in-mcp-args` across both: it is
+            # referenced by the enforcement floor and by existing exemptions,
+            # and renaming it would silently drop those.
             outbound_payload = str(event.get("outbound_payload", ""))
             if outbound_payload:
                 _secret_in_args = _check_cloaked_secrets_in_text(outbound_payload)
                 if _secret_in_args:
                     finding_id = f"cloaked-secret-in-mcp-args-{index}"
                     prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                    _surface = (
+                        "an outbound model prompt"
+                        if str((event.get("metadata") or {}).get("tool_name", "")
+                               ).startswith("llm__")
+                        else "outbound MCP tool arguments"
+                    )
                     findings.append({
                         "id": prefixed_id,
                         "severity": "CRITICAL",
                         "category": "secret_exfiltration",
                         "title": (
                             f"Enrolled secret '@@SECRET:{_secret_in_args}@@' "
-                            f"detected in outbound MCP tool arguments"
+                            f"detected in {_surface}"
                         ),
                         "evidence": "[secret value redacted from evidence]",
                         "eventIndex": index,

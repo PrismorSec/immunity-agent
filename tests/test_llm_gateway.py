@@ -630,3 +630,51 @@ class TestTransport:
             assert "no provider matches" in excinfo.value.read().decode()
         finally:
             harness.stop()
+
+
+
+# ── [H] shared secret-exfil rule names the right surface ─────────────────────
+
+class TestSecretExfilSurfaceNaming:
+    """The outbound-payload rule now serves two lanes. It must say which one it
+    saw, without changing the ruleId the enforcement floor keys on."""
+
+    SECRET = "sk-surface-test-" + "a1b2c3d4" * 3
+
+    def _findings(self, tmp_path, tool_name: str):
+        import prismor.runtime.policy_engine as pe
+        original = pe._check_cloaked_secrets_in_text
+        pe._check_cloaked_secrets_in_text = lambda text: (
+            "MY_TOKEN" if self.SECRET in text else None)
+        try:
+            engine = pe.PolicyEngine(workspace=tmp_path)
+            found = engine.evaluate({
+                "type": "network",
+                "url": "https://api.anthropic.com/v1/messages",
+                "outbound_payload": '{"prompt":"' + self.SECRET + '"}',
+                "metadata": {"tool_name": tool_name},
+            }, 0, session_id="s-surface")
+        finally:
+            pe._check_cloaked_secrets_in_text = original
+        return [f for f in found
+                if f.get("ruleId") == "cloaked-secret-in-mcp-args"]
+
+    def test_model_lane_says_model_prompt(self, tmp_path):
+        hits = self._findings(tmp_path, "llm__anthropic__claude-sonnet-5")
+        assert hits, "expected the enrolled-secret rule to fire"
+        assert "model prompt" in hits[0]["title"]
+        # The floor and existing exemptions key on this id — it must not drift.
+        assert hits[0]["ruleId"] == "cloaked-secret-in-mcp-args"
+        assert hits[0]["category"] == "secret_exfiltration"
+
+    def test_tool_lane_still_says_mcp_arguments(self, tmp_path):
+        hits = self._findings(tmp_path, "mcp__github__create_issue")
+        assert hits
+        assert "MCP tool arguments" in hits[0]["title"]
+
+    def test_title_names_the_secret_never_its_value(self, tmp_path):
+        for tool in ("llm__anthropic__x", "mcp__gh__y"):
+            for hit in self._findings(tmp_path, tool):
+                assert self.SECRET not in hit["title"]
+                assert "MY_TOKEN" in hit["title"]
+                assert self.SECRET not in str(hit.get("evidence", ""))
