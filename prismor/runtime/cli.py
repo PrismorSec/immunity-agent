@@ -1804,6 +1804,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     enable_userprompt_guard=not args.no_userprompt_guard,
                     enable_secret_guard=not args.no_secret_guard,
                     enable_read_guard=not args.no_read_guard,
+                    enable_env_guard=not args.no_env_guard,
                     enable_sweep_on_stop=args.sweep_on_stop,
                 )
                 print(f"Installed Claude Code cloaking hooks at {result['configPath']}")
@@ -2815,6 +2816,9 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Skip the PreToolUse detect-and-block hook for raw secrets in tool calls")
     t_install.add_argument("--no-read-guard", action="store_true",
                            help="Skip the PreToolUse hook that denies reading files containing a registered secret")
+    t_install.add_argument("--no-env-guard", action="store_true",
+                           help="Skip the PreToolUse hook that denies reading .env-style files whose entries "
+                                "are not yet imported into the vault (prismor cloak add --env-file)")
     t_install.add_argument("--sweep-on-stop", action="store_true",
                            help="Also wire a Stop-hook dry-run sweep for residue detection")
 
