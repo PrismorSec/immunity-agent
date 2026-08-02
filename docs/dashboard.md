@@ -159,6 +159,7 @@ viewer, with full rule metadata.
 
 ## See also
 
+- [Terminal Console](terminal-console.md) — `prismor term`, a full-screen console over this same store: agent → session tree, live event tail, per-session cost
 - [Prismor](prismor-runtime.md) — session-log schema and the audit command
 - [Learning](learning.md) — mines this same history for new rules
 - [CLI Reference](cli-reference.md) — all commands at a glance
