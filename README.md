@@ -92,6 +92,7 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
 - 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
 - 🔦 [Host Discovery](docs/attestation-bundle.md#host-discovery) sweeps the machine with `prismor discover` and flags any AI agent running without Prismor hooks (shadow AI)
+- ⏪ [Transcript Ingest](docs/transcript-ingest.md) reconstructs what your agents did *before* Prismor was installed — `prismor ingest --discover` replays on-disk session transcripts through the live policy engine, so the dashboard is populated on day one and you can see exactly what flipping a rule to enforce would have blocked, plus `--coverage` for sessions that ran unmonitored
 - 🗺️ [Agentic AI Architecture Review](docs/agentic-architecture-review.md) is a design-time checklist for multi-agent/tool-using systems — permission scope, memory integrity, inter-agent trust, human-oversight placement — each item mapped to a real control ID and, where one exists, the Prismor rule that backstops it
 - 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
 

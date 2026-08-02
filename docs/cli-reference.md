@@ -57,6 +57,7 @@ prismor
 │   ├─ scan                   Scan MCP servers & skills for risk
 │   ├─ deps                   Check project deps vs. threat feed
 │   ├─ analyze / ingest       Run the engine over a JSONL session
+│   ├─ ingest --discover      Reconstruct past agent activity from on-disk transcripts
 │   ├─ sessions / session     List / show stored sessions
 │   ├─ trail <action>         verify · show · checkpoint — signed audit trail
 │   ├─ attest [verify|coverage]  Signed evidence bundle + framework coverage
@@ -149,7 +150,11 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor scan` | `--agent`, `--json` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
 | `prismor deps` | `--json`, `--workspace` | Cross-reference project dependencies against the signed IOC feed + lockfile integrity. See [Supply Chain](supply-chain.md). |
 | `prismor analyze [FILE]` | `--input`, `--json`, `--sarif` | Run the engine over a JSONL session (or the most recent one). SARIF output feeds GitHub Code Scanning. |
-| `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a session and store it in the local DB. |
+| `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a single pre-normalized JSONL session and store it in the local DB. |
+| `prismor ingest --discover` | `--agent`, `--since`, `--max-events`, `--no-persist`, `--strict`, `--semantic`, `--json` | Sweep this machine for agent transcripts, replay them through the live policy engine, and report what the current policy **would have blocked** vs warned. Backfills the dashboard with history from before install. `--strict` exits non-zero if a non-empty transcript yields no events; `--semantic` re-enables the semantic guard (off during sweeps so it can't fire an LLM call per event across all history). See [Transcript Ingest](transcript-ingest.md). |
+| `prismor ingest --discover --coverage` | `--json` | Show sessions that ran with no live Prismor record — activity that executed ungoverned. |
+| `prismor ingest --discover --show <rule>` | — | List the individual tool calls behind one rule id. |
+| `prismor ingest --discover --export-corpus <dir>` | — | Write redacted, labelled rule fixtures (positives + negatives) from real usage. |
 | `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json` | List stored sessions, optionally only flagged ones, optionally across all workspaces. |
 | `prismor session <id>` | `--json` | Drill into one session's tool-call trace + findings. |
 | `prismor trail verify` | `--pubkey`, `--json` | Verify the signed audit trail end-to-end: recompute hashes, prev-hash linkage, seq gaps, Ed25519 signatures. Exit non-zero on anything but a clean chain. See [Signed Audit Trail](audit-trail.md). |

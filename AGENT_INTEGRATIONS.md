@@ -123,7 +123,7 @@ Prismor integrates with Hermes at two complementary layers:
 **1. Runtime hooks** (for policy enforcement and session monitoring):
 - **Config:** `~/.hermes/config.json` — registers a JS plugin scaffolded at `prismor/runtime/hermes-plugin/`.
 - **Plugin hooks:** `before_tool_call`, `message_sending`, internal `message:received` hook at `~/.hermes/hooks/prismor/`.
-- **Session ingest:** offline analysis of `~/.hermes/sessions/*.jsonl` via `prismor ingest --input <file> --agent hermes`.
+- **Session ingest:** offline analysis of `~/.hermes/sessions/*.jsonl` via `prismor ingest --input <file> --agent hermes`, or `prismor ingest --discover --agent hermes` to sweep the whole store automatically. The Hermes transcript adapter is contract-tested but has not been verified against real Hermes session data — run it with `--strict` and report a zero-event sweep. See [Transcript Ingest](docs/transcript-ingest.md).
 - **Code:** `prismor/runtime/hooks.py` `_merge_hermes()`, `_normalize_hermes()`.
 
 **2. Secret cloaking** (for preventing secrets from entering model context):

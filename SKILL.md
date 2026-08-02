@@ -213,6 +213,9 @@ pick the smallest tool that answers the question:
 | "Full security posture, fix what you can" | `prismor audit --fix` |
 | "Run this command in a safe sandbox" | `prismor sandbox <cmd>` |
 | "Recurring blocked patterns I should accept?" | `prismor learn` |
+| "What did my agents do before Prismor was installed?" | `prismor ingest --discover` (replays on-disk transcripts through the policy engine; add `--since 90d`) |
+| "What would break if I turn on enforce?" | `prismor ingest --discover --no-persist` — reports what the current policy **would have blocked** across real history, per rule |
+| "Did any agent session run unmonitored?" | `prismor ingest --discover --coverage` |
 | "Show all registered workspaces" | `prismor status --all` (terminal overview across every workspace where hooks are installed) |
 | "Open the dashboard" | `prismor dashboard` → http://127.0.0.1:7070 (opens a browser; `--no-open` for headless) |
 | "Am I on the latest version?" | `prismor update --check` (install with `prismor update`) |
@@ -266,6 +269,7 @@ Capability deep dives:
 - [`docs/scoped-agent.md`](./docs/scoped-agent.md): session-scoped, task-derived rules
 - [`docs/learning.md`](./docs/learning.md): mining session history for new rules
 - [`docs/dashboard.md`](./docs/dashboard.md): terminal + web dashboards and session forensics
+- [`docs/transcript-ingest.md`](./docs/transcript-ingest.md): reconstructing past agent activity from on-disk transcripts, what-if enforce reporting, coverage gaps
 - [`docs/docker.md`](./docs/docker.md): container hardening and limitations
 
 Project docs:
