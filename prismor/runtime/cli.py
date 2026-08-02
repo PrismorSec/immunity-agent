@@ -1556,6 +1556,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             run_non_interactive(target, scope="global", agents=det_agents)
         else:
             run_wizard(target)
+
+        backfill = getattr(args, "backfill", None)
+        _offer_transcript_backfill(
+            workspace=target,
+            repo_root=repo_root,
+            choice=backfill,
+            interactive=not non_interactive,
+        )
         return
 
     # ── iam ────────────────────────────────────────────────────────────
@@ -3084,6 +3092,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip TUI; read settings from flags or env vars (PRISMOR_MODE, PRISMOR_CLOAK)",
     )
     setup_parser.add_argument(
+        "--backfill",
+        dest="backfill",
+        action="store_true",
+        default=None,
+        help="After setup, reconstruct past agent activity from on-disk transcripts",
+    )
+    setup_parser.add_argument(
+        "--no-backfill",
+        dest="backfill",
+        action="store_false",
+        help="Skip the post-setup offer to reconstruct past agent activity",
+    )
+    setup_parser.add_argument(
         "--mode",
         choices=["observe", "enforce"],
         default=None,
@@ -4415,6 +4436,83 @@ def _parse_since(raw: str) -> Optional[float]:
         return float(text)
     except ValueError:
         raise SystemExit(f"invalid --since value: {raw!r} (try 30d, 12w, all)")
+
+
+def _offer_transcript_backfill(
+    *,
+    workspace: Path,
+    repo_root: Path,
+    choice: Optional[bool],
+    interactive: bool,
+) -> None:
+    """After setup, offer to reconstruct what the agents already did.
+
+    Freshly installed hooks see nothing until the user's next session, so the
+    dashboard opens empty and there is no basis yet for deciding whether to
+    move a rule to enforce. The transcripts that answer both questions are
+    already on disk. This is the one moment the offer is worth making
+    unprompted, so it is made here and nowhere else.
+
+    `choice` is the explicit `--backfill/--no-backfill` decision (None when the
+    user did not say). Declining is remembered only for this run — the hint
+    below is how it stays discoverable afterwards.
+    """
+    if choice is False:
+        return
+
+    hint = "  Reconstruct it later with: prismor ingest --discover\n"
+
+    try:
+        from prismor.runtime.transcripts.adapters import get_adapters
+    except Exception:
+        return
+
+    # Cheap pre-check: only ask when there is genuinely something to read.
+    # Discovery stats files without opening them, and stops at the first hit.
+    found = False
+    try:
+        for adapter in get_adapters(None):
+            for _ in adapter.discover():
+                found = True
+                break
+            if found:
+                break
+    except Exception:
+        return
+    if not found:
+        return
+
+    if choice is None:
+        if not interactive or not sys.stdin.isatty():
+            print("\n[prismor] Past agent activity was found on this machine.")
+            print(hint)
+            return
+        print("\n[prismor] Past agent activity was found on this machine.")
+        print("  Replaying it shows what your policy would have blocked, and")
+        print("  populates the dashboard with real history instead of an empty page.")
+        try:
+            answer = input("  Reconstruct it now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            print(hint)
+            return
+        if answer in {"n", "no"}:
+            print(hint)
+            return
+
+    from prismor.runtime.transcripts.driver import SweepOptions, sweep
+    from prismor.runtime.transcripts.report import format_report
+
+    result = sweep(
+        SweepOptions(
+            workspace=workspace,
+            repo_root=repo_root,
+            since_days=30.0,
+            max_events=50_000,
+            persist=True,
+        )
+    )
+    print(format_report(result, since_label="last 30d"))
 
 
 def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:

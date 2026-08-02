@@ -580,3 +580,83 @@ def test_ingest_requires_input_without_discover(capsys):
     with pytest.raises(SystemExit) as excinfo:
         main(["ingest"])
     assert "--input" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# Post-setup backfill offer
+# --------------------------------------------------------------------------
+
+
+def _offer(tmp_path, **kwargs):
+    from prismor.runtime.cli import _offer_transcript_backfill
+
+    params = dict(
+        workspace=tmp_path / "ws",
+        repo_root=Path(__file__).resolve().parents[1],
+        choice=None,
+        interactive=False,
+    )
+    params.update(kwargs)
+    params["workspace"].mkdir(parents=True, exist_ok=True)
+    return _offer_transcript_backfill(**params)
+
+
+def test_backfill_offer_is_silent_when_no_transcripts_exist(
+    tmp_path, monkeypatch, capsys
+):
+    """No agent history means nothing to offer — say nothing at all."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
+    _offer(tmp_path)
+    assert capsys.readouterr().out == ""
+
+
+def test_backfill_offer_declined_explicitly_does_nothing(
+    claude_home, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
+    _offer(tmp_path, choice=False)
+    assert capsys.readouterr().out == ""
+
+
+def test_backfill_offer_non_interactive_hints_instead_of_prompting(
+    claude_home, tmp_path, monkeypatch, capsys
+):
+    """A piped/CI setup must never block on input, but must stay discoverable."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
+    _offer(tmp_path, interactive=False)
+    out = capsys.readouterr().out
+    assert "prismor ingest --discover" in out
+    assert "Reconstruct it now?" not in out
+
+
+def test_backfill_offer_runs_when_accepted(
+    claude_home, tmp_path, monkeypatch, capsys
+):
+    from prismor.runtime.store import get_db_path
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
+    _offer(tmp_path, choice=True)
+    out = capsys.readouterr().out
+    assert "Would BLOCK" in out
+
+    connection = sqlite3.connect(str(get_db_path(tmp_path / "ws")))
+    stored = connection.execute(
+        "SELECT COUNT(*) FROM sessions WHERE source = ?", (REPLAY_SOURCE,)
+    ).fetchone()[0]
+    connection.close()
+    assert stored == 1, "accepting the offer must persist the reconstruction"
+
+
+def test_setup_parser_accepts_backfill_flags():
+    from prismor.runtime.cli import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["setup", "--backfill"]).backfill is True
+    assert parser.parse_args(["setup", "--no-backfill"]).backfill is False
+    # Unspecified means "ask", which is distinct from an explicit no.
+    assert parser.parse_args(["setup"]).backfill is None
