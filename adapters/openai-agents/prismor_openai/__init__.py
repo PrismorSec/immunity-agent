@@ -126,6 +126,7 @@ def prismor_guard(
     event_type: str = "shell",
     command_builder: Optional[Callable[[tuple, dict], str]] = None,
     raise_on_block: bool = True,
+    approvals: bool = True,
 ) -> Callable[..., Any]:
     """Wrap ``tool`` so each call is evaluated by Prismor before it runs.
 
@@ -160,6 +161,7 @@ def prismor_guard(
             session_id=session_id,
             event_type=event_type,
             raise_on_block=raise_on_block,
+            approvals=approvals,
         )
 
     ws = Path(workspace) if workspace else Path.cwd()
@@ -239,6 +241,7 @@ def _guard_function_tool(
     session_id: Optional[str],
     event_type: str,
     raise_on_block: bool,
+    approvals: bool = True,
 ) -> Any:
     """Wrap a FunctionTool's ``on_invoke_tool`` so the call is evaluated first.
 
@@ -293,14 +296,17 @@ def _guard_function_tool(
             # post an approval request to the control plane and block until an
             # admin approves. Approve → proceed; deny/timeout/not-enrolled → fail
             # closed to the block below.
-            try:
-                from prismor.runtime.enterprise import approvals as _approvals
-                if _approvals.step_up_finding(decision) is not None and _approvals.await_step_up(
-                    decision, event=event, agent=agent, session_id=sid
-                ):
-                    return await original(ctx, input_str)
-            except Exception:
-                pass  # any approval-path error fails closed
+            if approvals:
+                try:
+                    from prismor.runtime.enterprise import approvals as _approvals
+                    # async variant: the wait runs in a worker thread so this
+                    # event loop keeps servicing concurrent tools and streams.
+                    if await _approvals.await_step_up_async(
+                        decision, event=event, agent=agent, session_id=sid
+                    ):
+                        return await original(ctx, input_str)
+                except Exception:
+                    pass  # any approval-path error fails closed
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
@@ -323,6 +329,7 @@ def guard_agent(
     session_id: Optional[str] = None,
     event_type: str = "shell",
     raise_on_block: bool = False,
+    approvals: bool = True,
     goal: Optional[str] = None,
 ) -> Any:
     """Guard **every** FunctionTool on an Agent in one call — the easy path.
@@ -350,6 +357,7 @@ def guard_agent(
                 session_id=session_id,
                 event_type=event_type,
                 raise_on_block=raise_on_block,
+                approvals=approvals,
             )
             guarded.append(getattr(tool, "name", "tool"))
     agent_obj.__prismor_guarded_tools__ = guarded  # type: ignore[attr-defined]

@@ -119,6 +119,7 @@ def prismor_guard_tool(
     session_id: Optional[str] = None,
     event_type: str = "shell",
     raise_on_block: bool = False,
+    approvals: bool = True,
 ) -> Any:
     """Wrap a LangChain ``BaseTool``'s implementation so calls are policy-checked.
 
@@ -142,12 +143,13 @@ def prismor_guard_tool(
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode
             # Headless STEP_UP → post an approval request and block until an admin
             # decides. Approve → proceed; deny/timeout/not-enrolled → fail closed.
-            try:
-                from prismor.runtime.enterprise import approvals as _approvals
-                if _approvals.await_step_up(decision, agent=agent, session_id=sid):
-                    return None  # approved → allowed
-            except Exception:
-                pass
+            if approvals:
+                try:
+                    from prismor.runtime.enterprise import approvals as _approvals
+                    if _approvals.await_step_up(decision, agent=agent, session_id=sid):
+                        return None  # approved → allowed
+                except Exception:
+                    pass
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
@@ -166,7 +168,12 @@ def prismor_guard_tool(
     if callable(original_coro):
         @functools.wraps(original_coro)
         async def guarded_coro(*args: Any, **kwargs: Any) -> Any:
-            denial = _decide(args, kwargs)
+            # A STEP_UP inside _decide can wait minutes for a human; run the
+            # whole decision in a worker thread so this event loop keeps
+            # servicing other tools/streams instead of sleeping with it.
+            import asyncio
+
+            denial = await asyncio.to_thread(_decide, args, kwargs)
             return denial if denial is not None else await original_coro(*args, **kwargs)
         tool.coroutine = guarded_coro
 
@@ -238,6 +245,7 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
         mode: str = "observe",
         session_id: Optional[str] = None,
         event_type: str = "shell",
+        approvals: bool = True,
     ) -> None:
         self._subject = subject
         self._ws = Path(workspace) if workspace else Path.cwd()
@@ -245,6 +253,7 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
         self._mode = mode
         self._sid = session_id or f"langchain-cb-{os.getpid()}"
         self._event_type = event_type
+        self._approvals = approvals
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         name = (serialized or {}).get("name", "tool")
@@ -263,10 +272,11 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
         )
         log_observe_findings(decision, mode=self._mode, tool_name=name)
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode
-            try:
-                from prismor.runtime.enterprise import approvals as _approvals
-                if _approvals.await_step_up(decision, agent=self._agent, session_id=self._sid):
-                    return  # approved → allowed
-            except Exception:
-                pass
+            if self._approvals:
+                try:
+                    from prismor.runtime.enterprise import approvals as _approvals
+                    if _approvals.await_step_up(decision, agent=self._agent, session_id=self._sid):
+                        return  # approved → allowed
+                except Exception:
+                    pass
             raise PrismorBlocked(decision.reason or "policy violation", decision)

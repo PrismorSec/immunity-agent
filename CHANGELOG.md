@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- **Headless approvals are now user-configurable and event-loop-safe.** New `PRISMOR_APPROVALS` master switch (default on; `0`/`false`/`off` disables escalation fleet-wide - a STEP_UP verdict then fails closed exactly like an unenrolled install, without a control-plane round trip) plus a per-guard `approvals=False` keyword on every adapter surface that escalates (`prismor_guard_tool`/`guard_tools` and `PrismorCallbackHandler` for LangChain, `prismor_guard_tool` for CrewAI, `guard_controller` for browser-use, `prismor_guard`/`guard_agent` for OpenAI Agents). New `await_step_up_async()` runs the approval poll in a worker thread; the async adapters (LangChain `coroutine` path, browser-use, OpenAI Agents) now use it, so a pending approval no longer parks the event loop - previously a step-up froze every concurrent tool, LLM stream, and (for browser-use) the CDP socket for up to `PRISMOR_APPROVAL_TIMEOUT` seconds, which could time the browser out before a human ever decided. Approval outcomes and fail-closed semantics are unchanged.
+
 ## [1.35.0] — 2026-07-29
 
 ### Added
