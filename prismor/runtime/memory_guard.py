@@ -191,9 +191,23 @@ def _classify_change(
     # ── Check 1: Is the file at its committed (HEAD) state? ──────────
     cat_file = _git(["cat-file", "-e", f"HEAD:{rel}"], cwd=str(repo_root))
     if cat_file and cat_file.returncode == 0:
-        show = _git(["show", f"HEAD:{rel}"], cwd=str(repo_root))
+        # Use subprocess.run with text=False so git show's raw bytes
+        # are hashed directly — matching compute_file_hash() which reads
+        # raw bytes from the working tree.  _git() uses text=True, which
+        # applies universal-newline translation and would produce a
+        # different hash for CRLF-committed files.
+        try:
+            show = subprocess.run(
+                ["git", "show", f"HEAD:{rel}"],
+                capture_output=True,
+                text=False,
+                timeout=_GIT_TIMEOUT,
+                cwd=str(repo_root),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            show = None
         if show and show.returncode == 0:
-            committed_hash = hashlib.sha256(show.stdout.encode("utf-8")).hexdigest()
+            committed_hash = hashlib.sha256(show.stdout).hexdigest()
             if committed_hash == current_hash:
                 commit_sha = _current_commit(repo_root) or "HEAD"
                 return (

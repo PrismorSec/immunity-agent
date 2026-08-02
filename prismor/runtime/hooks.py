@@ -2104,7 +2104,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
         # Runs after content scanning — integrity findings supplement, never
         # replace, the content-based rules above. All integrity actions are
         # warn-level; mismatches feed the counter-instruction in cli.py.
-        _read_entries = [{"path": p} for p in memory.get("_paths", [])]
+        _read_entries = [{"path": p} for p in memory.get("files", [])]
         if _read_entries:
             from prismor.runtime.memory_guard import verify_memory_files
             _integrity_findings = verify_memory_files(_read_entries, memory_root)

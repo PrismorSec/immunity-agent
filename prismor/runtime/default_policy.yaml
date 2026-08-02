@@ -1119,7 +1119,6 @@ rules:
     category: memory_integrity
     title: Detects unauthorized changes to auto-loaded instruction files
     event_types: [memory]
-    fields: [integrity_warning]
     description: >-
       An auto-loaded instruction file's content has changed since its last
       approved baseline. Someone or something modified this file — if you did

@@ -236,6 +236,21 @@ def evaluate_tool_call(
     _session_seq = len(events) - 1
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject)
 
+    # Integrity findings (memory guard, #154) bypass the regex rule engine
+    # because verify_memory_files() produces fully-structured findings with
+    # title/severity/evidence already populated.  The integrity_warning field
+    # route in default_policy.yaml never worked (field never produced by
+    # _extract_fields) — integrity is now wired directly here.
+    if event.get("integrity_findings"):
+        _if_defaults: Dict[str, str] = {
+            "ruleId": "memory-integrity-mismatch",
+            "category": "memory_integrity",
+        }
+        for _f in event["integrity_findings"]:
+            for _k, _v in _if_defaults.items():
+                _f.setdefault(_k, _v)
+        findings.extend(event["integrity_findings"])
+
     # Codex cannot mutate Bash input or scrub Bash output from hooks. Block
     # literal cloak placeholders/read leaks before they execute, and persist the
     # finding so the dashboard explains the decision.
