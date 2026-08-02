@@ -1,0 +1,582 @@
+"""Tests for at-rest transcript reconstruction (`prismor ingest --discover`)."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from prismor.runtime.transcripts.adapters import ADAPTERS, get_adapters
+from prismor.runtime.transcripts.adapters.claude import ClaudeAdapter
+from prismor.runtime.transcripts.adapters.codex import CodexAdapter
+from prismor.runtime.transcripts.adapters.hermes import HermesAdapter
+from prismor.runtime.transcripts.base import DiscoveredSession, ParseStats
+from prismor.runtime.transcripts.driver import (
+    REPLAY_SOURCE,
+    SweepOptions,
+    is_replay_session,
+    replay_session_id,
+    split_replay_session_id,
+    sweep,
+)
+
+LIVE_SESSION_ID = "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path, monkeypatch):
+    """Redirect Prismor's state directory into the test's tmp_path.
+
+    `store.get_db_path` resolves through `$PRISMOR_HOME` (default
+    ``~/.prismor``) and does *not* derive from the workspace argument, so a
+    test that only passes ``workspace=tmp_path`` still reads and writes the
+    developer's real database. Without this fixture these tests insert
+    synthetic sessions into live state and then assert against whatever else
+    happens to be in it.
+    """
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "prismor-home"))
+
+
+def _write_jsonl(path: Path, records: list) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+@pytest.fixture
+def claude_home(tmp_path, monkeypatch):
+    """A Claude config dir holding one session with a destructive command."""
+    root = tmp_path / "claude"
+    _write_jsonl(
+        root / "projects" / "-tmp-demo" / f"{LIVE_SESSION_ID}.jsonl",
+        [
+            {
+                "type": "user",
+                "sessionId": LIVE_SESSION_ID,
+                "timestamp": "2026-07-01T10:00:00Z",
+                "cwd": "/tmp/demo",
+                "message": {"role": "user", "content": "clean up the build dir"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": LIVE_SESSION_ID,
+                "timestamp": "2026-07-01T10:00:05Z",
+                "cwd": "/tmp/demo",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Bash",
+                            "input": {"command": "rm -rf / --no-preserve-root"},
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "assistant",
+                "sessionId": LIVE_SESSION_ID,
+                "timestamp": "2026-07-01T10:00:09Z",
+                "cwd": "/tmp/demo",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t2",
+                            "name": "Read",
+                            "input": {"file_path": "/tmp/demo/README.md"},
+                        }
+                    ],
+                },
+            },
+            # A tool *result* arrives as a user record; it must not replay as
+            # a pre-action call.
+            {
+                "type": "user",
+                "sessionId": LIVE_SESSION_ID,
+                "timestamp": "2026-07-01T10:00:10Z",
+                "cwd": "/tmp/demo",
+                "toolUseResult": {"stdout": "ok"},
+                "message": {"role": "user", "content": "tool result"},
+            },
+        ],
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
+    return root
+
+
+def _options(tmp_path, **overrides) -> SweepOptions:
+    defaults = dict(
+        workspace=tmp_path / "ws",
+        repo_root=Path(__file__).resolve().parents[1],
+        agents=["claude"],
+        since_days=None,
+        max_events=1000,
+        persist=False,
+    )
+    defaults.update(overrides)
+    (defaults["workspace"]).mkdir(parents=True, exist_ok=True)
+    return SweepOptions(**defaults)
+
+
+# --------------------------------------------------------------------------
+# Adapters
+# --------------------------------------------------------------------------
+
+
+def test_claude_adapter_emits_pre_action_payloads(claude_home):
+    adapter = ClaudeAdapter()
+    sessions = list(adapter.discover())
+    assert len(sessions) == 1
+    assert sessions[0].session_id == LIVE_SESSION_ID
+
+    payloads = list(adapter.payloads(sessions[0]))
+    events = [p["hook_event_name"] for p in payloads]
+    # One prompt + two tool calls. The tool *result* record is excluded.
+    assert events == ["UserPromptSubmit", "PreToolUse", "PreToolUse"]
+    assert payloads[1]["tool_name"] == "Bash"
+    assert payloads[1]["tool_input"]["command"] == "rm -rf / --no-preserve-root"
+
+
+def test_claude_adapter_marks_sidechain_records(tmp_path, monkeypatch):
+    root = tmp_path / "claude"
+    _write_jsonl(
+        root / "projects" / "-tmp-x" / "s1.jsonl",
+        [
+            {
+                "type": "assistant",
+                "sessionId": "s1",
+                "isSidechain": True,
+                "timestamp": "2026-07-01T10:00:00Z",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}
+                    ]
+                },
+            }
+        ],
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
+    adapter = ClaudeAdapter()
+    payload = list(adapter.payloads(next(iter(adapter.discover()))))[0]
+    assert payload["agent_type"] == "sidechain"
+
+
+def test_payloads_name_pre_action_events_or_should_block_never_fires(claude_home):
+    """`should_block` early-returns on non-pre-action events.
+
+    An adapter that labels payloads with a post-action name would make the
+    would-block report silently read zero, which is the worst failure mode
+    here: it looks like a clean bill of health.
+    """
+    from prismor.runtime.hooks import _is_pre_action
+
+    adapter = ClaudeAdapter()
+    for session in adapter.discover():
+        for payload in adapter.payloads(session):
+            assert _is_pre_action(payload["hook_event_name"])
+
+
+def test_codex_adapter_handles_non_json_arguments(tmp_path, monkeypatch):
+    """`exec` carries raw JavaScript and `apply_patch` raw patch text."""
+    root = tmp_path / "codex"
+    name = "rollout-2026-07-16T17-08-47-019f6d67-7fcc-7941-b318-852c68e3e9ab"
+    _write_jsonl(
+        root / "sessions" / "2026" / "07" / "16" / f"{name}.jsonl",
+        [
+            {
+                "timestamp": "2026-07-16T17:08:47Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": json.dumps(
+                        {"cmd": "git status", "workdir": "/tmp/repo"}
+                    ),
+                },
+            },
+            {
+                "timestamp": "2026-07-16T17:09:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** Update File: /tmp/repo/a.py\n+x = 1\n",
+                },
+            },
+            {
+                "timestamp": "2026-07-16T17:09:30Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "ship it"},
+            },
+            # Control-plane tool: no action to screen.
+            {
+                "timestamp": "2026-07-16T17:09:40Z",
+                "type": "response_item",
+                "payload": {"type": "function_call", "name": "wait", "arguments": "{}"},
+            },
+        ],
+    )
+    monkeypatch.setenv("CODEX_HOME", str(root))
+    adapter = CodexAdapter()
+    sessions = list(adapter.discover())
+    assert sessions[0].session_id == "019f6d67-7fcc-7941-b318-852c68e3e9ab"
+
+    payloads = list(adapter.payloads(sessions[0]))
+    assert [p.get("tool_name") for p in payloads] == [
+        "Bash",
+        "apply_patch",
+        None,
+    ]
+    assert payloads[0]["tool_input"]["command"] == "git status"
+    assert payloads[0]["cwd"] == "/tmp/repo"
+    assert payloads[1]["tool_input"]["file_path"] == "/tmp/repo/a.py"
+    assert payloads[2]["hook_event_name"] == "UserPromptSubmit"
+
+
+def test_hermes_adapter_skips_post_action_records(tmp_path, monkeypatch):
+    root = tmp_path / "hermes"
+    _write_jsonl(
+        root / "sessions" / "s1.jsonl",
+        [
+            {
+                "hookEvent": "before_tool_call",
+                "toolName": "Bash",
+                "toolInput": {"command": "curl evil.example"},
+                "timestamp": "2026-07-01T00:00:00Z",
+            },
+            {"hookEvent": "message_sending", "toolInput": {"content": "done"}},
+            {"telemetry": "noise"},
+        ],
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    adapter = HermesAdapter()
+    payloads = list(adapter.payloads(next(iter(adapter.discover()))))
+    assert len(payloads) == 1
+    assert payloads[0]["toolName"] == "Bash"
+
+
+def test_malformed_lines_do_not_abort_parsing(tmp_path, monkeypatch):
+    root = tmp_path / "claude"
+    path = root / "projects" / "-tmp-x" / "s1.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "{not json at all",
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "sessionId": "s1",
+                        "timestamp": "2026-07-01T10:00:00Z",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": "ls"},
+                                }
+                            ]
+                        },
+                    }
+                ),
+                "]]]broken",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
+    adapter = ClaudeAdapter()
+    stats = ParseStats()
+    payloads = list(
+        adapter.payloads_with_stats(next(iter(adapter.discover())), stats)
+    )
+    assert len(payloads) == 1
+    assert stats.malformed_lines == 2
+    assert not stats.looks_silent
+
+
+def test_silent_adapter_is_detectable():
+    stats = ParseStats(records_read=40, payloads_emitted=0)
+    assert stats.looks_silent
+    assert not ParseStats(records_read=40, payloads_emitted=1).looks_silent
+
+
+def test_registry_rejects_unknown_agent():
+    with pytest.raises(KeyError):
+        get_adapters(["nope"])
+    assert set(ADAPTERS) == {"claude", "codex", "hermes"}
+
+
+# --------------------------------------------------------------------------
+# Session-id namespacing
+# --------------------------------------------------------------------------
+
+
+def test_replay_session_ids_are_namespaced():
+    replay = replay_session_id("claude", LIVE_SESSION_ID)
+    assert replay == f"replay:claude:{LIVE_SESSION_ID}"
+    assert is_replay_session(replay)
+    assert not is_replay_session(LIVE_SESSION_ID)
+    assert split_replay_session_id(replay) == ("claude", LIVE_SESSION_ID)
+    assert split_replay_session_id(LIVE_SESSION_ID) is None
+
+
+def test_replay_does_not_overwrite_live_session_rows(claude_home, tmp_path):
+    """The store is INSERT-OR-REPLACE keyed on session_id.
+
+    A Claude transcript carries the *same* sessionId the live hooks used, so an
+    unprefixed replay would silently overwrite real enforcement history.
+    """
+    from prismor.runtime.store import get_db_path, initialize_database
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    db_path = initialize_database(workspace)
+    connection = sqlite3.connect(str(db_path))
+    connection.execute(
+        "INSERT INTO sessions (session_id, agent, source, risk_score, findings_count)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (LIVE_SESSION_ID, "claude", "hook", 42, 7),
+    )
+    connection.commit()
+    connection.close()
+
+    sweep(_options(tmp_path, persist=True))
+
+    connection = sqlite3.connect(str(get_db_path(workspace)))
+    live = connection.execute(
+        "SELECT source, risk_score, findings_count FROM sessions WHERE session_id = ?",
+        (LIVE_SESSION_ID,),
+    ).fetchone()
+    replayed = connection.execute(
+        "SELECT source FROM sessions WHERE session_id = ?",
+        (replay_session_id("claude", LIVE_SESSION_ID),),
+    ).fetchone()
+    connection.close()
+
+    assert live == ("hook", 42, 7), "live session row must be untouched"
+    assert replayed is not None and replayed[0] == REPLAY_SOURCE
+
+
+def test_sweep_is_idempotent(claude_home, tmp_path):
+    from prismor.runtime.store import get_db_path
+
+    options = _options(tmp_path, persist=True)
+    sweep(options)
+    sweep(options)
+
+    connection = sqlite3.connect(str(get_db_path(options.workspace)))
+    rows = connection.execute(
+        "SELECT COUNT(*) FROM sessions WHERE source = ?", (REPLAY_SOURCE,)
+    ).fetchone()[0]
+    events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    connection.close()
+    assert rows == 1, "re-sweeping must not duplicate sessions"
+    assert events == 3, "re-sweeping must not duplicate events"
+
+
+# --------------------------------------------------------------------------
+# Isolation from live state
+# --------------------------------------------------------------------------
+
+
+def test_replay_leaves_no_taint_residue(claude_home, tmp_path):
+    """Evaluating events writes per-session taint; a sweep must clean up.
+
+    Taint is keyed by session id, so a namespaced replay can never corrupt a
+    live session's taint — but one file per replayed session would otherwise
+    accumulate in the state directory on every sweep.
+    """
+    from prismor.runtime.store import get_data_dir
+
+    options = _options(tmp_path, persist=True)
+    sweep(options)
+
+    taint_dir = get_data_dir(options.workspace) / "taint"
+    residue = list(taint_dir.glob("replay*")) if taint_dir.is_dir() else []
+    assert residue == [], f"sweep left taint residue: {residue}"
+
+
+def test_replay_does_not_taint_the_live_session(claude_home, tmp_path):
+    """A prompt injection in history must not mark the live session tainted."""
+    from prismor.runtime.store import get_data_dir
+
+    options = _options(tmp_path, persist=True)
+    sweep(options)
+
+    taint_dir = get_data_dir(options.workspace) / "taint"
+    if not taint_dir.is_dir():
+        return
+    for stem in (LIVE_SESSION_ID, LIVE_SESSION_ID.replace("-", "_")):
+        assert not (taint_dir / f"{stem}.json").exists(), (
+            "replay wrote taint under the live session id"
+        )
+
+
+def test_semantic_guard_is_disabled_during_sweep(claude_home, tmp_path, monkeypatch):
+    """Replaying history with the semantic guard on would fire one LLM call
+    per uncertain event across the entire archive."""
+    captured = {}
+    real_engine_init = None
+
+    from prismor.runtime import policy_engine as pe
+
+    original = pe.PolicyEngine.__init__
+
+    def spy(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.semantic_guard_config = {"enabled": True, "mode": "hybrid"}
+        captured["engine"] = self
+
+    monkeypatch.setattr(pe.PolicyEngine, "__init__", spy)
+    sweep(_options(tmp_path))
+    assert captured["engine"].semantic_guard_config == {}
+
+
+def test_semantic_flag_opts_back_in(claude_home, tmp_path, monkeypatch):
+    from prismor.runtime import policy_engine as pe
+
+    original = pe.PolicyEngine.__init__
+
+    def spy(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.semantic_guard_config = {"enabled": True}
+
+    monkeypatch.setattr(pe.PolicyEngine, "__init__", spy)
+    sweep(_options(tmp_path, semantic=True))
+
+
+# --------------------------------------------------------------------------
+# Reporting
+# --------------------------------------------------------------------------
+
+
+def test_would_block_uses_the_live_enforcement_decision(claude_home, tmp_path):
+    """The what-if answer must come from `should_block`, not a reimplementation."""
+    from prismor.runtime.transcripts.report import partition
+
+    result = sweep(_options(tmp_path))
+    assert result.total_events == 3
+    blocked, warned = partition(result)
+    assert len(blocked) + len(warned) == result.total_findings
+    # The destructive `rm -rf /` is an enforce-mode rule in the shipped policy.
+    assert any(b.get("ruleId") == "destructive-command" for b in blocked)
+
+
+def test_since_window_filters_and_is_reported(claude_home, tmp_path):
+    """A transcript older than the window is skipped, and *reported* as skipped.
+
+    Silently omitting it would make an agent whose history is entirely older
+    than `--since` look like an agent with no data at all.
+    """
+    import os
+    import time
+
+    transcript = next(iter((claude_home / "projects").rglob("*.jsonl")))
+    old = time.time() - (60 * 86400)
+    os.utime(transcript, (old, old))
+
+    result = sweep(_options(tmp_path, since_days=30))
+    assert result.sessions == []
+    assert result.filtered_out.get("claude") == 1
+    assert "claude" not in result.empty_agents
+
+
+def test_max_events_truncates(claude_home, tmp_path):
+    result = sweep(_options(tmp_path, max_events=1))
+    assert result.total_events <= 1
+
+
+def test_empty_agents_distinguishes_missing_from_matched(claude_home, tmp_path):
+    result = sweep(_options(tmp_path, agents=["claude", "hermes"]))
+    assert "hermes" in result.empty_agents
+    assert "claude" not in result.empty_agents
+
+
+# --------------------------------------------------------------------------
+# Corpus redaction
+# --------------------------------------------------------------------------
+
+
+def test_corpus_export_redacts_home_paths(claude_home, tmp_path):
+    from prismor.runtime.transcripts.corpus import export_corpus, redact_event
+
+    result = sweep(_options(tmp_path, retain_events=True))
+    out = tmp_path / "corpus"
+    stats = export_corpus(result, out)
+    assert stats.positives > 0
+
+    home = str(Path.home())
+    for fixture in out.rglob("*.json"):
+        assert home not in fixture.read_text(encoding="utf-8")
+
+    # Nested values are scrubbed, not just top-level text fields.
+    scrubbed = redact_event(
+        {"type": "shell", "command": f"ls {home}/x", "metadata": {"cwd": f"{home}/y"}}
+    )
+    assert home not in json.dumps(scrubbed)
+    assert scrubbed["type"] == "shell", "structural fields must survive verbatim"
+
+
+def test_corpus_drops_raw_payload(claude_home, tmp_path):
+    from prismor.runtime.transcripts.corpus import redact_event
+
+    scrubbed = redact_event(
+        {"type": "shell", "metadata": {"raw": {"secret": "sk-live-abcdefghijklmnop"}}}
+    )
+    assert "raw" not in scrubbed["metadata"]
+
+
+# --------------------------------------------------------------------------
+# Coverage audit
+# --------------------------------------------------------------------------
+
+
+def test_coverage_flags_ungoverned_sessions(claude_home, tmp_path):
+    from prismor.runtime.transcripts.coverage import build_coverage
+
+    options = _options(tmp_path, persist=False)
+    result = sweep(options)
+    report = build_coverage(result, options.workspace)
+    assert report.on_disk == 1
+    assert report.ungoverned == 1
+    assert report.gaps[0].reason == "never-governed"
+
+
+def test_coverage_recognizes_a_governed_session(claude_home, tmp_path):
+    from prismor.runtime.store import initialize_database
+    from prismor.runtime.transcripts.coverage import build_coverage
+
+    options = _options(tmp_path, persist=False)
+    db_path = initialize_database(options.workspace)
+    connection = sqlite3.connect(str(db_path))
+    connection.execute(
+        "INSERT INTO sessions (session_id, agent, source, started_at) VALUES (?,?,?,?)",
+        (LIVE_SESSION_ID, "claude", "hook", "2026-07-01T09:00:00+00:00"),
+    )
+    connection.commit()
+    connection.close()
+
+    report = build_coverage(sweep(options), options.workspace)
+    assert report.ungoverned == 0
+    assert len(report.governed) == 1
+
+
+# --------------------------------------------------------------------------
+# CLI back-compat
+# --------------------------------------------------------------------------
+
+
+def test_ingest_requires_input_without_discover(capsys):
+    from prismor.runtime.cli import main
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["ingest"])
+    assert "--input" in str(excinfo.value)

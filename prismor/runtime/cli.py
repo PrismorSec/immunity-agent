@@ -985,6 +985,13 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # ── ingest ─────────────────────────────────────────────────────────
     if args.command == "ingest":
+        if getattr(args, "discover", False):
+            return _ingest_discover(args, workspace=workspace, repo_root=repo_root)
+        if not args.input:
+            raise SystemExit(
+                "ingest requires --input <file>, or --discover to sweep this "
+                "machine's agent transcripts"
+            )
         events = parse_jsonl(read_text(args.input))
         result = analyze_events(events, repo_root=repo_root, workspace=workspace)
         session_id = args.session_id or derive_session_id(events)
@@ -2542,10 +2549,63 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── ingest ─────────────────────────────────────────────────────────
     ingest = subparsers.add_parser("ingest", help="Analyze and store a session")
-    ingest.add_argument("--input", required=True, help="Path to JSONL session file")
+    # `--input` stays optional-but-primary: without --discover it is required,
+    # preserving the documented single-file workflow exactly.
+    ingest.add_argument("--input", help="Path to JSONL session file")
     ingest.add_argument("--workspace", help="Workspace path")
     ingest.add_argument("--session-id", help="Override session ID")
-    ingest.add_argument("--agent", help="Agent name")
+    ingest.add_argument(
+        "--agent",
+        help=(
+            "With --input: the agent name to label the session with. "
+            "With --discover: which agents' transcripts to sweep "
+            "(comma-separated, or 'all')."
+        ),
+    )
+    ingest.add_argument(
+        "--discover",
+        action="store_true",
+        help="Sweep this machine for agent transcripts instead of reading one file",
+    )
+    ingest.add_argument(
+        "--since",
+        default="30d",
+        help="Only transcripts modified within this window, e.g. 7d, 90d, all (default: 30d)",
+    )
+    ingest.add_argument(
+        "--max-events",
+        type=int,
+        default=50_000,
+        help="Ceiling on evaluated events per sweep (default: 50000)",
+    )
+    ingest.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="Report only; do not write reconstructed sessions to the store",
+    )
+    ingest.add_argument("--show", help="List the individual calls matching a rule id")
+    ingest.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero if a non-empty transcript produced no events",
+    )
+    ingest.add_argument(
+        "--semantic",
+        action="store_true",
+        help="Allow the semantic guard to run during the sweep (off by default: "
+             "it would fire one LLM call per uncertain event across all history)",
+    )
+    ingest.add_argument(
+        "--coverage",
+        action="store_true",
+        help="Report sessions that ran with no live Prismor record (ungoverned)",
+    )
+    ingest.add_argument(
+        "--export-corpus",
+        metavar="DIR",
+        help="Write labelled rule fixtures (redacted) from the replayed events",
+    )
+    ingest.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # ── sessions ───────────────────────────────────────────────────────
     sessions_parser = subparsers.add_parser("sessions", help="List stored sessions")
@@ -4268,6 +4328,102 @@ def severity_breakdown(findings: List[Dict[str, Any]]) -> Dict[str, int]:
     for finding in findings:
         summary[finding.get("severity", "UNKNOWN")] += 1
     return summary
+
+
+def _parse_since(raw: str) -> Optional[float]:
+    """`30d` -> 30.0, `12h` -> 0.5, `all`/`0` -> None (no window)."""
+    text = str(raw or "").strip().lower()
+    if not text or text in ("all", "0", "none"):
+        return None
+    unit, value = text[-1], text[:-1]
+    multipliers = {"d": 1.0, "w": 7.0, "h": 1.0 / 24.0}
+    if unit in multipliers:
+        try:
+            return float(value) * multipliers[unit]
+        except ValueError:
+            raise SystemExit(f"invalid --since value: {raw!r} (try 30d, 12w, all)")
+    try:
+        return float(text)
+    except ValueError:
+        raise SystemExit(f"invalid --since value: {raw!r} (try 30d, 12w, all)")
+
+
+def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:
+    """Sweep this machine's agent transcripts and report what policy would do."""
+    from prismor.runtime.transcripts.adapters import ADAPTERS
+    from prismor.runtime.transcripts.driver import SweepOptions, sweep
+    from prismor.runtime.transcripts.report import (
+        format_report,
+        format_rule_detail,
+        report_payload,
+    )
+
+    agents: Optional[List[str]] = None
+    if args.agent:
+        agents = [part.strip() for part in str(args.agent).split(",") if part.strip()]
+        unknown = [a for a in agents if a != "all" and a not in ADAPTERS]
+        if unknown:
+            raise SystemExit(
+                f"no transcript adapter for {', '.join(sorted(unknown))} "
+                f"(available: {', '.join(sorted(ADAPTERS))}, or 'all')"
+            )
+
+    since_days = _parse_since(args.since)
+    export_dir = getattr(args, "export_corpus", None)
+    result = sweep(
+        SweepOptions(
+            workspace=workspace,
+            repo_root=repo_root,
+            agents=agents,
+            since_days=since_days,
+            max_events=args.max_events,
+            persist=not args.no_persist,
+            semantic=bool(args.semantic),
+            strict=bool(args.strict),
+            retain_events=bool(export_dir),
+        )
+    )
+
+    if args.coverage:
+        from prismor.runtime.transcripts.coverage import (
+            build_coverage,
+            coverage_payload,
+            format_coverage,
+        )
+
+        report = build_coverage(result, workspace)
+        if args.json:
+            print(json.dumps(coverage_payload(report), indent=2))
+        else:
+            print(format_coverage(report))
+        return
+
+    if export_dir:
+        from prismor.runtime.transcripts.corpus import export_corpus, format_corpus
+
+        stats = export_corpus(result, Path(export_dir).expanduser())
+        print(format_corpus(stats))
+        return
+
+    if args.json:
+        print(json.dumps(report_payload(result), indent=2))
+    elif args.show:
+        print(format_rule_detail(result, args.show))
+    else:
+        label = "all history" if since_days is None else f"last {args.since}"
+        print(format_report(result, since_label=label))
+        if not args.no_persist and result.sessions:
+            print(
+                f"  Stored {len(result.sessions)} reconstructed sessions "
+                f"(source=transcript). View them with `prismor sessions` "
+                f"or `prismor dashboard`.\n"
+            )
+
+    if args.strict and result.silent_sessions:
+        raise SystemExit(
+            f"{len(result.silent_sessions)} transcript(s) produced no events; "
+            f"the adapter may not match the on-disk format"
+        )
 
 
 def parse_jsonl(text: str) -> List[Dict[str, Any]]:
