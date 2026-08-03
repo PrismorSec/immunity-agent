@@ -296,11 +296,17 @@ def evaluate_tool_call(
     if _org_denies:
         try:
             from prismor.runtime.scoped_agent import resolve_tool_tags
-            from prismor.runtime.agents import make_agent_tool_deny_finding
+            from prismor.runtime.agents import (
+                make_agent_tool_deny_finding,
+                make_agent_tool_step_up_finding,
+            )
             _otags = resolve_tool_tags(event)
             if _otags:
                 for _d in _org_denies:
-                    if not isinstance(_d, dict) or _d.get("action", "deny") != "deny":
+                    # 'allow' entries are handled in the block below; anything
+                    # else we do not understand is skipped rather than guessed
+                    # at, so an unknown action can never weaken a decision.
+                    if not isinstance(_d, dict) or _d.get("action", "deny") not in ("deny", "step_up"):
                         continue
                     _otn = _d.get("tool")
                     if _otn not in _otags:
@@ -313,9 +319,14 @@ def evaluate_tool_call(
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
-                        findings.append(make_agent_tool_deny_finding(
-                            _agent_name, _otn, session_id,
-                            scope_label=f"org {_scope}", rule_id="org-tool-deny"))
+                        if _d.get("action") == "step_up":
+                            findings.append(make_agent_tool_step_up_finding(
+                                _agent_name, _otn, session_id,
+                                scope_label=f"org {_scope}"))
+                        else:
+                            findings.append(make_agent_tool_deny_finding(
+                                _agent_name, _otn, session_id,
+                                scope_label=f"org {_scope}", rule_id="org-tool-deny"))
                         break
         except Exception as exc:
             sys.stderr.write(f"[prismor] org tool-deny error: {exc}\n")

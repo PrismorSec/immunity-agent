@@ -496,6 +496,33 @@ def make_agent_tool_deny_finding(
     }
 
 
+def make_agent_tool_step_up_finding(
+    name: str, tool: str, session_id: str = "", scope_label: str = "org",
+    rule_id: str = "org-tool-step-up",
+) -> Dict[str, Any]:
+    """Human-approval finding for a tool an admin marked ``step_up``.
+
+    Same shape as :func:`make_agent_tool_deny_finding` but carrying
+    ``action: step_up``, which ``hooks.should_block`` ranks below block and
+    above defer. Interactive agents render it as an inline ask; headless ones
+    post an approval request (see enterprise.approvals) and wait. Every
+    non-approval outcome still fails closed, so this is strictly softer than a
+    deny and never softer than allowing the call.
+    """
+    return {
+        "id": f"{session_id}:{rule_id}:{name}:{tool}",
+        "ruleId": rule_id,
+        "action": "step_up",
+        "severity": "high",
+        "category": "agent-control",  # applies regardless of observe/enforce
+        "mode": "enforce",
+        "title": f"[approval required] Tool '{tool}' needs a human decision ({scope_label} scope)",
+        "evidence": f"tool '{tool}' is marked step_up on the {scope_label} policy",
+        "eventIndex": 0,
+        "remediation": "Approve or deny in the Prismor console (Approvals), or via Slack / your webhook",
+    }
+
+
 # ── Display ────────────────────────────────────────────────────────────────────
 
 def format_agent_table(agents: List[AgentControl]) -> str:

@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- **Tool-level step-up: an admin can mark a tool "requires human approval" from the console.** `settings.tool_denies` understood only `deny` and `allow`, so a `step_up` entry was skipped and the call ran — a policy the fleet silently ignored. A step-up entry now produces a finding carrying `action: step_up`, which `should_block` ranks below a real block and above `defer`: interactive agents render an inline ask, headless ones post an approval request and wait on the decision. Every non-approval outcome (deny, expiry, timeout, error) still fails closed, so this is strictly softer than a deny and never softer than allowing the call. Like a deny it is categorised `agent-control`, so a local `--mode observe` cannot suppress an approval requirement the org set.
+
 ## [1.37.0] — 2026-08-03
 
 ### Added
