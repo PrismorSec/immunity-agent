@@ -1,3 +1,14 @@
+## [Unreleased]
+
+### Added
+
+- **`PRISMOR_WORKSPACE_SCOPE` — an explicit scope for deployed, repo-less agents.** Workspace scope is inferred from the git remote, and it gates the org policy overlay, which is what carries the telemetry sink. A container or CI runner has no remote, so for an org that claims repo patterns the workspace fell through to `local`: no org policy, no telemetry, no heartbeat, no fleet registration, and not one line of output saying so. A production agent looked healthy and reported nothing. Set `PRISMOR_WORKSPACE_SCOPE=managed` (or `personal`/`local` to opt out) and the question is settled from the environment, so it needs no writable `$PRISMOR_HOME`. It is ranked below an org-claimed pattern, so a deployment can never use it to downgrade a repo the org governs.
+
+### Fixed
+
+- **`prismor enroll-status` and `prismor doctor` now verify against the control plane instead of trusting the local file.** Both reported "Enrolled" from `identity.json` alone, so a revoked, mistyped, or wrong-org key still read as healthy — and a `PRISMOR_AGENT_KEY` identity carries no org/device/label fields, so a perfectly working deployed agent printed `org: None / device id: None / label: None`. Both commands now make one authenticated call to `/api/policy/version` and print what the server resolved, or the reason it refused. `doctor`'s telemetry-sink check moved off the unauthenticated `/api/health` (up for anyone, so it passed with an invalid key) onto the same authenticated probe, and reports the org's capture mode alongside it.
+- **`prismor doctor` fails on a `local` workspace scope**, the quietest way to see nothing at all, and names the fix for both the deployed and the dev-machine case.
+
 ## [1.36.0] — 2026-08-02
 
 ### Added

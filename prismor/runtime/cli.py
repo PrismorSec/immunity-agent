@@ -355,10 +355,24 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("  still applies (last good policy). Re-link with: prismor enroll <token>")
         else:
             print("Enrolled")
-        print(f"  org:        {ident.get('org_name') or ident.get('org_id')}")
-        print(f"  device id:  {ident.get('device_id')}")
-        print(f"  label:      {ident.get('label')}")
+        # An env key (PRISMOR_AGENT_KEY) carries no org/device/label, so the
+        # local view alone prints "org: None" on a perfectly healthy deployed
+        # agent - and prints "Enrolled" for a revoked one. Ask the server.
+        verified = _identity.verify_remote()
+        if verified.get("ok"):
+            print(f"  org:        {ident.get('org_name') or verified.get('org') or ident.get('org_id')}")
+            print(f"  device id:  {ident.get('device_id') or verified.get('device_id')}")
+            print(f"  label:      {ident.get('label') or '(from key)'}"
+                  + (f"  [{verified.get('kind')}]" if verified.get("kind") else ""))
+        else:
+            print(f"  org:        {ident.get('org_name') or ident.get('org_id')}")
+            print(f"  device id:  {ident.get('device_id')}")
+            print(f"  label:      {ident.get('label')}")
         print(f"  api base:   {ident.get('api_base')}")
+        if verified.get("ok"):
+            print(f"  verified:   ✓ control plane accepted this key (policy v{verified.get('version')})")
+        else:
+            print(f"  verified:   ✗ {verified.get('error')}")
         try:
             from prismor.runtime.enterprise import remote_policy as _remote
             meta_path = _remote._meta_path()
@@ -3658,7 +3672,18 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
                 f"enrolled to {ident.get('org_name') or ident.get('org_id')} but the control plane rejected this device "
                 f"({revoked.get('reason') or '401/403'}) — likely revoked; local protection continues")
         else:
-            add("ok", "enrollment", f"enrolled to {ident.get('org_name') or ident.get('org_id')} as {ident.get('label')}")
+            # Authenticated round-trip: the local file says "enrolled" even when
+            # the key is revoked, mistyped, or points at another org - and an
+            # env key has no org/label to print at all.
+            v = _identity.verify_remote()
+            if v.get("ok"):
+                who = ident.get("org_name") or v.get("org") or ident.get("org_id")
+                label = ident.get("label") or f"key-authenticated {v.get('kind') or 'device'}"
+                add("ok", "enrollment", f"verified with the control plane — org {who}, as {label}")
+            else:
+                add("fail", "enrollment",
+                    f"the control plane did not accept this key: {v.get('error')} — "
+                    "nothing this agent does will reach the console")
         try:
             from prismor.runtime.enterprise import remote_policy as _remote
             cached = _remote.cached_policy_path()
@@ -3678,16 +3703,24 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
             add("fail", "remote policy", f"verification error: {exc}")
 
     # 5. Telemetry sink reachability + spool backlog.
+    #
+    # Reachability was checked against the UNAUTHENTICATED /api/health, which is
+    # up for anyone - so "sink ok" was true with a completely invalid key. Reuse
+    # the authenticated probe above: it answers the question that matters, which
+    # is whether THIS key can deliver.
     if ident:
         api_base = str(ident.get("api_base") or "").rstrip("/")
-        try:
-            import urllib.request
-            req = urllib.request.Request(f"{api_base}/api/health", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                resp.read(16)
-            add("ok", "telemetry sink", f"control plane reachable ({api_base})")
-        except Exception as exc:
-            add("warn", "telemetry sink", f"control plane unreachable ({exc.__class__.__name__}) — events spool locally")
+        _v = _identity.verify_remote()
+        if _v.get("ok"):
+            add("ok", "telemetry sink", f"authenticated to {api_base} (policy v{_v.get('version')})")
+            add("ok" if _v.get("full_capture") else "warn", "capture",
+                "FULL — flagged events carry scrubbed content"
+                if _v.get("full_capture")
+                else "redacted — metadata and hashes only; enable full capture in Org Settings for content")
+        elif "unreachable" in str(_v.get("error", "")):
+            add("warn", "telemetry sink", f"control plane unreachable — events spool locally ({_v.get('error')})")
+        else:
+            add("fail", "telemetry sink", f"cannot deliver: {_v.get('error')}")
         try:
             from prismor.runtime.enterprise import telemetry_spool as _spool
             pending = _spool.pending_count()
@@ -3697,6 +3730,28 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
                 add("ok", "telemetry spool", "empty")
         except Exception:
             pass
+
+        # 5b. Workspace scope — the quietest way to see nothing at all. Scope is
+        # inferred from the git remote; a container has none, so an org that
+        # claims repo patterns leaves it "local": no org policy overlay, hence
+        # no telemetry sink, no heartbeat, no fleet registration, and not one
+        # log line about it. Fail loudly with the fix.
+        try:
+            from prismor.runtime.enterprise import workspace_scope as _scope
+            info = _scope.resolve_scope(workspace)
+            reason = info.get("reason")
+            if info.get("scope") == "managed":
+                add("ok", "workspace scope", f"managed ({reason}) — org policy and telemetry apply here")
+            elif reason == "env_opt_out":
+                add("warn", "workspace scope",
+                    "local by PRISMOR_WORKSPACE_SCOPE — deliberate opt-out; nothing is reported")
+            else:
+                add("fail", "workspace scope",
+                    f"local ({reason}) — no org policy, no telemetry, no heartbeat from this workspace. "
+                    "For a deployed agent set PRISMOR_WORKSPACE_SCOPE=managed; on a dev machine run "
+                    "`prismor workspace managed` or have an admin claim the repo pattern")
+        except Exception as exc:
+            add("warn", "workspace scope", f"could not resolve: {exc}")
     else:
         add("warn", "telemetry sink", "n/a (not enrolled)")
 
