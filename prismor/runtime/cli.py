@@ -2530,12 +2530,22 @@ def build_parser() -> argparse.ArgumentParser:
     # ── discover ───────────────────────────────────────────────────────
     discover_parser = subparsers.add_parser(
         "discover",
-        help="Sweep this host for AI agents Prismor doesn't govern (shadow AI)",
-        description="Find AI agents installed on this machine and flag any that "
-                    "run without Prismor hooks. Host-local and read-only.",
+        help="Sweep this host for AI agents, MCP servers and keys Prismor doesn't govern",
+        description="Inventory the AI surface on this machine — coding agents, MCP "
+                    "servers, and provider credentials — and flag everything running "
+                    "outside Prismor's coverage. Host-local and read-only.",
     )
+    discover_parser.add_argument(
+        "section", nargs="?", choices=["all", "agents", "mcp", "keys"], default="all",
+        help="Limit the report to one inventory (default: all)")
     discover_parser.add_argument("--workspace", help="Workspace path")
     discover_parser.add_argument("--json", action="store_true", help="Machine-readable report")
+    discover_parser.add_argument(
+        "--no-file-scan", action="store_true",
+        help="Skip reading config files for embedded keys (environment variables only)")
+    discover_parser.add_argument(
+        "--fail-on-shadow", action="store_true",
+        help="Exit 1 if any ungoverned AI surface is found (for CI)")
 
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
@@ -3504,33 +3514,24 @@ def _run_trail(args) -> None:
 
 
 def _run_discover(args, workspace: Path) -> None:
-    """`prismor discover` — sweep this host for AI agents, flagging any that
-    run without Prismor hooks (shadow AI)."""
-    from prismor.runtime.enterprise import discovery as _discovery
-    report = _discovery.discover(workspace)
+    """`prismor discover` — sweep this host for AI agents, MCP servers and
+    provider keys running outside Prismor's coverage (shadow AI)."""
+    from prismor.runtime import discover_cli
 
-    if getattr(args, "json", False):
-        print(json.dumps(report, indent=2))
-        return
+    section = getattr(args, "section", "all") or "all"
+    as_json = getattr(args, "json", False)
+    scan_files = not getattr(args, "no_file_scan", False)
 
-    s = report["summary"]
-    print(f"\n  {_color('PRISMOR', _BOLD)}  host discovery  "
-          f"({s['present']} present · {s['governed']} governed · "
-          f"{_color(str(s['ungoverned']) + ' ungoverned', _BOLD)})\n")
-    for a in report["agents"]:
-        if not a["present"]:
-            continue
-        if a["governed"]:
-            mark, label = "✓", "governed"
-        else:
-            mark, label = "✗", "UNGOVERNED"
-        seen = " · seen running" if a["seen"] else ""
-        print(f"    {mark} {a['agent']:<10} {label}{seen}")
-    if s["ungoverned"]:
-        print(f"\n  {s['ungoverned']} agent(s) run without Prismor hooks. "
-              f"Wire them in with:\n    prismor install-hooks --agent <name>\n")
+    if section == "agents":
+        discover_cli.discover_agents(workspace, as_json=as_json)
+    elif section == "mcp":
+        discover_cli.discover_mcp(workspace, as_json=as_json)
+    elif section == "keys":
+        discover_cli.discover_keys(workspace, as_json=as_json, scan_files=scan_files)
     else:
-        print("\n  Every agent found on this host is governed by Prismor.\n")
+        discover_cli.discover_all(
+            workspace, as_json=as_json, scan_files=scan_files,
+            fail_on_shadow=getattr(args, "fail_on_shadow", False))
 
 
 def _run_attest(args, workspace: Path, repo_root: Path) -> None:

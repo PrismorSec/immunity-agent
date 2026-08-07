@@ -1,3 +1,19 @@
+## [Unreleased]
+
+### Added
+
+- **`prismor discover` now sweeps MCP servers and provider keys, not just agents.** The host sweep answered "which installed agents have no hooks" and stopped there, which left the two surfaces that have grown fastest entirely unmeasured: MCP servers, which are declared by desktop apps and IDE extensions that expose no hook surface at all and so never appeared in any Prismor inventory, and AI-provider credentials sitting uncloaked in the environment and in agent config files. Each is diffed against the governed set that actually applies to it — hooks for agents, `prismor mcp-gateway` for MCP, Cloak for keys — and the report ends with a single coverage percentage over all three. `prismor discover [agents|mcp|keys]` limits the report; `--fail-on-shadow` exits 1 for CI. Coverage is `None`, not 100%, when nothing governable is found, so a bare machine cannot read as fully covered.
+- **Agent presence now spans the whole integration registry.** The sweep iterated `scanner._AGENT_DISCOVERERS` — the six agents Prismor parses MCP configs out of — so an ungoverned Aider, Kiro, Trae or Warp install was invisible to the command whose entire job is finding ungoverned installs. It now walks every coding agent in `integrations/registry.yaml`. Presence stays a pure filesystem question (no `$PATH` probe) because this report is folded into the signed attestation bundle and must not vary with the caller's shell; the `$PATH` probe lives in the `discover` layer, outside the bundle. Agents Prismor has no hook for are reported as "no coverage" and excluded from the shadow count — nothing was skipped, so counting them as findings would inflate the number.
+
+### Changed
+
+- **`prismor discover --json` emits a new shape** (breaking for anything parsing it). It was the raw host-sweep report — `{agents: [{agent, present, governed, seen, ...}], summary: {present, governed, ungoverned, seen}}` — and is now `{workspace, context, summary, agents, mcp, credentials}`, with per-surface totals in `summary` and richer agent rows (`id`, `name`, `managed`, `coverable`, `mode`). The old shape is still produced by `prismor.runtime.enterprise.discovery.discover()` and is what still rides in the attestation bundle under `discovery`, unchanged — so bundle consumers and `attest verify` are unaffected.
+
+### Fixed
+
+- **Registry config paths were resolved with `Path.expanduser()`**, which reads `$HOME` directly and so escaped a patched `Path.home()` — the host sweep read the real machine's configs even under test isolation. Now expanded against `Path.home()`, consistent with the rest of the module.
+- **MCP server URLs and argv are redacted before a record is constructed.** An MCP endpoint routinely carries the caller's key in a path segment or query parameter, so the raw URL is a live credential; the discovery report both prints it and serializes it to JSON. Credential-shaped segments, secret-ish query parameters, URL userinfo, and `--api-key`-style flag values are now masked at construction rather than at render time, so no downstream consumer can receive a value the terminal would have hidden. Three token shapes are recognised — bare high-entropy strings, JWTs, and base64 blobs — because MCP bearer tokens are usually one of the latter two, and the dots in a JWT and the `+/=` in base64 both defeat a single plain-alphanumeric pattern. Each shape requires both a letter and a digit and a substantial length, so ordinary paths, dotted version strings, and package specifiers survive intact.
+
 ## [1.38.1] — 2026-08-06
 
 ### Fixed

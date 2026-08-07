@@ -24,13 +24,32 @@ from typing import Any, Dict, List, Optional
 # Where each agent's presence and CLI show up, beyond the config files
 # scanner.py already enumerates. Config discovery drives "present"; these add
 # a CLI/state signal so an agent installed but not yet configured still counts.
+#
+# Home-relative only. Presence must stay a pure filesystem question: this
+# report is folded into the signed attestation bundle, and a $PATH probe would
+# make the same host produce different bundles under different shells.
 _AGENT_CLI_MARKERS = {
     "claude": [".claude"],
-    "cursor": [".cursor"],
+    "cursor": [".cursor", ".config/Cursor"],
     "windsurf": [".codeium", ".windsurf"],
     "openclaw": [".openclaw"],
     "hermes": [".hermes"],
     "codex": [".codex"],
+    "copilot": [".copilot"],
+    "grok": [".grok"],
+    "gemini": [".gemini"],
+    "opencode": [".config/opencode"],
+    "kiro": [".kiro"],
+    "aider": [".aider"],
+    "trae": [".trae"],
+    "kilocode": [".kilocode"],
+    "antigravity": [".antigravity"],
+    "factory-droid": [".factory"],
+    "crush": [".config/crush"],
+    "openhands": [".openhands"],
+    "qwen": [".qwen"],
+    "continue": [".continue"],
+    "goose": [".config/goose"],
 }
 
 # Substring that marks a config as Prismor-governed. The installers write the
@@ -62,6 +81,61 @@ def _governed_frameworks(workspace: Optional[Path]) -> Dict[str, Dict[str, Any]]
     return out
 
 
+def _registry_config_paths(workspace: Path) -> Dict[str, List[Path]]:
+    """Candidate config paths per agent, from the integration registry.
+
+    scanner.py enumerates configs only for the six agents it parses MCP servers
+    out of. The registry knows every agent Prismor can intercept, so an
+    ungoverned Aider or Kiro install is visible here even though scanner has no
+    parser for it. Failure to load the registry degrades to scanner-only
+    coverage rather than losing the sweep entirely.
+    """
+    out: Dict[str, List[Path]] = {}
+    try:
+        from prismor.runtime.integrations.registry import load_registry
+        entries = load_registry()
+    except Exception:
+        return out
+    home = Path.home()
+    for entry in entries:
+        paths: List[Path] = []
+        for raw in (entry.config_paths or {}).values():
+            raw = str(raw)
+            if raw.startswith("~"):
+                # Expanded against Path.home() rather than Path.expanduser(),
+                # which reads $HOME directly and so escapes a patched home.
+                # Sliced rather than lstripped: lstrip takes a character set,
+                # so "~/~dir" would lose the second "~" too.
+                candidate = home / raw[2:] if raw.startswith("~/") else home
+            elif raw.startswith("/"):
+                candidate = Path(raw)
+            else:
+                candidate = workspace / raw
+            if candidate.exists():
+                paths.append(candidate)
+        if paths:
+            out[entry.id] = paths
+    return out
+
+
+def _known_agent_ids() -> List[str]:
+    """Every agent id worth sweeping — registry ∪ scanner ∪ CLI markers."""
+    ids = set(_AGENT_CLI_MARKERS)
+    try:
+        from prismor.runtime.scanner import _AGENT_DISCOVERERS
+        ids.update(_AGENT_DISCOVERERS)
+    except Exception:
+        pass
+    try:
+        from prismor.runtime.integrations.registry import load_registry
+        # Frameworks are SDK imports inside a project, not independently
+        # installed agents — `prismor agents` covers those once they report.
+        ids.update(e.id for e in load_registry() if e.kind == "coding-agent")
+    except Exception:
+        pass
+    return sorted(ids)
+
+
 def discover(workspace: Optional[Path] = None) -> Dict[str, Any]:
     """Sweep this host. Returns a report::
 
@@ -76,7 +150,7 @@ def discover(workspace: Optional[Path] = None) -> Dict[str, Any]:
     ``ungoverned`` counts agents present on the host with no Prismor hooks —
     the shadow-AI number.
     """
-    from prismor.runtime.scanner import _AGENT_DISCOVERERS, discover_configs
+    from prismor.runtime.scanner import discover_configs
 
     ws = workspace or Path.cwd()
     home = Path.home()
@@ -90,8 +164,13 @@ def discover(workspace: Optional[Path] = None) -> Dict[str, Any]:
         if p.exists():
             configs_by_agent.setdefault(entry["agent"], []).append(p)
 
+    for agent, paths in _registry_config_paths(ws).items():
+        known = configs_by_agent.setdefault(agent, [])
+        known_keys = {str(p) for p in known}
+        known.extend(p for p in paths if str(p) not in known_keys)
+
     agents_out: List[Dict[str, Any]] = []
-    for agent in sorted(_AGENT_DISCOVERERS):
+    for agent in _known_agent_ids():
         cfgs = configs_by_agent.get(agent, [])
         cli_present = any((home / m).exists() for m in _AGENT_CLI_MARKERS.get(agent, []))
         present = bool(cfgs) or cli_present
