@@ -271,6 +271,19 @@ def main(argv: Optional[List[str]] = None) -> None:
             _remote.fetch(force=True)
         except Exception:
             pass
+        # Seed the org's shadow-AI view with this machine's inventory. Without
+        # this the console shows the device as "never scanned" until somebody
+        # thinks to run `prismor discover --report` by hand, which is exactly
+        # the state the fleet view exists to eliminate. The scan is a few
+        # hundred milliseconds against an enrollment that just did a network
+        # round-trip, and it stamps the daily-refresh marker so the background
+        # refresh does not immediately repeat it.
+        try:
+            from prismor.runtime import discover as _discover
+            _discover.send_report(_discover.build_report(workspace))
+            _discover._stamp_report()
+        except Exception:
+            pass
         org = ident.get("org_name") or ident.get("org_id") or "unknown"
 
         # Gather local state (hooks/mode/cloak/rules) the same way `prismor status` does,
@@ -2549,6 +2562,9 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument(
         "--report", action="store_true",
         help="Send the inventory to your organization console (requires enrollment)")
+    discover_parser.add_argument(
+        "--quiet", action="store_true",
+        help="Print nothing (used by the scheduled background refresh)")
 
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
@@ -3535,7 +3551,8 @@ def _run_discover(args, workspace: Path) -> None:
         discover_cli.discover_all(
             workspace, as_json=as_json, scan_files=scan_files,
             fail_on_shadow=getattr(args, "fail_on_shadow", False),
-            report_to_console=getattr(args, "report", False))
+            report_to_console=getattr(args, "report", False),
+            quiet=getattr(args, "quiet", False))
 
 
 def _run_attest(args, workspace: Path, repo_root: Path) -> None:

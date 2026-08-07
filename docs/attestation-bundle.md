@@ -97,6 +97,14 @@ actually applies to it:
 Pass a section (`agents`, `mcp`, `keys`) to limit the report, `--json` for the
 machine-readable form, and `--fail-on-shadow` to exit non-zero in CI.
 
+On an enrolled device this inventory also reaches your organization console,
+where it becomes a fleet-wide Shadow AI view. `prismor enroll` seeds it, and
+the runtime refreshes it once a day from a detached background scan — set
+`PRISMOR_DISCOVER_INTERVAL` (seconds) to change the cadence, or run
+`prismor discover --report` to push one immediately. Reporting is gated on the
+managed workspace, like telemetry: a personal repo never reports what is
+installed on your machine, and an unenrolled device reports nothing at all.
+
 An agent counts as **present** when its config or install directory exists, and
 agents Prismor has no hook for are shown as *no coverage* and left out of the
 shadow count — nothing was skipped, so counting them would inflate the number.

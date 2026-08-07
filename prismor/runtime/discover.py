@@ -32,6 +32,7 @@ import os
 import platform
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -998,6 +999,93 @@ def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
         )
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+# ── automatic reporting ──────────────────────────────────────────────────────
+
+#: How often a device re-reports its inventory unprompted.
+#: Shadow AI changes at the speed of someone installing an IDE extension, so
+#: daily is frequent enough to be true and rare enough to be free.
+REPORT_INTERVAL = 24 * 60 * 60.0
+
+#: Bypass for testing and for orgs that want a tighter loop.
+_INTERVAL_ENV = "PRISMOR_DISCOVER_INTERVAL"
+
+
+def _report_marker() -> Path:
+    from prismor.runtime.enterprise import identity as _identity
+    return _identity.prismor_home() / "discover-report.json"
+
+
+def _report_interval() -> float:
+    raw = os.environ.get(_INTERVAL_ENV, "")
+    try:
+        return max(0.0, float(raw)) if raw else REPORT_INTERVAL
+    except ValueError:
+        return REPORT_INTERVAL
+
+
+def report_due(now: Optional[float] = None) -> bool:
+    """Has enough time passed since the last automatic report?"""
+    import time
+    current = time.time() if now is None else now
+    try:
+        data = json.loads(_report_marker().read_text(encoding="utf-8"))
+        last = float(data.get("last_report") or 0)
+    except (OSError, ValueError, TypeError):
+        return True
+    # A clock that jumped backwards must not disable reporting until it catches
+    # up, so a future timestamp counts as due.
+    if last > current:
+        return True
+    return (current - last) >= _report_interval()
+
+
+def _stamp_report(now: Optional[float] = None) -> None:
+    import time
+    marker = _report_marker()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps({"last_report": time.time() if now is None else now}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def maybe_report_background(workspace: Path) -> bool:
+    """Spawn a detached inventory report if one is due. Returns True if spawned.
+
+    Runs out-of-process on purpose. A full scan is a few hundred milliseconds
+    of filesystem work — nothing on a command line, but this is called from the
+    hook path, where it would be a visible stall on somebody's tool call. The
+    hook pays a fork and returns; the child does the scanning and the upload.
+
+    The marker is written *before* the spawn, not after: several hooks can fire
+    at once, and a marker written by the child would let all of them decide
+    they were due and start a scan each.
+    """
+    try:
+        from prismor.runtime.enterprise import identity as _identity
+        if not _identity.is_enrolled():
+            return False
+        if not report_due():
+            return False
+        _stamp_report()
+
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, "-m", "prismor.runtime.cli", "discover",
+             "--report", "--quiet", "--workspace", str(workspace)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
     except Exception:
         return False
 

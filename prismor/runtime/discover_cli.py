@@ -176,12 +176,15 @@ def _print_summary(report: Dict[str, Any]) -> None:
 
 def discover_all(workspace: Path, *, as_json: bool = False,
                  scan_files: bool = True, fail_on_shadow: bool = False,
-                 report_to_console: bool = False) -> None:
+                 report_to_console: bool = False, quiet: bool = False) -> None:
     """Full report: agents, MCP servers, keys, and a coverage score."""
     report = _discover.build_report(workspace, scan_files=scan_files)
     sent: Optional[bool] = None
     if report_to_console:
         sent = _discover.send_report(report)
+    if quiet:
+        # The scheduled background refresh: it exists to upload, not to talk.
+        return
     if as_json:
         print(json.dumps(report, indent=2))
     else:

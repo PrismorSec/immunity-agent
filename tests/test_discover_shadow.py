@@ -289,6 +289,103 @@ def test_send_report_does_not_report_from_a_revoked_device(fake_host, monkeypatc
     assert discover.send_report({"summary": {}}) is False
 
 
+# ── automatic reporting ──────────────────────────────────────────────────────
+
+def test_first_run_is_always_due(fake_host):
+    discover, home, ws = fake_host
+    assert discover.report_due() is True
+
+
+def test_not_due_again_immediately_after_a_report(fake_host):
+    discover, home, ws = fake_host
+    discover._stamp_report()
+    assert discover.report_due() is False
+
+
+def test_due_again_after_the_interval(fake_host):
+    import time
+    discover, home, ws = fake_host
+    discover._stamp_report(now=time.time() - discover.REPORT_INTERVAL - 1)
+    assert discover.report_due() is True
+
+
+def test_a_backwards_clock_does_not_disable_reporting(fake_host):
+    """A future timestamp counts as due — otherwise a clock that jumped
+    forward once would silence this device until real time caught up."""
+    import time
+    discover, home, ws = fake_host
+    discover._stamp_report(now=time.time() + 90 * 24 * 3600)
+    assert discover.report_due() is True
+
+
+def test_a_corrupt_marker_reads_as_due(fake_host):
+    discover, home, ws = fake_host
+    marker = discover._report_marker()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{not json", encoding="utf-8")
+    assert discover.report_due() is True
+
+
+def test_interval_is_overridable_for_a_tighter_loop(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    monkeypatch.setenv("PRISMOR_DISCOVER_INTERVAL", "0")
+    discover._stamp_report()
+    assert discover.report_due() is True
+
+
+def test_background_report_does_nothing_when_not_enrolled(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: False)
+    monkeypatch.setattr("subprocess.Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not spawn when unenrolled")))
+    assert discover.maybe_report_background(ws) is False
+
+
+def test_background_report_spawns_detached_and_stamps_first(fake_host, monkeypatch):
+    """The marker must be written BEFORE the spawn: several hooks can fire at
+    once, and a marker written by the child would let each of them start its
+    own scan."""
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: True)
+    seen = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        # Already stamped by the time we get here.
+        seen["due_during_spawn"] = discover.report_due()
+        return object()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    assert discover.maybe_report_background(ws) is True
+    assert "--report" in seen["cmd"] and "--quiet" in seen["cmd"]
+    assert seen["kwargs"].get("start_new_session") is True
+    assert seen["due_during_spawn"] is False
+
+
+def test_background_report_skips_when_not_due(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: True)
+    discover._stamp_report()
+    monkeypatch.setattr("subprocess.Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not spawn when not due")))
+    assert discover.maybe_report_background(ws) is False
+
+
+def test_background_report_never_raises_if_spawning_fails(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "is_enrolled", lambda: True)
+    monkeypatch.setattr("subprocess.Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no fork")))
+    assert discover.maybe_report_background(ws) is False
+
+
 # ── report ───────────────────────────────────────────────────────────────────
 
 def test_coverage_is_none_when_nothing_governable(fake_host, monkeypatch):

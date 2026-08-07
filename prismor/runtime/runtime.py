@@ -448,6 +448,18 @@ def evaluate_tool_call(
         except Exception:
             pass
 
+        # Daily shadow-AI inventory refresh, so the org's fleet view reflects
+        # what is actually installed rather than whatever was true the day
+        # somebody last ran `prismor discover` by hand. Spawns a detached
+        # child: the scan is filesystem work this path must not wait on.
+        # Gated on the managed workspace like the heartbeat above — a personal
+        # repo never reports what is installed on the developer's machine.
+        try:
+            from prismor.runtime import discover as _discover
+            _discover.maybe_report_background(workspace)
+        except Exception:
+            pass
+
     blocking = should_block(findings, event)
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
