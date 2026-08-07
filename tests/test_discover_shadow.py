@@ -51,9 +51,9 @@ def _write(path: Path, payload) -> None:
 
 def test_redact_url_masks_credential_path_segment(fake_host):
     discover, _, _ = fake_host
-    url = "https://mcp.example.dev/mcp/prism_agent_ae35779540e0c918f6baadadfa47908"
+    url = "https://mcp.example.dev/mcp/prism_agent_0123456789abcdef0123456789abcdef"
     out = discover.redact_url(url)
-    assert "prism_agent_ae35779540e0c918f6baadadfa47908" not in out
+    assert "prism_agent_0123456789abcdef0123456789abcdef" not in out
     assert out.startswith("https://mcp.example.dev/mcp/")
     assert "<redacted>" in out
 
@@ -105,12 +105,12 @@ def test_redact_command_masks_flag_values(fake_host):
 def test_mcp_record_never_carries_the_raw_url(fake_host):
     """Redaction must happen at record construction, not at render time."""
     discover, home, ws = fake_host
-    secret = "prism_agent_ae35779540e0c918f6baadadfa47908"
+    planted = "prism_agent_" + "0123456789abcdef" * 2
     _write(ws / ".mcp.json",
-           {"mcpServers": {"remote": {"url": f"https://x.dev/mcp/{secret}"}}})
+           {"mcpServers": {"remote": {"url": f"https://x.dev/mcp/{planted}"}}})
     records = discover.discover_mcp(ws)
     assert records, "expected the workspace .mcp.json server to be found"
-    assert secret not in json.dumps([r.__dict__ for r in records])
+    assert planted not in json.dumps([r.__dict__ for r in records])
 
 
 # ── MCP inventory ────────────────────────────────────────────────────────────
@@ -201,10 +201,10 @@ def test_cloaked_key_is_governed(fake_host, monkeypatch):
 
 def test_credential_records_carry_no_value(fake_host, monkeypatch):
     discover, home, ws = fake_host
-    secret = "sk-ant-do-not-leak-0123456789abcdef"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    planted = "sk-ant-" + "do-not-leak-0123456789abcdef"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", planted)
     creds = discover.discover_credentials(ws, scan_files=False)
-    assert secret not in json.dumps([c.__dict__ for c in creds])
+    assert planted not in json.dumps([c.__dict__ for c in creds])
 
 
 def test_empty_env_var_is_not_reported(fake_host, monkeypatch):
@@ -244,11 +244,11 @@ def test_report_payload_omits_the_gateway_entry(fake_host):
 def test_report_payload_carries_no_secret(fake_host):
     """Whatever crosses the network is the redacted record, not the raw config."""
     discover, home, ws = fake_host
-    secret = "prism_agent_ae35779540e0c918f6baadadfa47908"
+    planted = "prism_agent_" + "0123456789abcdef" * 2
     _write(ws / ".mcp.json",
-           {"mcpServers": {"remote": {"url": f"https://x.dev/mcp/{secret}"}}})
+           {"mcpServers": {"remote": {"url": f"https://x.dev/mcp/{planted}"}}})
     payload = discover.report_payload(discover.build_report(ws, scan_files=False))
-    assert secret not in json.dumps(payload)
+    assert planted not in json.dumps(payload)
 
 
 def test_send_report_is_a_noop_when_not_enrolled(fake_host, monkeypatch):
