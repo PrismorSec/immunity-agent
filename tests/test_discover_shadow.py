@@ -37,7 +37,7 @@ def fake_host(tmp_path, monkeypatch):
         sys.modules.pop(mod, None)
     from prismor.runtime import discover
     # No gateway config unless a test writes one.
-    monkeypatch.setattr(discover, "_gateway_servers", lambda: set())
+    monkeypatch.setattr(discover, "_gateway_servers", lambda: {})
     return discover, home, ws
 
 
@@ -124,14 +124,43 @@ def test_ungoverned_mcp_server_is_shadow(fake_host):
     assert weather.shadow and not weather.managed
 
 
-def test_gateway_routed_server_is_governed(fake_host, monkeypatch):
+def _gateway(**servers):
+    """Fake gateway-config specs keyed by lowercase name."""
+    return {
+        name.lower(): {"name": name, "command": cmd, "url": "",
+                       "transport": "stdio", "source": "/fake/mcp-gateway.json"}
+        for name, cmd in servers.items()
+    }
+
+
+def test_gateway_server_is_governed_even_when_no_config_declares_it(
+        fake_host, monkeypatch):
+    """install_gateway MOVES the mcpServers block into the gateway config, so
+    after a correct install a governed server appears in no scanned config.
+    It must still be inventoried, or coverage loses its denominator."""
     discover, home, ws = fake_host
-    monkeypatch.setattr(discover, "_gateway_servers", lambda: {"weather"})
-    _write(ws / ".mcp.json",
-           {"mcpServers": {"weather": {"command": "npx", "args": ["weather-mcp"]}}})
+    monkeypatch.setattr(discover, "_gateway_servers",
+                        lambda: _gateway(weather=["npx", "weather-mcp"]))
     records = discover.discover_mcp(ws)
     weather = next(r for r in records if r.name == "weather")
     assert weather.managed and not weather.shadow
+    assert weather.agent == "gateway"
+
+
+def test_direct_declaration_alongside_gateway_is_a_bypass(fake_host, monkeypatch):
+    """A server reachable directly from an agent config is a live path around
+    policy, even when the gateway also knows the name — so it is shadow, not
+    governed, and called out explicitly."""
+    discover, home, ws = fake_host
+    monkeypatch.setattr(discover, "_gateway_servers",
+                        lambda: _gateway(weather=["npx", "weather-mcp"]))
+    _write(ws / ".mcp.json",
+           {"mcpServers": {"weather": {"command": "npx", "args": ["weather-mcp"]}}})
+    records = discover.discover_mcp(ws)
+    weather = [r for r in records if r.name == "weather"]
+    assert len(weather) == 1, "the bypass must not also be listed as governed"
+    assert weather[0].shadow and weather[0].risk == "high"
+    assert any("skips policy" in f for f in weather[0].findings)
 
 
 def test_gateway_entry_is_not_its_own_shadow_finding(fake_host):

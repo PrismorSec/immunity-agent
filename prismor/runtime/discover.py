@@ -298,20 +298,41 @@ def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
     return out
 
 
-def _gateway_servers() -> Set[str]:
-    """Names of MCP servers routed through the Prismor gateway."""
+def _gateway_servers() -> Dict[str, Dict[str, Any]]:
+    """MCP servers routed through the Prismor gateway, keyed by lowercase name.
+
+    Returned as full specs rather than bare names because these servers have
+    to be *added* to the inventory, not merely matched against it:
+    ``mcp_gateway.install_gateway`` moves the ``mcpServers`` block out of
+    ``.mcp.json`` and leaves only the gateway entry behind, so after a correct
+    install the governed servers appear in no scanned config at all.
+    """
     try:
         from prismor.runtime import mcp_gateway
     except Exception:
-        return set()
+        return {}
     path = getattr(mcp_gateway, "DEFAULT_GATEWAY_CONFIG", None)
     if path is None or not Path(path).exists():
-        return set()
+        return {}
     try:
         specs = mcp_gateway.load_gateway_config(Path(path))
     except Exception:
-        return set()
-    return {s.name.lower() for s in specs}
+        return {}
+    return {
+        s.name.lower(): {
+            "name": s.name,
+            "command": list(s.command or []),
+            "url": s.url or "",
+            "transport": s.transport or ("http" if s.url else "stdio"),
+            "source": str(path),
+        }
+        for s in specs
+    }
+
+
+#: Cap on a single MCP config file. Discovery is meant to be cheap enough to
+#: run at session start; nothing legitimate declares servers in a bigger file.
+_MAX_CONFIG_BYTES = 8 * 1024 * 1024
 
 
 def _is_gateway_entry(command: Sequence[str], url: str) -> bool:
@@ -325,9 +346,16 @@ def _is_gateway_entry(command: Sequence[str], url: str) -> bool:
 def discover_mcp(workspace: Path) -> List[McpRecord]:
     """Inventory every MCP server declared anywhere on this machine.
 
-    A server is governed when it is routed through `prismor mcp-gateway`;
-    the gateway entry itself is reported separately so it is not counted as
-    its own shadow finding.
+    A server is governed when it is routed through `prismor mcp-gateway`. The
+    gateway entry itself is reported separately so it is not counted as its own
+    shadow finding, and servers that sit *behind* the gateway are added from
+    the gateway config — a correct install removes them from every config this
+    would otherwise scan, so without that they would silently vanish from the
+    inventory and take the coverage denominator with them.
+
+    A server declared directly *and* registered with the gateway is a bypass,
+    not a success: the direct declaration is a live path to the server that
+    skips policy. Those are reported as shadow with an explicit reason.
     """
     try:
         from prismor.runtime import scanner
@@ -340,11 +368,16 @@ def discover_mcp(workspace: Path) -> List[McpRecord]:
     gateway = _gateway_servers()
     records: List[McpRecord] = []
     seen: Set[Tuple[str, str]] = set()
+    declared: Set[str] = set()
 
     for cfg in configs:
         path = Path(cfg["path"])
         agent = str(cfg.get("agent") or "unknown")
         try:
+            # scanner.parse_config reads and json.loads the whole file with no
+            # cap; ~/.claude.json in particular can grow large.
+            if path.stat().st_size > _MAX_CONFIG_BYTES:
+                continue
             entries = scanner.parse_config(path, agent=agent)
         except Exception:
             continue
@@ -362,6 +395,8 @@ def discover_mcp(workspace: Path) -> List[McpRecord]:
                 server_cfg = {}
             command, url, transport = _spec_fields(name, server_cfg)
             is_gateway = _is_gateway_entry(command, url)
+            if not is_gateway:
+                declared.add(name.lower())
 
             # Redact before the record exists, not at render time: these
             # records are also serialized to JSON and folded into reports, so
@@ -374,11 +409,36 @@ def discover_mcp(workspace: Path) -> List[McpRecord]:
                 command=redact_command(command),
                 url=redact_url(url),
                 remote=bool(url),
-                managed=name.lower() in gateway,
+                # Never managed: reaching here means the server is reachable
+                # directly from an agent's own config, which is a path around
+                # the gateway whether or not the gateway also knows the name.
+                managed=False,
                 is_gateway=is_gateway,
             )
             _score_mcp(record, entry)
+            if not is_gateway and name.lower() in gateway:
+                record.risk = "high"
+                record.findings.insert(
+                    0, "declared directly in this config while also registered "
+                       "with the gateway — a live path that skips policy")
             records.append(record)
+
+    # Servers behind the gateway that no config declares directly: governed.
+    for key, spec in sorted(gateway.items()):
+        if key in declared:
+            continue
+        records.append(
+            McpRecord(
+                name=spec["name"],
+                agent="gateway",
+                source=spec["source"],
+                transport=spec["transport"],
+                command=redact_command(spec["command"]),
+                url=redact_url(spec["url"]),
+                remote=bool(spec["url"]),
+                managed=True,
+            )
+        )
 
     records.sort(key=lambda r: (r.managed or r.is_gateway, _RISK_ORDER.get(r.risk, 9),
                                 r.name.lower()))
@@ -418,22 +478,41 @@ def _spec_fields(name: str, cfg: Dict[str, Any]) -> Tuple[List[str], str, str]:
 
 # ── redaction ────────────────────────────────────────────────────────────────
 
-#: Query/env keys whose value is a credential regardless of how it looks.
+#: Query/env/flag names whose value is a credential regardless of how it looks.
 _SECRETISH_KEY = re.compile(
-    r"(?i)(key|token|secret|password|passwd|auth|credential|session|sig|bearer)")
+    r"(?i)(key|token|secret|password|passwd|auth|credential|session|sig|bearer"
+    r"|header|cookie|pat|pwd)")
 
-#: A bare credential-shaped segment: long, unbroken, and containing both a
-#: letter and a digit so ordinary path words ("SharedSupport",
-#: "get-an-expert-agent") are never masked.
-_TOKEN_SEGMENT = re.compile(r"^(?=[^\s]*[A-Za-z])(?=[^\s]*\d)[A-Za-z0-9_\-]{20,}$")
+#: Known provider prefixes, which mark a credential no matter how short it is.
+#: Mirrors ``sweep._FALLBACK_PATTERNS`` — a legacy 18-char ``sk-`` key is well
+#: under any generic length floor but is unambiguously a secret.
+_PROVIDER_PREFIX = re.compile(
+    r"(?i)^(sk-|sk-ant-|pk-|ghp_|ghs_|gho_|ghu_|ghr_|github_pat_|hf_|r8_|xox[baprs]-"
+    r"|AKIA|ASIA|AIza|ya29\.|glpat-|dop_v1_|shpat_|npm_|sq0csp-|rk_live_|sk_live_)"
+    r"[A-Za-z0-9_\-]{8,}$")
 
 #: A JWT — three base64url parts. Bearer tokens on MCP endpoints are usually
-#: this shape, and the dots stop ``_TOKEN_SEGMENT`` from ever matching one.
+#: this shape, and the dots stop the run heuristic from ever seeing them whole.
 _JWT_SEGMENT = re.compile(r"^[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}$")
 
-#: A standard-alphabet base64 blob, which ``_TOKEN_SEGMENT`` also misses
-#: because of ``+`` and ``/`` and the ``=`` padding.
-_B64_SEGMENT = re.compile(r"^(?=[^\s]*[A-Za-z])(?=[^\s]*\d)[A-Za-z0-9+/]{24,}={0,2}$")
+#: A standard-alphabet base64 blob (``+``, ``/`` and ``=`` padding).
+_B64_SEGMENT = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
+
+#: Unbroken alphanumeric runs, the discriminator the length-of-whole-string
+#: rule got wrong in both directions.
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
+
+#: A shell/env variable name, used to tell ``NAME=value`` from a bare blob
+#: that merely happens to contain ``=`` (base64 padding).
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
+
+#: A run this long containing a digit is a credential; ordinary identifiers
+#: break into short runs at ``-``/``_``/``.``.
+_RUN_MIN = 20
+#: A run with no digit at all needs to be longer before it outweighs the fact
+#: that long words are common and long all-letter tokens are not. Catches
+#: hex-only keys, whose "letters" are just a-f.
+_RUN_MIN_NO_DIGIT = 28
 
 _MASK = "<redacted>"
 
@@ -441,21 +520,64 @@ _MASK = "<redacted>"
 def _looks_like_token(value: str) -> bool:
     """Is this value credential-shaped?
 
-    Three shapes rather than one permissive pattern: broadening
-    ``_TOKEN_SEGMENT``'s character class to cover JWTs and base64 would also
-    swallow ordinary dotted filenames and paths, and an over-redacted report
-    is not worth the coverage.
+    Judged on the longest unbroken alphanumeric *run* rather than the length of
+    the whole string. Real credentials carry one long run; ordinary identifiers
+    of the same total length break into short pieces at separators. That single
+    change is what lets ``gpt-4o-mini-2024-07-18`` (longest run 4) and
+    ``my-project-2024-rewrite`` (7) through while still catching a bare
+    32-character hex key, which an earlier "must contain a letter and a digit"
+    rule missed entirely because hex letters stop at ``f``.
     """
     if not value:
         return False
-    return bool(_TOKEN_SEGMENT.match(value)
-                or _JWT_SEGMENT.match(value)
-                or _B64_SEGMENT.match(value))
+    if _PROVIDER_PREFIX.match(value) or _JWT_SEGMENT.match(value):
+        return True
+    if len(value) >= 24 and _B64_SEGMENT.match(value):
+        return True
+    for run in _ALNUM_RUN.findall(value):
+        if len(run) < _RUN_MIN:
+            continue
+        if any(ch.isdigit() for ch in run) or len(run) >= _RUN_MIN_NO_DIGIT:
+            return True
+    return False
 
 
 def _mask_segment(value: str) -> str:
     """Mask a value that looks like a credential, else return it unchanged."""
     return _MASK if _looks_like_token(value) else value
+
+
+def _mask_assignment(value: str) -> str:
+    """Mask the right-hand side of a ``NAME=value`` pair.
+
+    ``docker run -e GITHUB_TOKEN=<pat>`` is the single most common way an MCP
+    server receives a credential, and the whole ``NAME=value`` string matches
+    no token shape because of the ``=``.
+    """
+    name, sep, rhs = value.partition("=")
+    # Only treat this as an assignment when the left side is a real variable
+    # name and something follows it. Base64 padding ("aGVs…==") otherwise
+    # partitions into a name and an empty value and gets waved through as a
+    # harmless assignment — so anything else falls to the whole-value check,
+    # which keeps the name visible when there is one and masks the blob when
+    # there is not.
+    if sep and rhs.strip("=") and _ENV_NAME.match(name):
+        if _SECRETISH_KEY.search(name) or _looks_like_token(rhs):
+            return f"{name}={_MASK}"
+        return value
+    return _mask_segment(value)
+
+
+def _mask_words(value: str) -> str:
+    """Mask credential-shaped words inside a value that contains whitespace.
+
+    An argv element like ``Authorization: Bearer <token>`` is one argument, and
+    every pattern here is anchored, so without splitting it can never match.
+    """
+    if not value.strip():
+        return value
+    return " ".join(_mask_assignment(word) if "=" in word else _mask_segment(word)
+                    for word in value.split(" "))
 
 
 def redact_url(url: str) -> str:
@@ -471,15 +593,23 @@ def redact_url(url: str) -> str:
         from urllib.parse import urlsplit, urlunsplit
         parts = urlsplit(url)
     except Exception:
-        return url
+        # Fail closed. A URL urlsplit rejects (a malformed IPv6 literal, say)
+        # is still perfectly capable of carrying userinfo, and returning it
+        # verbatim would hand back exactly the credential this exists to hide.
+        return _mask_words(url.rsplit("@", 1)[-1]) if "@" in url else _mask_words(url)
     if not parts.scheme:
-        return url
+        return _mask_words(url)
 
     netloc = parts.netloc
     if "@" in netloc:  # user:pass@host
         netloc = _MASK + "@" + netloc.rsplit("@", 1)[1]
 
-    path = "/".join(_mask_segment(seg) for seg in parts.path.split("/"))
+    # Split on ';' as well as '/': a path parameter (``/mcp;api_key=…``) is a
+    # separate carrier that a '/'-only split leaves whole and unmatchable.
+    path = "/".join(
+        ";".join(_mask_assignment(param) for param in seg.split(";"))
+        for seg in parts.path.split("/")
+    )
 
     query = parts.query
     if query:
@@ -502,12 +632,15 @@ def redact_command(command: Sequence[str]) -> List[str]:
     for raw in command:
         arg = str(raw)
         if mask_next:
-            out.append(_MASK)
             mask_next = False
-            continue
+            # `--api-key --verbose` — the next token is another flag, so the
+            # value was omitted and masking it would hide a real argument.
+            if not arg.startswith("-"):
+                out.append(_MASK)
+                continue
         # --api-key <value> / --token=<value>
         if arg.startswith("-"):
-            flag, sep, value = arg.partition("=")
+            flag, sep, _ = arg.partition("=")
             if _SECRETISH_KEY.search(flag):
                 if sep:
                     out.append(f"{flag}={_MASK}")
@@ -518,7 +651,14 @@ def redact_command(command: Sequence[str]) -> List[str]:
         if "://" in arg:
             out.append(redact_url(arg))
             continue
-        out.append(_mask_segment(arg))
+        # Whitespace and `=` each defeat the anchored patterns, and both are
+        # ordinary in real argv: `-e NAME=value`, `--header "Authorization: …"`.
+        if " " in arg:
+            out.append(_mask_words(arg))
+        elif "=" in arg:
+            out.append(_mask_assignment(arg))
+        else:
+            out.append(_mask_segment(arg))
     return out
 
 
@@ -602,9 +742,8 @@ def _managed_by_cloak(env_name: str, cloak: Set[str]) -> Tuple[bool, str]:
     which is the safe direction: a registered key mislabelled as shadow costs
     a glance, an unregistered one silently omitted costs a leak.
     """
-    for candidate in (env_name, env_name.lower()):
-        if candidate.lower() in cloak:
-            return True, candidate
+    if env_name.lower() in cloak:
+        return True, env_name
     return False, ""
 
 
@@ -757,7 +896,12 @@ def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
     governable_mcp = [m for m in mcp if not m.is_gateway]
 
     summary = {
-        "agents_total": len(agents),
+        # ``agents_total`` is the coverable count, not the row count, so a
+        # consumer recomputing coverage from the summary gets the number the
+        # report printed. ``agents_present`` carries the row count, which
+        # includes agents Prismor has no hook for.
+        "agents_total": len(coverable),
+        "agents_present": len(agents),
         "agents_shadow": len(shadow_agents),
         "mcp_total": len(governable_mcp),
         "mcp_shadow": len(shadow_mcp),

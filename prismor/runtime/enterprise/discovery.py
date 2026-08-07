@@ -58,10 +58,49 @@ _AGENT_CLI_MARKERS = {
 _GOVERNED_MARKER = "prismor"
 
 
+#: Bounds for scanning a directory-valued config path. Nine registry entries
+#: point at a directory rather than a file (``~/.aider/``, ``.trae/rules/``,
+#: ``~/.config/opencode/plugins/`` …); these keep that walk from wandering into
+#: a large tree on a command that must stay fast enough to run at session start.
+_DIR_SCAN_MAX_FILES = 64
+_DIR_SCAN_MAX_BYTES = 512 * 1024
+
+
 def _config_has_marker(path: Path) -> bool:
+    """Is Prismor's dispatcher wired into this config path?
+
+    Handles directories as well as files. Reading a directory raises
+    ``IsADirectoryError``, which used to be swallowed into a ``False`` — so
+    every agent whose registry path is a directory reported as ungoverned no
+    matter how it was configured, and that verdict rides in the signed
+    attestation bundle.
+    """
+    try:
+        if path.is_dir():
+            scanned = 0
+            for child in sorted(path.rglob("*")):
+                if scanned >= _DIR_SCAN_MAX_FILES:
+                    break
+                if not child.is_file():
+                    continue
+                scanned += 1
+                try:
+                    if child.stat().st_size > _DIR_SCAN_MAX_BYTES:
+                        continue
+                except OSError:
+                    continue
+                if _file_has_marker(child):
+                    return True
+            return False
+        return _file_has_marker(path)
+    except OSError:
+        return False
+
+
+def _file_has_marker(path: Path) -> bool:
     try:
         return _GOVERNED_MARKER in path.read_text(encoding="utf-8", errors="ignore").lower()
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         return False
 
 
@@ -79,6 +118,24 @@ def _governed_frameworks(workspace: Optional[Path]) -> Dict[str, Dict[str, Any]]
     except Exception:
         pass
     return out
+
+
+def _glob_candidates(pattern: Path) -> List[Path]:
+    """Expand a glob-bearing config path into the files that actually exist.
+
+    Split at the first component containing ``*`` so the fixed prefix is the
+    glob root — ``Path.glob`` cannot take an absolute pattern.
+    """
+    parts = pattern.parts
+    for index, part in enumerate(parts):
+        if "*" in part:
+            root = Path(*parts[:index]) if index else Path(".")
+            rest = str(Path(*parts[index:]))
+            try:
+                return [p for p in root.glob(rest) if p.exists()]
+            except (OSError, ValueError, NotImplementedError):
+                return []
+    return []
 
 
 def _registry_config_paths(workspace: Path) -> Dict[str, List[Path]]:
@@ -111,7 +168,12 @@ def _registry_config_paths(workspace: Path) -> Dict[str, List[Path]]:
                 candidate = Path(raw)
             else:
                 candidate = workspace / raw
-            if candidate.exists():
+            # Several registry entries are glob patterns (amazonq's
+            # ``cli-agents/*.json``, amp's ``plugins/*.ts``). Checked as
+            # literals they can never exist, so those agents were undetectable.
+            if "*" in str(candidate):
+                paths.extend(sorted(_glob_candidates(candidate)))
+            elif candidate.exists():
                 paths.append(candidate)
         if paths:
             out[entry.id] = paths
