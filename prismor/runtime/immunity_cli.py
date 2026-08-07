@@ -137,7 +137,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 # owns; any introspected command NOT named here lands in the "More" catch-all,
 # so a new prismor.runtime.cli subcommand can never silently vanish from help.
 _HELP_GROUPS = [
-    ("Quick start",          ["setup", "status", "dashboard", "audit", "update", "pause", "pause-hard", "resume"]),
+    ("Quick start",          ["setup", "status", "term", "dashboard", "audit", "update", "pause", "pause-hard", "resume"]),
     ("Runtime protection",   ["check", "semantic-check", "scan", "deps", "sandbox", "policy"]),
     ("Sessions & forensics", ["analyze", "ingest", "sessions", "session"]),
     ("Hooks",                ["install-hooks", "uninstall-hooks", "mcp-gateway"]),

@@ -979,6 +979,18 @@ def main(argv: Optional[List[str]] = None) -> None:
             _print_status_overview(workspace)
         return
 
+    # ── term: full-screen terminal console (curses) ─────────────────────
+    if args.command == "term":
+        from prismor.runtime.term import run_term
+        registered = list_registered_workspaces()
+        if not registered:
+            sys.stderr.write(
+                "[prismor] Warning: no registered workspaces found.\n"
+                "         Run 'prismor install-hooks' in a project first to collect data.\n"
+            )
+        run_term()
+        return
+
     # ── analyze ────────────────────────────────────────────────────────
     if args.command == "analyze":
         # Accept `analyze <file>` as shorthand for `analyze --input <file>`.
@@ -2570,6 +2582,12 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument(
         "--days", type=int, default=7, metavar="N",
         help="With --all: show activity for the last N days (default: 7)",
+    )
+
+    # ── term ───────────────────────────────────────────────────────────
+    subparsers.add_parser(
+        "term",
+        help="Full-screen terminal console: agents, sessions, live event tail",
     )
 
     # ── analyze ────────────────────────────────────────────────────────

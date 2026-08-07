@@ -188,6 +188,7 @@ at all. See [Transcript Ingest](transcript-ingest.md).
 
 ## See also
 
+- [Terminal Console](terminal-console.md) — `prismor term`, a full-screen console over this same store: agent → session tree, live event tail, per-session cost
 - [Prismor](prismor-runtime.md) — session-log schema and the audit command
 - [Transcript Ingest](transcript-ingest.md) — reconstructing pre-install activity
 - [Learning](learning.md) — mines this same history for new rules

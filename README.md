@@ -88,6 +88,7 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
 - 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
 - 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
+- 🖥️ [Terminal Console](docs/terminal-console.md) is `prismor term` — a full-screen agent → session tree with a live event tail, policy precedence, and per-session token cost, without leaving the terminal
 - 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
 - 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
 - 🔦 [Host Discovery](docs/attestation-bundle.md#host-discovery) sweeps the machine with `prismor discover` and flags any AI agent running without Prismor hooks (shadow AI)

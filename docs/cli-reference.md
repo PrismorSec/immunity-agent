@@ -59,6 +59,7 @@ prismor
 │   ├─ analyze / ingest       Run the engine over a JSONL session
 │   ├─ ingest --discover      Reconstruct past agent activity from on-disk transcripts
 │   ├─ sessions / session     List / show stored sessions
+│   ├─ term                   Full-screen console (agents, sessions, live tail)
 │   ├─ trail <action>         verify · show · checkpoint — signed audit trail
 │   ├─ attest [verify|coverage]  Signed evidence bundle + framework coverage
 │   ├─ discover               Sweep host for ungoverned AI agents (shadow AI)
@@ -165,6 +166,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor attest coverage` | `--json`, `--workspace` | Show which compliance-framework controls the active policy covers (OWASP LLM/Agentic, NIST AI RMF, EU AI Act). |
 | `prismor discover` | `--json`, `--workspace` | Sweep this host for AI agents and flag any running without Prismor hooks (shadow AI). Host-local, read-only. See [Host discovery](attestation-bundle.md#host-discovery). |
 | `prismor status --all` | `--days N` | Terminal overview of every registered workspace. See [Dashboard](dashboard.md). |
+| `prismor term` | — | Full-screen terminal console: agent → session tree, live event tail, policy precedence, per-session token cost. Falls back to a plain table when stdout isn't a tty. See [Terminal Console](terminal-console.md). |
 | `prismor dashboard` | `--port`, `--host`, `--no-open` | Local web dashboard at `http://127.0.0.1:7070` (opens a browser tab). See [Dashboard](dashboard.md). |
 | `prismor serve` | `--port`, `--host`, `--no-open` | _Deprecated_ alias of `dashboard --no-open` (headless server only). |
 
@@ -273,5 +275,6 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 - [Skill Scanner](skill-scanner.md) — MCP + skill risk scanning
 - [Sweep & Cloak](sweep-and-cloak.md) — secret prevention
 - [Semantic Guard](semantic-guard.md) — LLM-assisted injection defense
+- [Terminal Console](terminal-console.md) — `prismor term`, the full-screen agent/session console
 - [Canary](canary.md) · [IAM](iam.md) · [Scoped Agent](scoped-agent.md) · [Learning](learning.md) · [Dashboard](dashboard.md)
 - [Docker & Containers](docker.md) · [Architecture](architecture.md)
