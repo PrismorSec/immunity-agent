@@ -87,14 +87,33 @@ output? If so, is that memory trusted the same way on the next session?
   another agent later treats as fact.
 - No TTL or review cycle on memory entries sourced from untrusted input.
 
-**Runtime backstop:** Prismor's `memory-embedded-directive` rule (category
-`memory_poisoning`) scans project memory files (`CLAUDE.md`, `AGENTS.md`) for
-embedded directives on session start and fires a `memory_poisoning` finding —
-currently **warn**, not block, by design, since legitimate project
-conventions and a poisoned instruction can read identically without further
-context. Treat this rule as a detection signal to review, not a guarantee the
-memory is clean. Broader agent-memory stores (vector DBs, custom scratchpads)
-are outside this rule's scope and need their own provenance/TTL design.
+**Runtime backstop:** four checks, all category `memory_poisoning`, all
+**warn** rather than block — legitimate project conventions and a poisoned
+instruction can read identically without further context, so these are
+detection signals to review, not a guarantee the memory is clean.
+
+| Check | Fires on | Catches |
+| --- | --- | --- |
+| `memory-embedded-directive` | session start | a directive already sitting in project memory when the session opens |
+| `memory-directive-on-write` | `file_write` | a directive being written into an instruction file mid-session, before it lands |
+| `memory-file-drift` | session start | an instruction file whose content changed since the last session — no pattern required, so it catches phrasings no regex anticipates |
+| `memory-self-reinforcement` | `file_write` | untrusted content read earlier this session being copied verbatim into durable memory |
+
+The scanned set covers `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`,
+`GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.github/copilot-instructions.md`
+and `.mcp.json`. Agents without a session-start hook get the scan on the first
+event of the session instead, so this is not Claude-only.
+
+`memory-directive-on-write` also names the `memory_redact` transform: an org
+that wants writes cleaned rather than flagged sets `action: modify` on that
+rule in an overlay. It ships as `warn` because `modify` fails closed to DENY on
+surfaces that cannot rewrite tool input.
+
+Broader agent-memory stores (vector DBs, custom scratchpads) remain outside
+this scope and need their own provenance/TTL design — a hook layer never sees
+those writes, so they have to be guarded at the store boundary in application
+code. These checks cover the memory surface a coding agent actually loads at
+session start: the instruction files on disk.
 
 ### 4. Inter-agent trust boundaries (`owasp-agentic-t10:T03`)
 

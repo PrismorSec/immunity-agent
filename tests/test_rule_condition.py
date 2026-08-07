@@ -43,10 +43,20 @@ class TestBackwardCompatibility(unittest.TestCase):
         self.assertIsNone(rule.condition)
         self.assertEqual(rule.pattern_groups, {})
 
-    def test_every_shipped_default_rule_still_uses_the_flat_path(self):
-        # The bundled policy must not have quietly grown conditions.
+    def test_only_known_shipped_rules_use_a_condition(self):
+        # The bundled policy must not have *quietly* grown conditions. A rule
+        # added here is an explicit, reviewed decision; anything else showing up
+        # is the drift this canary exists to catch.
+        #
+        # memory-directive-on-write needs one structurally: it fires on
+        # file_write, where `combined_text` carries the written content, so
+        # without `condition: "patterns and instruction_file"` it would flag any
+        # document that merely discusses directive phrasing — including the
+        # policy file that defines the patterns.
+        expected = {"memory-directive-on-write"}
         engine = PolicyEngine()
-        self.assertTrue(all(r.condition is None for r in engine.rules))
+        actual = {r.id for r in engine.rules if r.condition is not None}
+        self.assertEqual(actual, expected)
 
     def test_pattern_groups_alone_do_nothing_without_a_condition(self):
         rule = mk(patterns=["curl"], pattern_groups={"x": ["nope"]})

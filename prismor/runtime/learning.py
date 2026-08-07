@@ -984,3 +984,96 @@ def format_learning_report(
 
     lines.append("")
     return "\n".join(lines)
+
+
+# ── Memory self-reinforcement ─────────────────────────────────────────────────
+#
+# The laundering step in a memory-poisoning chain. An agent reads untrusted
+# content (a fetched page, a tool result, another agent's output), then writes
+# it verbatim into an instruction file. On the next session that text is no
+# longer "something the agent read" — it is the agent's own durable, implicitly
+# trusted memory, and every content rule that would have scrutinized it as tool
+# output has already been passed.
+#
+# Only a *verbatim* echo of a substantial line is flagged. A genuine summary is
+# reworded; copying a long line unchanged from untrusted output into memory is
+# the higher-signal case. This still fires on the legitimate "read these docs
+# and record the conventions in CLAUDE.md" workflow, which is why it warns
+# rather than blocks — the point is that the user gets told durable memory just
+# absorbed text the agent did not author.
+
+_SELF_REINFORCE_MIN_LEN = 40
+
+# Event types whose content the agent did not author. `prompt` is deliberately
+# absent: text the human typed is trusted, so recording it in memory is normal.
+_UNTRUSTED_SOURCE_TYPES = frozenset({"tool_result", "memory", "file_read", "network"})
+
+_INSTRUCTION_FILE_RE = re.compile(
+    r"(^|/)(CLAUDE|AGENTS|GEMINI)\.md$"
+    r"|(^|/)CLAUDE\.local\.md$"
+    r"|(^|/)\.(cursorrules|windsurfrules)$"
+    r"|(^|/)\.github/copilot-instructions\.md$"
+    r"|(^|/)\.mcp\.json$",
+    re.IGNORECASE,
+)
+
+
+def detect_memory_self_reinforcement(
+    workspace: Path,
+    session_id: str,
+    event: Dict[str, Any],
+    current_findings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Flag a write to an agent-instruction file that echoes untrusted content
+    seen earlier in the same session.
+
+    Returns at most one MEDIUM-severity, action=warn finding.
+    """
+    if event.get("type") != "file_write":
+        return []
+    if not _INSTRUCTION_FILE_RE.search(str(event.get("path") or "")):
+        return []
+
+    candidates = [
+        norm for norm in (
+            _WHITESPACE.sub(" ", line).strip()
+            for line in str(event.get("content") or "").splitlines()
+        )
+        if len(norm) >= _SELF_REINFORCE_MIN_LEN
+    ]
+    if not candidates:
+        return []
+
+    from prismor.runtime.store import read_session_events
+    try:
+        prior = read_session_events(workspace, session_id)
+    except (OSError, ValueError):
+        return []
+
+    parts: List[str] = []
+    for prior_event in prior:
+        if prior_event.get("type") not in _UNTRUSTED_SOURCE_TYPES:
+            continue
+        for key in ("content", "response", "stdout"):
+            value = prior_event.get(key)
+            if value:
+                parts.append(str(value))
+    if not parts:
+        return []
+
+    haystack = _WHITESPACE.sub(" ", "\n".join(parts))
+    echoed = next((line for line in candidates if line in haystack), None)
+    if echoed is None:
+        return []
+
+    return [{
+        "id": "memory-self-reinforcement",
+        "severity": "MEDIUM",
+        "category": "memory_poisoning",
+        "title": "Untrusted content from this session is being written into an agent-instruction file",
+        "evidence": f"path={str(event.get('path') or '')!r} echoed={echoed[:160]!r}",
+        "eventIndex": 0,
+        "ruleId": "memory-self-reinforcement",
+        "action": "warn",
+        "source": "project_memory",
+    }]

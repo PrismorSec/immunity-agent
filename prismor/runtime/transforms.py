@@ -99,3 +99,57 @@ def _cloak_transform(*, payload, workspace, mode):
     unless secret substitution has already been handled out-of-band.
     """
     return None
+
+
+@register("memory_redact")
+def _memory_redact_transform(*, payload, workspace, mode):
+    """Strip flagged operational directives from a write to an instruction file.
+
+    The memory-poisoning rules are detection-only by design — a poisoned line
+    already on disk cannot be un-read, which is what the SessionStart
+    counter-instruction is for. A *write*, though, is interceptable: this drops
+    the offending lines before they ever land, so the next session has nothing
+    to load.
+
+    Reuses the compiled ``memory-directive-on-write`` patterns rather than
+    restating them, so an overlay that tunes the rule automatically tunes what
+    gets redacted. Declines (``None``) when nothing matched, which the caller
+    treats as an unsatisfiable MODIFY and denies — so this never silently
+    passes a write it failed to clean.
+    """
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    # Write carries `content`; a plain Edit carries `new_string`.
+    key = next((k for k in ("content", "new_string") if tool_input.get(k)), "")
+    if not key:
+        return None
+
+    rule = next(
+        (r for r in PolicyEngine(workspace=Path(workspace)).rules
+         if r.id == "memory-directive-on-write"),
+        None,
+    )
+    if rule is None:
+        return None
+
+    kept: list[str] = []
+    removed = 0
+    for line in str(tool_input[key]).splitlines(keepends=True):
+        if line.strip() and rule.patterns.search(line):
+            removed += 1
+            continue
+        kept.append(line)
+    if not removed:
+        return None
+
+    new_input = dict(tool_input)
+    new_input[key] = "".join(kept)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": new_input,
+        }
+    }

@@ -1009,6 +1009,67 @@ rules:
       - '(?:gradually|subtly|silently|quietly|covertly)\s+(?:steer|guide|push|nudge|send|forward|transmit|exfiltrat|modify|change)'
     action: warn
 
+  # ── MEDIUM: Operational directive written INTO an instruction file ────
+  # Third leg of the memory-poisoning triad. `memory-embedded-directive` above
+  # sees project memory only as it is loaded at session start;
+  # `agent-instruction-tampering` sees the write but matches on `path` alone, so
+  # the written *text* is never inspected. That leaves a mid-session hole: a
+  # poison that lands while the agent is running — an agent talked into editing
+  # its own CLAUDE.md, a compromised PR applied during the session — stays
+  # invisible until the NEXT session, by which point the agent may already have
+  # acted on it.
+  #
+  # No new plumbing is needed: every agent normalizer already puts the written
+  # text on `file_write.content`, and _extract_fields folds `content` into the
+  # matchable field set. That also makes this the one memory-poisoning check
+  # that covers all supported agents, not just those with a session-start hook.
+  #
+  # The `instruction_file` group narrows the rule to writes actually targeting
+  # an agent-instruction file. Its patterns are path-anchored — `(^|/)…$`, and
+  # the engine compiles with IGNORECASE|DOTALL but NOT MULTILINE, so `^`/`$`
+  # bind to the whole string — which means they match the `path` field and
+  # cannot realistically match prose inside `content`. Without that narrowing
+  # this rule would fire on any document that merely discusses these patterns,
+  # including this policy file.
+  #
+  # Kept as a separate rule rather than folding `file_write` into
+  # memory-embedded-directive: a `memory` event carries no `path`, so a shared
+  # `condition` requiring `instruction_file` would silently kill the
+  # session-start detection. The directive patterns are duplicated as a result —
+  # an overlay that tunes one rule's patterns must tune both.
+  - id: memory-directive-on-write
+    severity: MEDIUM
+    category: memory_poisoning
+    title: Detects an operational directive being written into an agent-instruction file
+    event_types: [file_write]
+    fields: [path, content]
+    patterns:
+      - '(?:always|every\s+time|before\s+(?:you\s+)?(?:do\s+)?(?:anything|any\s+edits?|any\s+changes?|making\s+(?:any\s+)?(?:edits?|changes?)|editing|running|starting|committing))[^\n]{0,80}\b(?:run|execute|invoke|source|pipe)\b'
+      - '\b(?:run|execute|invoke|source)\b[^\n]{0,60}\b(?:before\s+(?:you\s+)?(?:do\s+)?(?:anything|any\s+edits?|any\s+changes?|making|editing|each|every)|first\b[^\n]{0,20}(?:to\s+(?:confirm|initialize|ensure|verify)))'
+      - '(?:always|first|before[^\n]{0,40})[^\n]{0,60}\b(?:curl|wget|fetch|download|source)\b[^\n]{0,60}https?://'
+      - 'never\s+(?:mention|tell|inform|warn|disclose|reveal|show|report)\b[^\n]{0,40}\b(?:the\s+)?(?:user|them)\b'
+      - 'do\s+not\s+(?:mention|disclose|tell|reveal|show|warn|report)\b[^\n]{0,40}\b(?:the\s+)?user\b'
+      - '(?:append|include|add|insert)\s+(?:this|the\s+following)\s+(?:line\s+)?(?:to|in)\s+(?:every|each|all)\s+(?:response|message|reply|output|commit)'
+      - '(?:gradually|subtly|silently|quietly|covertly)\s+(?:steer|guide|push|nudge|send|forward|transmit|exfiltrat|modify|change)'
+    pattern_groups:
+      instruction_file:
+        - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
+        - '(^|/)CLAUDE\.local\.md$'
+        - '(^|/)\.(cursorrules|windsurfrules)$'
+        - '(^|/)\.github/copilot-instructions\.md$'
+        - '(^|/)\.github/chatmodes/'
+        - '(^|/)\.mcp\.json$'
+    condition: "patterns and instruction_file"
+    # Ships as `warn`, matching memory-embedded-directive: this is a
+    # false-positive-prone content heuristic, and `action: modify` fails closed
+    # to DENY on every surface that cannot rewrite tool input (Copilot, Cursor,
+    # framework adapters) — which would turn a MEDIUM heuristic into a hard deny
+    # on most agents. The transform is named here so an org that wants the
+    # stronger posture flips one key (`action: modify`) in an overlay instead of
+    # having to supply a transform name as well.
+    action: warn
+    transform: memory_redact
+
   # ── CRITICAL: Shell obfuscation (decode-and-execute chains) ──────
   - id: shell-obfuscation
     severity: CRITICAL

@@ -1804,7 +1804,22 @@ def _classify_mcp_event(
 # Project-memory files auto-loaded by the agent at session start. Their
 # directives are trusted implicitly by the model, so Prismor treats them as an
 # untrusted content source (issue #155).
-_MEMORY_FILENAMES = ("CLAUDE.md", "AGENTS.md")
+#
+# This set is deliberately kept in sync with the paths guarded by the
+# `agent-instruction-tampering` and `memory-directive-on-write` rules. It used
+# to hold only CLAUDE.md/AGENTS.md, which meant Prismor warned on *writes* to
+# .cursorrules / GEMINI.md / copilot-instructions.md but never read what was
+# already in them — the door was locked without ever checking who was inside.
+# Entries may be nested relative paths; `directory / name` joins them fine.
+_MEMORY_FILENAMES = (
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "AGENTS.md",
+    "GEMINI.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".github/copilot-instructions.md",
+)
 # Cap total scanned memory content so a huge memory file can't blow the OS
 # argument limit / telemetry payload. Detection patterns fire on the leading
 # directive-shaped text; a truncated tail is acceptable.
@@ -1815,13 +1830,15 @@ def _read_project_memory(workspace: Path) -> Dict[str, Any]:
     """Collect CLAUDE.md/AGENTS.md content the agent loads at session start.
 
     Searches the workspace and its ancestors (project-scoped memory) plus the
-    user's ~/.claude directory (global memory). Returns the concatenated text
-    and the list of files it came from. Best-effort: unreadable files are
-    skipped rather than failing the hook.
+    user's ~/.claude directory (global memory). Returns the concatenated text,
+    the list of files it came from, and a per-file content fingerprint used by
+    the drift check (scanner.check_memory_drift). Best-effort: unreadable files
+    are skipped rather than failing the hook.
     """
     seen: set[Path] = set()
     parts: List[str] = []
     files: List[str] = []
+    digests: Dict[str, str] = {}
 
     search_dirs: List[Path] = []
     try:
@@ -1848,9 +1865,17 @@ def _read_project_memory(workspace: Path) -> Dict[str, Any]:
                 continue
             files.append(str(candidate))
             parts.append(f"# {candidate}\n{text}")
+            # Fingerprint the untruncated per-file text: the drift check must
+            # notice a change past _MEMORY_SCAN_LIMIT, which the concatenated
+            # (and truncated) scan content would miss.
+            try:
+                from prismor.runtime.scanner import text_fingerprint
+                digests[str(candidate)] = text_fingerprint(text)
+            except Exception:
+                pass
 
     content = "\n\n".join(parts)[:_MEMORY_SCAN_LIMIT]
-    return {"content": content, "files": files}
+    return {"content": content, "files": files, "digests": digests}
 
 
 def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -1888,6 +1913,9 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
         memory_root = Path(raw_cwd) if raw_cwd else workspace
         memory = _read_project_memory(memory_root)
         base["metadata"]["memory_files"] = memory["files"]
+        # Per-file content fingerprints for the drift check in
+        # runtime.evaluate_tool_call (scanner.check_memory_drift).
+        base["metadata"]["memory_digests"] = memory["digests"]
         return {**base, "type": "memory", "content": memory["content"]}
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}

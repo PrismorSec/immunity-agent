@@ -236,6 +236,39 @@ def evaluate_tool_call(
     _session_seq = len(events) - 1
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject)
 
+    # ── Project-memory integrity ────────────────────────────────────────────
+    # Two things happen here that the regex rules alone cannot cover.
+    #
+    # 1. Drift. `memory-embedded-directive` only catches poison someone already
+    #    wrote a pattern for. The fingerprint check is provenance-independent:
+    #    it reports that a trusted instruction file is no longer the file it was
+    #    last session, whatever the wording.
+    # 2. Reach. Only Claude wires a real SessionStart hook, so only Claude ever
+    #    produced a `memory` event — leaving the other supported agents with no
+    #    project-memory scanning at all. Piggy-backing the scan on the first
+    #    event of a session keeps it a pre-action check without needing a
+    #    session-start surface those agents do not expose.
+    try:
+        from prismor.runtime.hooks import _read_project_memory
+        from prismor.runtime.scanner import check_memory_drift
+        if event.get("type") == "memory":
+            # Claude's real SessionStart event — engine.evaluate already ran the
+            # content rules above; add the drift check on top.
+            findings.extend(check_memory_drift(meta.get("memory_digests") or {}))
+        elif _session_seq == 0 and event.get("type") != "prompt":
+            _mem = _read_project_memory(Path(meta.get("cwd") or workspace))
+            if _mem["content"]:
+                _mem_event = {
+                    "type": "memory",
+                    "content": _mem["content"],
+                    "metadata": {"memory_files": _mem["files"], "cwd": meta.get("cwd")},
+                }
+                findings.extend(engine.evaluate(
+                    _mem_event, _session_seq, session_id=session_id, subject=subject))
+                findings.extend(check_memory_drift(_mem["digests"]))
+    except Exception as exc:  # best-effort; never block a tool call on this
+        sys.stderr.write(f"[prismor] project-memory scan error: {exc}\n")
+
     # Codex cannot mutate Bash input or scrub Bash output from hooks. Block
     # literal cloak placeholders/read leaks before they execute, and persist the
     # finding so the dashboard explains the decision.
@@ -400,6 +433,21 @@ def evaluate_tool_call(
                     findings.extend(extra)
             except Exception as exc:
                 sys.stderr.write(f"[prismor] {fn_name} error: {exc}\n")
+
+    # Memory self-reinforcement: untrusted content read earlier this session
+    # being written verbatim into an instruction file. Unlike the shell
+    # detectors above this runs even when the event already has findings — the
+    # directive rules and the laundering signal are independent, and suppressing
+    # one because the other fired would hide the more durable problem.
+    if event.get("type") == "file_write":
+        try:
+            from prismor.runtime import learning
+            extra = learning.detect_memory_self_reinforcement(
+                workspace, session_id, event, findings)
+            if extra:
+                findings.extend(extra)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] detect_memory_self_reinforcement error: {exc}\n")
 
     # Per-event rule exemptions (admin-granted, signed): relax ("allow", drop the
     # finding) or downgrade ("flag", warn but don't block) a rule for the current

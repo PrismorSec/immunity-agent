@@ -764,21 +764,21 @@ def _check_typosquat(name: str) -> Optional[Dict[str, Any]]:
 # invisible between scans, so this compares each scan's fingerprint of the
 # security-relevant fields against the last one seen and flags a change.
 
-def _drift_state_path() -> Path:
+def _drift_state_path(filename: str = "mcp_schema_snapshots.json") -> Path:
     from prismor.runtime.store import prismor_home
-    return prismor_home() / "mcp_schema_snapshots.json"
+    return prismor_home() / filename
 
 
-def _load_drift_state() -> Dict[str, Any]:
-    path = _drift_state_path()
+def _load_drift_state(filename: str = "mcp_schema_snapshots.json") -> Dict[str, Any]:
+    path = _drift_state_path(filename)
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def _save_drift_state(state: Dict[str, Any]) -> None:
-    path = _drift_state_path()
+def _save_drift_state(state: Dict[str, Any], filename: str = "mcp_schema_snapshots.json") -> None:
+    path = _drift_state_path(filename)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
@@ -836,6 +836,58 @@ def _check_drift(entry: Dict[str, Any], state: Dict[str, Any]) -> Optional[Dict[
             "skillName": name,
         }
     return None
+
+
+# ── Project-memory content drift ─────────────────────────────────────────────
+#
+# The `memory-embedded-directive` rule only catches poison someone already
+# wrote a regex for; reword the attack and it walks through. This is the
+# provenance-independent backstop: it reports that an instruction file the
+# agent implicitly trusts is no longer the file it was last session, whatever
+# the wording. Same fingerprint-and-compare shape as the MCP rug-pull detector
+# above, pointed at file content instead of a server schema.
+_MEMORY_DRIFT_STATE = "memory_file_snapshots.json"
+
+
+def text_fingerprint(text: str) -> str:
+    """Stable content hash — the raw-text analogue of ``_schema_fingerprint``."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def check_memory_drift(digests: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Flag agent-instruction files whose content changed since the last session.
+
+    ``digests`` maps file path -> ``text_fingerprint`` of its content. A file
+    seen for the first time is recorded silently (no finding) — only a *change*
+    to an already-trusted file is reported. Best-effort: a missing or corrupt
+    state file degrades to "no prior snapshot", never an error.
+    """
+    if not digests:
+        return []
+    state = _load_drift_state(_MEMORY_DRIFT_STATE)
+    findings: List[Dict[str, Any]] = []
+    for path, digest in sorted(digests.items()):
+        prior = (state.get(path) or {}).get("fingerprint")
+        state[path] = {"fingerprint": digest}
+        if not prior or prior == digest:
+            continue
+        name = Path(path).name
+        findings.append({
+            "id": f"memory-drift-{name}",
+            "severity": "MEDIUM",
+            "category": "memory_poisoning",
+            "title": f"Agent-instruction file '{name}' changed since the last session",
+            "evidence": (
+                f"path={path!r} prior_fingerprint={prior[:12]} "
+                f"current_fingerprint={digest[:12]}"
+            ),
+            "eventIndex": 0,
+            "ruleId": "memory-file-drift",
+            "action": "warn",
+            "source": "project_memory",
+        })
+    _save_drift_state(state, _MEMORY_DRIFT_STATE)
+    return findings
 
 
 def audit_mcp_schema(
