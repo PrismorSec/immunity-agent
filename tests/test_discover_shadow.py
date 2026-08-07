@@ -214,6 +214,81 @@ def test_empty_env_var_is_not_reported(fake_host, monkeypatch):
     assert not any(c.location == "GROQ_API_KEY" for c in creds)
 
 
+# ── control-plane reporting ──────────────────────────────────────────────────
+
+def test_report_payload_flattens_all_three_surfaces(fake_host):
+    discover, home, ws = fake_host
+    _write(ws / ".mcp.json",
+           {"mcpServers": {"weather": {"command": "npx", "args": ["weather-mcp"]}}})
+    report = discover.build_report(ws, scan_files=False)
+    payload = discover.report_payload(report)
+    kinds = {f["kind"] for f in payload["findings"]}
+    assert "mcp" in kinds
+    assert payload["cli_version"]
+    assert payload["summary"] is report["summary"]
+    for finding in payload["findings"]:
+        # The control plane requires these to store a row at all.
+        assert finding["kind"] and finding["name"] is not None
+        assert isinstance(finding["managed"], bool)
+
+
+def test_report_payload_omits_the_gateway_entry(fake_host):
+    """The gateway is Prismor's own proxy, not a piece of inventory."""
+    discover, home, ws = fake_host
+    _write(ws / ".mcp.json", {"mcpServers": {
+        "prismor-gateway": {"command": "prismor", "args": ["mcp-gateway", "serve"]}}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    assert not [f for f in payload["findings"] if f["name"] == "prismor-gateway"]
+
+
+def test_report_payload_carries_no_secret(fake_host):
+    """Whatever crosses the network is the redacted record, not the raw config."""
+    discover, home, ws = fake_host
+    secret = "prism_agent_ae35779540e0c918f6baadadfa47908"
+    _write(ws / ".mcp.json",
+           {"mcpServers": {"remote": {"url": f"https://x.dev/mcp/{secret}"}}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    assert secret not in json.dumps(payload)
+
+
+def test_send_report_is_a_noop_when_not_enrolled(fake_host, monkeypatch):
+    """A local-only machine has nowhere to report to, and must not error."""
+    discover, home, ws = fake_host
+    called = {"urlopen": False}
+
+    def fail_urlopen(*a, **k):
+        called["urlopen"] = True
+        raise AssertionError("must not reach the network when unenrolled")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "load_identity", lambda: None)
+    assert discover.send_report({"summary": {}}) is False
+    assert not called["urlopen"]
+
+
+def test_send_report_never_raises_when_the_console_is_down(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "load_identity",
+                        lambda: {"device_key": "k", "api_base": "https://x.invalid"})
+    monkeypatch.setattr(_identity, "revoked_info", lambda: None)
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("unreachable")))
+    assert discover.send_report({"summary": {}}) is False
+
+
+def test_send_report_does_not_report_from_a_revoked_device(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "load_identity", lambda: {"device_key": "k"})
+    monkeypatch.setattr(_identity, "revoked_info", lambda: {"at": "now"})
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("revoked device must not report")))
+    assert discover.send_report({"summary": {}}) is False
+
+
 # ── report ───────────────────────────────────────────────────────────────────
 
 def test_coverage_is_none_when_nothing_governable(fake_host, monkeypatch):

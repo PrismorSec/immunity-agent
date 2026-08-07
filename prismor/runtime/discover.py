@@ -923,6 +923,85 @@ def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
     }
 
 
+def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a report into the wire shape the control plane accepts.
+
+    One flat ``findings`` list rather than three keyed sections: the console
+    renders them in one table, and a shape change on either side of a version
+    skew should cost a missing column, not a rejected report.
+    """
+    findings: List[Dict[str, Any]] = []
+    for agent in report.get("agents") or []:
+        findings.append({
+            "kind": "agent",
+            "name": agent.get("name") or agent.get("id") or "",
+            "detail": (agent.get("config_paths") or [""])[0],
+            "managed": bool(agent.get("managed")),
+            "coverable": bool(agent.get("coverable", True)),
+            "risk": "none",
+            "reasons": [],
+        })
+    for server in report.get("mcp") or []:
+        if server.get("is_gateway"):
+            continue  # the gateway is not an inventory item
+        findings.append({
+            "kind": "mcp",
+            "name": server.get("name") or "",
+            # Already redacted at record construction; see redact_url.
+            "detail": server.get("url") or " ".join(server.get("command") or []),
+            "managed": bool(server.get("managed")),
+            "coverable": True,
+            "risk": server.get("risk") or "none",
+            "reasons": server.get("findings") or [],
+        })
+    for cred in report.get("credentials") or []:
+        findings.append({
+            "kind": "credential",
+            "name": cred.get("provider") or "",
+            "detail": cred.get("location") or "",
+            "managed": bool(cred.get("managed")),
+            "coverable": True,
+            "risk": "none",
+            "reasons": [],
+        })
+
+    from prismor.runtime import __version__ as _version
+    return {
+        "findings": findings,
+        "summary": report.get("summary") or {},
+        "cli_version": _version,
+    }
+
+
+def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
+    """POST an inventory to the control plane. Returns True on success.
+
+    Silent no-op when the device is not enrolled — discovery is useful on its
+    own, and a local-only machine has nowhere to report to. Never raises: a
+    control plane that is down must not fail the developer's command.
+    """
+    try:
+        from prismor.runtime.enterprise import identity as _identity
+        ident = _identity.load_identity()
+        if not ident or _identity.revoked_info() is not None:
+            return False
+        base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
+        import urllib.request
+        request = urllib.request.Request(
+            f"{base}/api/discovery/report",
+            data=json.dumps(report_payload(report)).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {ident.get('device_key')}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 def _coverage(agents_total: int, agents_shadow: int,
               mcp_total: int, mcp_shadow: int,
               creds_total: int, creds_shadow: int) -> Optional[int]:

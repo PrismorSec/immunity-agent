@@ -2546,6 +2546,9 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument(
         "--fail-on-shadow", action="store_true",
         help="Exit 1 if any ungoverned AI surface is found (for CI)")
+    discover_parser.add_argument(
+        "--report", action="store_true",
+        help="Send the inventory to your organization console (requires enrollment)")
 
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
@@ -3531,7 +3534,8 @@ def _run_discover(args, workspace: Path) -> None:
     else:
         discover_cli.discover_all(
             workspace, as_json=as_json, scan_files=scan_files,
-            fail_on_shadow=getattr(args, "fail_on_shadow", False))
+            fail_on_shadow=getattr(args, "fail_on_shadow", False),
+            report_to_console=getattr(args, "report", False))
 
 
 def _run_attest(args, workspace: Path, repo_root: Path) -> None:

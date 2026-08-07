@@ -19,7 +19,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from prismor.runtime import discover as _discover
 
@@ -175,9 +175,13 @@ def _print_summary(report: Dict[str, Any]) -> None:
 
 
 def discover_all(workspace: Path, *, as_json: bool = False,
-                 scan_files: bool = True, fail_on_shadow: bool = False) -> None:
+                 scan_files: bool = True, fail_on_shadow: bool = False,
+                 report_to_console: bool = False) -> None:
     """Full report: agents, MCP servers, keys, and a coverage score."""
     report = _discover.build_report(workspace, scan_files=scan_files)
+    sent: Optional[bool] = None
+    if report_to_console:
+        sent = _discover.send_report(report)
     if as_json:
         print(json.dumps(report, indent=2))
     else:
@@ -190,6 +194,17 @@ def discover_all(workspace: Path, *, as_json: bool = False,
         _print_mcp(report["mcp"])
         _print_credentials(report["credentials"])
         _print_summary(report)
+        if sent is True:
+            print(f"  {_c('Reported to your organization console.', _DIM)}")
+            print()
+        elif sent is False:
+            # Say which of the two reasons it was — "not enrolled" is a
+            # different action from "the console did not answer".
+            enrolled = report["context"].get("enrolled")
+            reason = ("this device is not enrolled" if not enrolled
+                      else "the console could not be reached")
+            print(f"  {_c('Not reported — ' + reason + '.', _YELLOW)}")
+            print()
 
     if fail_on_shadow:
         summary = report["summary"]
