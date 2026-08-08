@@ -449,5 +449,90 @@ class TestWriteAgentContext(unittest.TestCase):
         self.assertIn("unknown command", r.stderr)
 
 
+class TestPolicyExport(unittest.TestCase):
+    """`prismor policy export` — machine-readable effective policy."""
+
+    OVERRIDE = (
+        'version: "1.0"\n'
+        "rules:\n"
+        "  - id: db-modification\n"
+        "    add_patterns:\n"
+        '      - "cassandra-cli"\n'
+        "  - id: db-access\n"
+        "    enabled: false\n"
+        "allowlists:\n"
+        "  - id: form-field-guard\n"
+        '    rule_ids: ["*"]\n'
+        "    type: veto\n"
+        '    patterns: ["\\\\bbilling\\\\b"]\n'
+    )
+
+    def _export(self, workspace, *extra):
+        r = run_cli("policy", "export", "--workspace", str(workspace), *extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def test_export_is_valid_json_with_the_default_rules(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            payload = json.loads(self._export(tmpdir).stdout)
+            self.assertEqual(payload["version"], "1.0")
+            self.assertGreater(len(payload["rules"]), 10)
+            self.assertEqual(payload["default_fields"]["ui_action"], ["control_label"])
+
+    def test_export_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = self._export(tmpdir).stdout
+            second = self._export(tmpdir).stdout
+            self.assertEqual(first, second)
+            # Sorted keys, so a diff is a real policy change rather than a reshuffle.
+            payload = json.loads(first)
+            self.assertEqual(list(payload), sorted(payload))
+            self.assertEqual(
+                [r["id"] for r in payload["rules"]],
+                sorted(r["id"] for r in payload["rules"]),
+            )
+
+    def test_export_resolves_add_and_disable_patterns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_dir = Path(tmpdir) / ".prismor"
+            policy_dir.mkdir()
+            (policy_dir / "policy.yaml").write_text(self.OVERRIDE, encoding="utf-8")
+            payload = json.loads(self._export(tmpdir).stdout)
+            rules = {r["id"]: r for r in payload["rules"]}
+
+            self.assertIn("cassandra-cli", rules["db-modification"]["patterns"])
+            # enabled: false is resolved by absence, not by a flag to re-interpret.
+            self.assertNotIn("db-access", rules)
+
+            baseline = json.loads(run_cli(
+                "policy", "export", "--workspace", tempfile.mkdtemp()).stdout)
+            base_rules = {r["id"]: r for r in baseline["rules"]}
+            self.assertEqual(
+                len(rules["db-modification"]["patterns"]),
+                len(base_rules["db-modification"]["patterns"]) + 1,
+            )
+
+    def test_export_carries_allowlist_type(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_dir = Path(tmpdir) / ".prismor"
+            policy_dir.mkdir()
+            (policy_dir / "policy.yaml").write_text(self.OVERRIDE, encoding="utf-8")
+            payload = json.loads(self._export(tmpdir).stdout)
+            self.assertEqual(payload["allowlists"][0]["type"], "veto")
+
+    def test_export_output_flag_writes_a_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "build" / "policy.json"
+            r = self._export(tmpdir, "--output", str(target))
+            self.assertEqual(r.stdout, "")
+            self.assertEqual(
+                json.loads(target.read_text()), json.loads(self._export(tmpdir).stdout))
+
+    def test_policy_usage_lists_export(self):
+        r = run_cli("policy")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("export", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

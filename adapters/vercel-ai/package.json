@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "ai": "^4.0.0",
+    "ai": "^7.0.51",
     "@types/node": "^20.0.0"
   },
   "keywords": [

@@ -1,0 +1,1105 @@
+"""Shadow-AI discovery — inventory MCP servers and provider keys alongside the
+host agent sweep, then diff all three against what Prismor actually governs.
+
+``enterprise/discovery.py`` answers this question for *agents*, and its report
+is folded into the signed attestation bundle. This module keeps that the single
+source of truth for the agent half — it calls into it and enriches the result
+rather than re-deriving presence — and adds the two surfaces it does not cover:
+
+    agents       delegated to ``enterprise.discovery.discover``
+                 governed by: prismor hooks installed in that agent's config
+    mcp          scanner.discover_configs() + the desktop/IDE config paths
+                 scanner does not cover (see ``_extra_mcp_configs``)
+                 governed by: routed through `prismor mcp-gateway`
+    credentials  provider key patterns in the environment and agent configs
+                 governed by: registered with Prismor Cloak
+
+Anything present but not governed is *shadow*. That diff is the whole product;
+the inventories on their own are commodity.
+
+Secret handling: this module records that a credential exists, its provider,
+and where it was found. It never records, returns, or logs the value — callers
+render ``CredentialRecord`` directly to a terminal, so a value placed on that
+record would be printed. See ``prismor/runtime/cloaking/README.md``.
+
+The heavy lifting for MCP parsing lives in ``scanner``; for key patterns in
+``sweep``; this module is inventory and diff only. ``discover_cli`` is the UX.
+"""
+from __future__ import annotations
+
+import json
+import os
+import platform
+import re
+import shutil
+import sys
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+
+# ── record types ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AgentRecord:
+    """One AI coding agent found on this machine."""
+
+    id: str
+    name: str
+    kind: str = "coding-agent"
+    managed: bool = False
+    #: how the agent was found — "binary" ($PATH), "config" (config file), or both
+    evidence: List[str] = field(default_factory=list)
+    #: config paths that exist for this agent
+    config_paths: List[str] = field(default_factory=list)
+    #: hook config Prismor is installed into, when managed
+    hook_path: str = ""
+    mode: str = ""
+    #: True when the registry has no hook surface, so it *cannot* be governed
+    #: by hooks — reported separately from "unmanaged but coverable"
+    coverable: bool = True
+
+    @property
+    def shadow(self) -> bool:
+        return not self.managed
+
+
+@dataclass
+class McpRecord:
+    """One MCP server declared in some agent's config."""
+
+    name: str
+    agent: str
+    source: str
+    transport: str = "stdio"
+    #: command argv (stdio) — arguments are kept, env values are not
+    command: List[str] = field(default_factory=list)
+    url: str = ""
+    remote: bool = False
+    managed: bool = False
+    #: this entry *is* the Prismor gateway rather than a server behind it
+    is_gateway: bool = False
+    risk: str = "none"
+    findings: List[str] = field(default_factory=list)
+
+    @property
+    def shadow(self) -> bool:
+        return not self.managed and not self.is_gateway
+
+
+@dataclass
+class CredentialRecord:
+    """An AI-provider credential found in the environment or a config file.
+
+    Carries no value — only provider, location, and whether Cloak knows it.
+    """
+
+    provider: str
+    #: "env" or "file"
+    location_kind: str
+    #: env var name, or path to the file it was found in
+    location: str
+    managed: bool = False
+    #: cloak placeholder this was matched to, when managed
+    cloak_name: str = ""
+
+    @property
+    def shadow(self) -> bool:
+        return not self.managed
+
+
+# ── agent inventory ──────────────────────────────────────────────────────────
+
+#: $PATH binaries that indicate an agent is installed, keyed by registry id.
+#: The registry records config paths but not executable names.
+_AGENT_BINARIES: Dict[str, Tuple[str, ...]] = {
+    "claude": ("claude",),
+    "cursor": ("cursor",),
+    "windsurf": ("windsurf",),
+    "openclaw": ("openclaw",),
+    "hermes": ("hermes",),
+    "codex": ("codex",),
+    "copilot": ("copilot",),
+    "grok": ("grok",),
+    "gemini": ("gemini",),
+    "opencode": ("opencode",),
+    "aider": ("aider",),
+    "kiro": ("kiro",),
+    "crush": ("crush",),
+    "qwen": ("qwen",),
+    "goose": ("goose",),
+    "continue": ("cn",),
+}
+
+
+def _hook_installed(agent_id: str, workspace: Path) -> Tuple[bool, str, str]:
+    """Is Prismor installed into this agent's hook config?
+
+    Returns ``(installed, path, mode)``. Mirrors the check `prismor status`
+    does, across both project and user scope, so an agent hooked globally but
+    not in this workspace still reads as governed.
+    """
+    try:
+        from prismor.runtime import hooks
+    except Exception:
+        return False, "", ""
+    if agent_id not in getattr(hooks, "_SUPPORTED_AGENTS", []):
+        return False, "", ""
+    for scope in ("project", "user"):
+        try:
+            path = hooks._config_path(agent_id, scope, workspace)
+        except Exception:
+            continue
+        if not path.exists():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "prismor" not in content.lower():
+            continue
+        mode = ""
+        if "--mode enforce" in content:
+            mode = "enforce"
+        elif "--mode observe" in content:
+            mode = "observe"
+        return True, str(path), mode
+    return False, "", ""
+
+
+def _registry_meta() -> Dict[str, Any]:
+    """Registry entries keyed by id, for display names and hook surface."""
+    try:
+        from prismor.runtime.integrations import registry as _registry
+        return {e.id: e for e in _registry.load_registry()}
+    except Exception:
+        return {}
+
+
+def discover_agents(workspace: Path) -> List[AgentRecord]:
+    """Inventory AI coding agents installed on this machine.
+
+    Presence and governed-ness come from ``enterprise.discovery`` so this view
+    and the signed attestation bundle can never disagree. On top of that this
+    adds a $PATH probe — an agent installed via a package manager with no
+    config written yet is invisible to a filesystem-only sweep — plus the
+    display name, hook mode, and whether the agent has a hook surface at all.
+    """
+    try:
+        from prismor.runtime.enterprise import discovery as _discovery
+        report = _discovery.discover(workspace)
+    except Exception:
+        return []
+
+    meta = _registry_meta()
+    records: List[AgentRecord] = []
+    for row in report.get("agents") or []:
+        agent_id = str(row.get("agent") or "")
+        evidence: List[str] = []
+        if row.get("config_paths"):
+            evidence.append("config")
+        elif row.get("present"):
+            evidence.append("state-dir")
+
+        if any(shutil.which(b) for b in _AGENT_BINARIES.get(agent_id, ())):
+            evidence.append("binary")
+
+        if not evidence:
+            continue
+
+        entry = meta.get(agent_id)
+        managed = bool(row.get("governed"))
+        hook_path, mode = "", ""
+        if managed:
+            _, hook_path, mode = _hook_installed(agent_id, workspace)
+
+        records.append(
+            AgentRecord(
+                id=agent_id,
+                name=getattr(entry, "name", agent_id),
+                kind=getattr(entry, "kind", "coding-agent") or "coding-agent",
+                managed=managed,
+                evidence=evidence,
+                config_paths=[str(p) for p in row.get("config_paths") or []],
+                hook_path=hook_path,
+                mode=mode,
+                # An agent with no hook surface cannot be governed by hooks, so
+                # it is reported but excluded from the shadow count.
+                coverable=getattr(entry, "surface", "hook-config") == "hook-config",
+            )
+        )
+    records.sort(key=lambda r: (r.managed, r.name.lower()))
+    return records
+
+
+# ── MCP inventory ────────────────────────────────────────────────────────────
+
+
+def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
+    """MCP config locations ``scanner.discover_configs`` does not cover.
+
+    scanner walks the six agents Prismor hooks into; MCP servers also get
+    declared by desktop apps and IDE extensions that have no hook surface at
+    all, which is precisely where unmanaged servers accumulate. Kept here
+    rather than added to ``scanner._AGENT_DISCOVERERS`` so `prismor scan`
+    behaviour is unchanged.
+    """
+    home = Path.home()
+    system = platform.system()
+    candidates: List[Tuple[str, Path]] = []
+
+    # Claude Desktop
+    if system == "Darwin":
+        candidates.append(
+            ("claude-desktop",
+             home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json")
+        )
+        vscode_user = home / "Library" / "Application Support" / "Code" / "User"
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(
+                ("claude-desktop", Path(appdata) / "Claude" / "claude_desktop_config.json"))
+        vscode_user = Path(appdata) / "Code" / "User" if appdata else None
+    else:
+        candidates.append(
+            ("claude-desktop", home / ".config" / "Claude" / "claude_desktop_config.json"))
+        vscode_user = home / ".config" / "Code" / "User"
+
+    # VS Code (and the Cline extension's own store)
+    candidates.append(("vscode", workspace / ".vscode" / "mcp.json"))
+    if vscode_user:
+        candidates.append(("vscode", vscode_user / "mcp.json"))
+        candidates.append((
+            "cline",
+            vscode_user / "globalStorage" / "saoudrizwan.claude-dev" / "settings"
+            / "cline_mcp_settings.json",
+        ))
+
+    # Other IDE / CLI agents that declare MCP servers but expose no hook surface
+    candidates.append(("zed", home / ".config" / "zed" / "settings.json"))
+    candidates.append(("gemini", home / ".gemini" / "settings.json"))
+    candidates.append(("gemini", workspace / ".gemini" / "settings.json"))
+    candidates.append(("continue", home / ".continue" / "config.json"))
+    candidates.append(("opencode", home / ".config" / "opencode" / "opencode.json"))
+
+    seen: Set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for agent, path in candidates:
+        if path is None or not path.exists():
+            continue
+        try:
+            key = str(path.resolve())
+        except (OSError, ValueError):
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"agent": agent, "path": path})
+    return out
+
+
+def _gateway_servers() -> Dict[str, Dict[str, Any]]:
+    """MCP servers routed through the Prismor gateway, keyed by lowercase name.
+
+    Returned as full specs rather than bare names because these servers have
+    to be *added* to the inventory, not merely matched against it:
+    ``mcp_gateway.install_gateway`` moves the ``mcpServers`` block out of
+    ``.mcp.json`` and leaves only the gateway entry behind, so after a correct
+    install the governed servers appear in no scanned config at all.
+    """
+    try:
+        from prismor.runtime import mcp_gateway
+    except Exception:
+        return {}
+    path = getattr(mcp_gateway, "DEFAULT_GATEWAY_CONFIG", None)
+    if path is None or not Path(path).exists():
+        return {}
+    try:
+        specs = mcp_gateway.load_gateway_config(Path(path))
+    except Exception:
+        return {}
+    return {
+        s.name.lower(): {
+            "name": s.name,
+            "command": list(s.command or []),
+            "url": s.url or "",
+            "transport": s.transport or ("http" if s.url else "stdio"),
+            "source": str(path),
+        }
+        for s in specs
+    }
+
+
+#: Cap on a single MCP config file. Discovery is meant to be cheap enough to
+#: run at session start; nothing legitimate declares servers in a bigger file.
+_MAX_CONFIG_BYTES = 8 * 1024 * 1024
+
+
+def _is_gateway_entry(command: Sequence[str], url: str) -> bool:
+    """Does this MCP entry point at Prismor's own gateway?"""
+    joined = " ".join(str(c) for c in command).lower()
+    if "prismor" in joined and "mcp-gateway" in joined:
+        return True
+    return "prismor" in url.lower() and "gateway" in url.lower()
+
+
+def discover_mcp(workspace: Path) -> List[McpRecord]:
+    """Inventory every MCP server declared anywhere on this machine.
+
+    A server is governed when it is routed through `prismor mcp-gateway`. The
+    gateway entry itself is reported separately so it is not counted as its own
+    shadow finding, and servers that sit *behind* the gateway are added from
+    the gateway config — a correct install removes them from every config this
+    would otherwise scan, so without that they would silently vanish from the
+    inventory and take the coverage denominator with them.
+
+    A server declared directly *and* registered with the gateway is a bypass,
+    not a success: the direct declaration is a live path to the server that
+    skips policy. Those are reported as shadow with an explicit reason.
+    """
+    try:
+        from prismor.runtime import scanner
+    except Exception:
+        return []
+
+    configs = list(scanner.discover_configs(workspace=workspace))
+    configs.extend(_extra_mcp_configs(workspace))
+
+    gateway = _gateway_servers()
+    records: List[McpRecord] = []
+    seen: Set[Tuple[str, str]] = set()
+    declared: Set[str] = set()
+
+    for cfg in configs:
+        path = Path(cfg["path"])
+        agent = str(cfg.get("agent") or "unknown")
+        try:
+            # scanner.parse_config reads and json.loads the whole file with no
+            # cap; ~/.claude.json in particular can grow large.
+            if path.stat().st_size > _MAX_CONFIG_BYTES:
+                continue
+            entries = scanner.parse_config(path, agent=agent)
+        except Exception:
+            continue
+        for entry in entries:
+            if entry.get("kind") == "skill":
+                continue  # skills are `prismor scan`'s surface, not MCP
+            name = str(entry.get("name") or "unnamed")
+            key = (name.lower(), str(path))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            server_cfg = entry.get("config")
+            if not isinstance(server_cfg, dict):
+                server_cfg = {}
+            command, url, transport = _spec_fields(name, server_cfg)
+            is_gateway = _is_gateway_entry(command, url)
+            if not is_gateway:
+                declared.add(name.lower())
+
+            # Redact before the record exists, not at render time: these
+            # records are also serialized to JSON and folded into reports, so
+            # a value that survives construction has already escaped.
+            record = McpRecord(
+                name=name,
+                agent=agent,
+                source=str(path),
+                transport=transport,
+                command=redact_command(command),
+                url=redact_url(url),
+                remote=bool(url),
+                # Never managed: reaching here means the server is reachable
+                # directly from an agent's own config, which is a path around
+                # the gateway whether or not the gateway also knows the name.
+                managed=False,
+                is_gateway=is_gateway,
+            )
+            _score_mcp(record, entry)
+            if not is_gateway and name.lower() in gateway:
+                record.risk = "high"
+                record.findings.insert(
+                    0, "declared directly in this config while also registered "
+                       "with the gateway — a live path that skips policy")
+            records.append(record)
+
+    # Servers behind the gateway that no config declares directly: governed.
+    for key, spec in sorted(gateway.items()):
+        if key in declared:
+            continue
+        records.append(
+            McpRecord(
+                name=spec["name"],
+                agent="gateway",
+                source=spec["source"],
+                transport=spec["transport"],
+                command=redact_command(spec["command"]),
+                url=redact_url(spec["url"]),
+                remote=bool(spec["url"]),
+                managed=True,
+            )
+        )
+
+    records.sort(key=lambda r: (r.managed or r.is_gateway, _RISK_ORDER.get(r.risk, 9),
+                                r.name.lower()))
+    return records
+
+
+def _spec_fields(name: str, cfg: Dict[str, Any]) -> Tuple[List[str], str, str]:
+    """Normalize a raw MCP server config into (command, url, transport).
+
+    Uses ``mcp_gateway._spec_from_entry`` so discover and the gateway agree on
+    what a server declaration means, falling back to the raw fields for
+    malformed entries the gateway would reject outright — discovery must still
+    report a server it cannot parse, since an unparseable one is not less of a
+    risk than a valid one.
+    """
+    try:
+        from prismor.runtime import mcp_gateway
+        spec = mcp_gateway._spec_from_entry(name, cfg)
+        return list(spec.command or []), spec.url, spec.transport
+    except Exception:
+        pass
+    raw_command = cfg.get("command")
+    if isinstance(raw_command, str):
+        command = [raw_command] + [str(a) for a in cfg.get("args") or []]
+    elif isinstance(raw_command, list):
+        command = [str(a) for a in raw_command] + [str(a) for a in cfg.get("args") or []]
+    else:
+        command = []
+    url = ""
+    for key in ("url", "endpoint", "serverUrl", "server_url", "uri", "href"):
+        value = cfg.get(key)
+        if isinstance(value, str) and value:
+            url = value
+            break
+    return command, url, ("http" if url else "stdio")
+
+
+# ── redaction ────────────────────────────────────────────────────────────────
+
+#: Query/env/flag names whose value is a credential regardless of how it looks.
+_SECRETISH_KEY = re.compile(
+    r"(?i)(key|token|secret|password|passwd|auth|credential|session|sig|bearer"
+    r"|header|cookie|pat|pwd)")
+
+#: Known provider prefixes, which mark a credential no matter how short it is.
+#: Mirrors ``sweep._FALLBACK_PATTERNS`` — a legacy 18-char ``sk-`` key is well
+#: under any generic length floor but is unambiguously a secret.
+_PROVIDER_PREFIX = re.compile(
+    r"(?i)^(sk-|sk-ant-|pk-|ghp_|ghs_|gho_|ghu_|ghr_|github_pat_|hf_|r8_|xox[baprs]-"
+    r"|AKIA|ASIA|AIza|ya29\.|glpat-|dop_v1_|shpat_|npm_|sq0csp-|rk_live_|sk_live_)"
+    r"[A-Za-z0-9_\-]{8,}$")
+
+#: A JWT — three base64url parts. Bearer tokens on MCP endpoints are usually
+#: this shape, and the dots stop the run heuristic from ever seeing them whole.
+_JWT_SEGMENT = re.compile(r"^[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}$")
+
+#: A standard-alphabet base64 blob (``+``, ``/`` and ``=`` padding).
+_B64_SEGMENT = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
+
+#: Unbroken alphanumeric runs, the discriminator the length-of-whole-string
+#: rule got wrong in both directions.
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
+
+#: A shell/env variable name, used to tell ``NAME=value`` from a bare blob
+#: that merely happens to contain ``=`` (base64 padding).
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
+
+#: A run this long containing a digit is a credential; ordinary identifiers
+#: break into short runs at ``-``/``_``/``.``.
+_RUN_MIN = 20
+#: A run with no digit at all needs to be longer before it outweighs the fact
+#: that long words are common and long all-letter tokens are not. Catches
+#: hex-only keys, whose "letters" are just a-f.
+_RUN_MIN_NO_DIGIT = 28
+
+_MASK = "<redacted>"
+
+
+def _looks_like_token(value: str) -> bool:
+    """Is this value credential-shaped?
+
+    Judged on the longest unbroken alphanumeric *run* rather than the length of
+    the whole string. Real credentials carry one long run; ordinary identifiers
+    of the same total length break into short pieces at separators. That single
+    change is what lets ``gpt-4o-mini-2024-07-18`` (longest run 4) and
+    ``my-project-2024-rewrite`` (7) through while still catching a bare
+    32-character hex key, which an earlier "must contain a letter and a digit"
+    rule missed entirely because hex letters stop at ``f``.
+    """
+    if not value:
+        return False
+    if _PROVIDER_PREFIX.match(value) or _JWT_SEGMENT.match(value):
+        return True
+    if len(value) >= 24 and _B64_SEGMENT.match(value):
+        return True
+    for run in _ALNUM_RUN.findall(value):
+        if len(run) < _RUN_MIN:
+            continue
+        if any(ch.isdigit() for ch in run) or len(run) >= _RUN_MIN_NO_DIGIT:
+            return True
+    return False
+
+
+def _mask_segment(value: str) -> str:
+    """Mask a value that looks like a credential, else return it unchanged."""
+    return _MASK if _looks_like_token(value) else value
+
+
+def _mask_assignment(value: str) -> str:
+    """Mask the right-hand side of a ``NAME=value`` pair.
+
+    ``docker run -e GITHUB_TOKEN=<pat>`` is the single most common way an MCP
+    server receives a credential, and the whole ``NAME=value`` string matches
+    no token shape because of the ``=``.
+    """
+    name, sep, rhs = value.partition("=")
+    # Only treat this as an assignment when the left side is a real variable
+    # name and something follows it. Base64 padding ("aGVs…==") otherwise
+    # partitions into a name and an empty value and gets waved through as a
+    # harmless assignment — so anything else falls to the whole-value check,
+    # which keeps the name visible when there is one and masks the blob when
+    # there is not.
+    if sep and rhs.strip("=") and _ENV_NAME.match(name):
+        if _SECRETISH_KEY.search(name) or _looks_like_token(rhs):
+            return f"{name}={_MASK}"
+        return value
+    return _mask_segment(value)
+
+
+def _mask_words(value: str) -> str:
+    """Mask credential-shaped words inside a value that contains whitespace.
+
+    An argv element like ``Authorization: Bearer <token>`` is one argument, and
+    every pattern here is anchored, so without splitting it can never match.
+    """
+    if not value.strip():
+        return value
+    return " ".join(_mask_assignment(word) if "=" in word else _mask_segment(word)
+                    for word in value.split(" "))
+
+
+def redact_url(url: str) -> str:
+    """Strip credentials from a URL without losing which host it points at.
+
+    MCP servers routinely carry the caller's key in a path segment or query
+    parameter, so the raw URL is a live secret. The host and shape are what
+    make the finding actionable; the credential is not.
+    """
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+    except Exception:
+        # Fail closed. A URL urlsplit rejects (a malformed IPv6 literal, say)
+        # is still perfectly capable of carrying userinfo, and returning it
+        # verbatim would hand back exactly the credential this exists to hide.
+        return _mask_words(url.rsplit("@", 1)[-1]) if "@" in url else _mask_words(url)
+    if not parts.scheme:
+        return _mask_words(url)
+
+    netloc = parts.netloc
+    if "@" in netloc:  # user:pass@host
+        netloc = _MASK + "@" + netloc.rsplit("@", 1)[1]
+
+    # Split on ';' as well as '/': a path parameter (``/mcp;api_key=…``) is a
+    # separate carrier that a '/'-only split leaves whole and unmatchable.
+    path = "/".join(
+        ";".join(_mask_assignment(param) for param in seg.split(";"))
+        for seg in parts.path.split("/")
+    )
+
+    query = parts.query
+    if query:
+        pairs = []
+        for pair in query.split("&"):
+            key, sep, value = pair.partition("=")
+            if sep and (_SECRETISH_KEY.search(key) or _looks_like_token(value)):
+                value = _MASK
+            pairs.append(f"{key}{sep}{value}")
+        query = "&".join(pairs)
+
+    fragment = _mask_segment(parts.fragment or "")
+    return urlunsplit((parts.scheme, netloc, path, query, fragment))
+
+
+def redact_command(command: Sequence[str]) -> List[str]:
+    """Strip credential-shaped arguments from an MCP server's argv."""
+    out: List[str] = []
+    mask_next = False
+    for raw in command:
+        arg = str(raw)
+        if mask_next:
+            mask_next = False
+            # `--api-key --verbose` — the next token is another flag, so the
+            # value was omitted and masking it would hide a real argument.
+            if not arg.startswith("-"):
+                out.append(_MASK)
+                continue
+        # --api-key <value> / --token=<value>
+        if arg.startswith("-"):
+            flag, sep, _ = arg.partition("=")
+            if _SECRETISH_KEY.search(flag):
+                if sep:
+                    out.append(f"{flag}={_MASK}")
+                    continue
+                mask_next = True
+            out.append(arg)
+            continue
+        if "://" in arg:
+            out.append(redact_url(arg))
+            continue
+        # Whitespace and `=` each defeat the anchored patterns, and both are
+        # ordinary in real argv: `-e NAME=value`, `--header "Authorization: …"`.
+        if " " in arg:
+            out.append(_mask_words(arg))
+        elif "=" in arg:
+            out.append(_mask_assignment(arg))
+        else:
+            out.append(_mask_segment(arg))
+    return out
+
+
+_RISK_ORDER = {"high": 0, "medium": 1, "low": 2, "none": 3}
+_SEVERITY_TO_RISK = {
+    "critical": "high",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "info": "low",
+}
+
+
+def _score_mcp(record: McpRecord, entry: Dict[str, Any]) -> None:
+    """Attach a risk band and reasons, via scanner's static MCP audit."""
+    reasons: List[str] = []
+    risk = "none"
+    try:
+        from prismor.runtime import scanner
+        for finding in scanner.audit_mcp_schema(entry):
+            title = str(finding.get("title") or finding.get("id") or "").strip()
+            if title:
+                # Audit titles quote config content (header names, URLs), so
+                # they get the same treatment as any other echoed config.
+                reasons.append(" ".join(
+                    redact_url(w) if "://" in w else _mask_segment(w)
+                    for w in title.split(" ")))
+            band = _SEVERITY_TO_RISK.get(str(finding.get("severity", "")).lower(), "low")
+            if _RISK_ORDER[band] < _RISK_ORDER[risk]:
+                risk = band
+    except Exception:
+        pass
+
+    # An ungoverned remote server is the shape that actually moves data off the
+    # machine, so it floors at medium even when the schema audit is clean.
+    if record.shadow and record.remote and _RISK_ORDER[risk] > _RISK_ORDER["medium"]:
+        risk = "medium"
+        reasons.append("remote MCP server not routed through the gateway")
+
+    record.risk = risk
+    record.findings = reasons[:5]
+
+
+# ── credential inventory ─────────────────────────────────────────────────────
+
+#: Environment variable names that hold AI-provider credentials. Matched on the
+#: name so a key can be reported without its value ever being pattern-matched.
+_ENV_KEY_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
+    ("anthropic", re.compile(r"^ANTHROPIC_(API_KEY|AUTH_TOKEN)$")),
+    ("openai", re.compile(r"^OPENAI_API_KEY$")),
+    ("azure-openai", re.compile(r"^AZURE_OPENAI_(API_)?KEY$")),
+    ("google", re.compile(r"^(GOOGLE_API_KEY|GEMINI_API_KEY)$")),
+    ("mistral", re.compile(r"^MISTRAL_API_KEY$")),
+    ("cohere", re.compile(r"^COHERE_API_KEY$")),
+    ("groq", re.compile(r"^GROQ_API_KEY$")),
+    ("perplexity", re.compile(r"^PERPLEXITY_API_KEY$")),
+    ("together", re.compile(r"^TOGETHER_API_KEY$")),
+    ("fireworks", re.compile(r"^FIREWORKS_API_KEY$")),
+    ("deepseek", re.compile(r"^DEEPSEEK_API_KEY$")),
+    ("xai", re.compile(r"^XAI_API_KEY$")),
+    ("openrouter", re.compile(r"^OPENROUTER_API_KEY$")),
+    ("huggingface", re.compile(r"^(HF_TOKEN|HUGGINGFACE_API_KEY)$")),
+    ("replicate", re.compile(r"^REPLICATE_API_TOKEN$")),
+]
+
+
+def _cloak_names() -> Set[str]:
+    """Placeholder names registered with Cloak (names only — never values)."""
+    try:
+        from prismor.runtime.cloaking import list_secrets
+        return {str(s.get("name", "")).lower() for s in list_secrets()}
+    except Exception:
+        return set()
+
+
+def _managed_by_cloak(env_name: str, cloak: Set[str]) -> Tuple[bool, str]:
+    """Is this env var's credential registered with Cloak?
+
+    Cloak placeholders are free-form names, so match the env var name directly
+    and then the conventional lowercase form. A miss is reported as shadow,
+    which is the safe direction: a registered key mislabelled as shadow costs
+    a glance, an unregistered one silently omitted costs a leak.
+    """
+    if env_name.lower() in cloak:
+        return True, env_name
+    return False, ""
+
+
+def discover_credentials(workspace: Path, *, scan_files: bool = True) -> List[CredentialRecord]:
+    """Inventory AI-provider credentials, and diff against Cloak.
+
+    Values are never read for the environment sweep — only variable names are
+    inspected — and file findings record the path and provider only.
+    """
+    cloak = _cloak_names()
+    records: List[CredentialRecord] = []
+
+    for name in sorted(os.environ):
+        for provider, pattern in _ENV_KEY_PATTERNS:
+            if not pattern.match(name):
+                continue
+            if not (os.environ.get(name) or "").strip():
+                continue
+            managed, cloak_name = _managed_by_cloak(name, cloak)
+            records.append(
+                CredentialRecord(
+                    provider=provider,
+                    location_kind="env",
+                    location=name,
+                    managed=managed,
+                    cloak_name=cloak_name,
+                )
+            )
+            break
+
+    if scan_files:
+        records.extend(_scan_config_credentials(workspace))
+
+    records.sort(key=lambda r: (r.managed, r.provider, r.location))
+    return records
+
+
+#: Config files worth checking for embedded provider keys. Deliberately a
+#: fixed list rather than a tree walk — discovery must stay fast enough to run
+#: on every session start, and agent credentials live in known files.
+_CRED_FILES = (
+    ".env",
+    ".env.local",
+    "mcp.json",
+    ".mcp.json",
+    "config.json",
+    "settings.json",
+    "credentials.json",
+    "auth.json",
+)
+
+
+def _scan_config_credentials(workspace: Path) -> List[CredentialRecord]:
+    """Look for provider keys embedded in agent config files.
+
+    Reuses ``sweep``'s provider patterns. Matched values are discarded
+    immediately — only the provider label and the path survive into the record.
+    Everything found here is shadow by construction; see the record site.
+    """
+    try:
+        from prismor.runtime.sweep import _FALLBACK_PATTERNS, TOOL_DIRS
+    except Exception:
+        return []
+
+    targets: List[Path] = []
+    for name in _CRED_FILES:
+        candidate = workspace / name
+        if candidate.exists() and candidate.is_file():
+            targets.append(candidate)
+    for tool_dir in TOOL_DIRS.values():
+        if not tool_dir.is_dir():
+            continue
+        for name in _CRED_FILES:
+            candidate = tool_dir / name
+            if candidate.exists() and candidate.is_file():
+                targets.append(candidate)
+
+    records: List[CredentialRecord] = []
+    seen: Set[Tuple[str, str]] = set()
+    for path in targets:
+        try:
+            if path.stat().st_size > 512 * 1024:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for provider, pattern in _FALLBACK_PATTERNS:
+            if not pattern.search(text):
+                continue
+            key = (provider, str(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            # Always shadow. Reaching here means a provider pattern matched a
+            # literal value in the file; a Cloak-managed key is an inert
+            # @@SECRET:<name>@@ reference, which matches no provider pattern
+            # and so never gets this far.
+            records.append(
+                CredentialRecord(
+                    provider=provider,
+                    location_kind="file",
+                    location=str(path),
+                    managed=False,
+                )
+            )
+    return records
+
+
+# ── report ───────────────────────────────────────────────────────────────────
+
+
+def governed_context() -> Dict[str, Any]:
+    """What the control plane already knows about this machine."""
+    context: Dict[str, Any] = {
+        "enrolled": False,
+        "device_id": "",
+        "org": "",
+        "reported_agents": [],
+    }
+    try:
+        from prismor.runtime.enterprise import identity
+        context["enrolled"] = identity.is_enrolled()
+        loaded = identity.load_identity() or {}
+        context["device_id"] = str(loaded.get("device_id") or "")
+        context["org"] = str(loaded.get("org_name") or loaded.get("org_id") or "")
+    except Exception:
+        pass
+    try:
+        from prismor.runtime import store
+        context["reported_agents"] = [
+            str(a.get("name") or "") for a in store.get_agents_overview()
+        ]
+    except Exception:
+        pass
+    return context
+
+
+def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
+    """Run every inventory and return the full shadow-AI report."""
+    agents = discover_agents(workspace)
+    mcp = discover_mcp(workspace)
+    credentials = discover_credentials(workspace, scan_files=scan_files)
+    context = governed_context()
+
+    shadow_agents = [a for a in agents if a.shadow and a.coverable]
+    shadow_mcp = [m for m in mcp if m.shadow]
+    shadow_creds = [c for c in credentials if c.shadow]
+
+    coverable = [a for a in agents if a.coverable]
+    governable_mcp = [m for m in mcp if not m.is_gateway]
+
+    summary = {
+        # ``agents_total`` is the coverable count, not the row count, so a
+        # consumer recomputing coverage from the summary gets the number the
+        # report printed. ``agents_present`` carries the row count, which
+        # includes agents Prismor has no hook for.
+        "agents_total": len(coverable),
+        "agents_present": len(agents),
+        "agents_shadow": len(shadow_agents),
+        "mcp_total": len(governable_mcp),
+        "mcp_shadow": len(shadow_mcp),
+        "credentials_total": len(credentials),
+        "credentials_shadow": len(shadow_creds),
+        "high_risk_mcp": len([m for m in shadow_mcp if m.risk == "high"]),
+        "coverage": _coverage(len(coverable), len(shadow_agents),
+                              len(governable_mcp), len(shadow_mcp),
+                              len(credentials), len(shadow_creds)),
+    }
+
+    return {
+        "workspace": str(workspace),
+        "context": context,
+        "summary": summary,
+        "agents": [asdict(a) for a in agents],
+        "mcp": [asdict(m) for m in mcp],
+        "credentials": [asdict(c) for c in credentials],
+    }
+
+
+def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a report into the wire shape the control plane accepts.
+
+    One flat ``findings`` list rather than three keyed sections: the console
+    renders them in one table, and a shape change on either side of a version
+    skew should cost a missing column, not a rejected report.
+    """
+    findings: List[Dict[str, Any]] = []
+    for agent in report.get("agents") or []:
+        findings.append({
+            "kind": "agent",
+            "name": agent.get("name") or agent.get("id") or "",
+            "detail": (agent.get("config_paths") or [""])[0],
+            "managed": bool(agent.get("managed")),
+            "coverable": bool(agent.get("coverable", True)),
+            "risk": "none",
+            "reasons": [],
+        })
+    for server in report.get("mcp") or []:
+        if server.get("is_gateway"):
+            continue  # the gateway is not an inventory item
+        findings.append({
+            "kind": "mcp",
+            "name": server.get("name") or "",
+            # Already redacted at record construction; see redact_url.
+            "detail": server.get("url") or " ".join(server.get("command") or []),
+            "managed": bool(server.get("managed")),
+            "coverable": True,
+            "risk": server.get("risk") or "none",
+            "reasons": server.get("findings") or [],
+        })
+    for cred in report.get("credentials") or []:
+        findings.append({
+            "kind": "credential",
+            "name": cred.get("provider") or "",
+            "detail": cred.get("location") or "",
+            "managed": bool(cred.get("managed")),
+            "coverable": True,
+            "risk": "none",
+            "reasons": [],
+        })
+
+    from prismor.runtime import __version__ as _version
+    return {
+        "findings": findings,
+        "summary": report.get("summary") or {},
+        "cli_version": _version,
+    }
+
+
+def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
+    """POST an inventory to the control plane. Returns True on success.
+
+    Silent no-op when the device is not enrolled — discovery is useful on its
+    own, and a local-only machine has nowhere to report to. Never raises: a
+    control plane that is down must not fail the developer's command.
+    """
+    try:
+        from prismor.runtime.enterprise import identity as _identity
+        ident = _identity.load_identity()
+        if not ident or _identity.revoked_info() is not None:
+            return False
+        base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
+        import urllib.request
+        request = urllib.request.Request(
+            f"{base}/api/discovery/report",
+            data=json.dumps(report_payload(report)).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {ident.get('device_key')}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+# ── automatic reporting ──────────────────────────────────────────────────────
+
+#: How often a device re-reports its inventory unprompted.
+#: Shadow AI changes at the speed of someone installing an IDE extension, so
+#: daily is frequent enough to be true and rare enough to be free.
+REPORT_INTERVAL = 24 * 60 * 60.0
+
+#: Bypass for testing and for orgs that want a tighter loop.
+_INTERVAL_ENV = "PRISMOR_DISCOVER_INTERVAL"
+
+
+def _report_marker() -> Path:
+    from prismor.runtime.enterprise import identity as _identity
+    return _identity.prismor_home() / "discover-report.json"
+
+
+def _report_interval() -> float:
+    raw = os.environ.get(_INTERVAL_ENV, "")
+    try:
+        return max(0.0, float(raw)) if raw else REPORT_INTERVAL
+    except ValueError:
+        return REPORT_INTERVAL
+
+
+def report_due(now: Optional[float] = None) -> bool:
+    """Has enough time passed since the last automatic report?"""
+    import time
+    current = time.time() if now is None else now
+    try:
+        data = json.loads(_report_marker().read_text(encoding="utf-8"))
+        last = float(data.get("last_report") or 0)
+    except (OSError, ValueError, TypeError):
+        return True
+    # A clock that jumped backwards must not disable reporting until it catches
+    # up, so a future timestamp counts as due.
+    if last > current:
+        return True
+    return (current - last) >= _report_interval()
+
+
+def _stamp_report(now: Optional[float] = None) -> None:
+    import time
+    marker = _report_marker()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps({"last_report": time.time() if now is None else now}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def maybe_report_background(workspace: Path) -> bool:
+    """Spawn a detached inventory report if one is due. Returns True if spawned.
+
+    Runs out-of-process on purpose. A full scan is a few hundred milliseconds
+    of filesystem work — nothing on a command line, but this is called from the
+    hook path, where it would be a visible stall on somebody's tool call. The
+    hook pays a fork and returns; the child does the scanning and the upload.
+
+    The marker is written *before* the spawn, not after: several hooks can fire
+    at once, and a marker written by the child would let all of them decide
+    they were due and start a scan each.
+    """
+    try:
+        from prismor.runtime.enterprise import identity as _identity
+        if not _identity.is_enrolled():
+            return False
+        if not report_due():
+            return False
+        _stamp_report()
+
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, "-m", "prismor.runtime.cli", "discover",
+             "--report", "--quiet", "--workspace", str(workspace)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _coverage(agents_total: int, agents_shadow: int,
+              mcp_total: int, mcp_shadow: int,
+              creds_total: int, creds_shadow: int) -> Optional[int]:
+    """Percentage of governable surface that Prismor actually governs.
+
+    Returns None when nothing governable was found, so a clean machine reads
+    as "nothing to govern" rather than a misleading 100%.
+    """
+    total = agents_total + mcp_total + creds_total
+    if total == 0:
+        return None
+    shadow = agents_shadow + mcp_shadow + creds_shadow
+    return int(round(100.0 * (total - shadow) / total))

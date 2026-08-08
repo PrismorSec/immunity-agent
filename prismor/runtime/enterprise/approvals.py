@@ -55,6 +55,19 @@ def _poll_interval() -> float:
         return DEFAULT_POLL
 
 
+def enabled() -> bool:
+    """Master switch for headless approvals (``PRISMOR_APPROVALS``).
+
+    Defaults to on. Set ``PRISMOR_APPROVALS=0`` (or ``false``/``off``/``no``)
+    to disable escalation entirely: a STEP_UP verdict is then not posted to the
+    control plane and the caller fails closed - exactly the posture of an
+    unenrolled install. Per-guard opt-out is available via the adapters'
+    ``approvals=False`` keyword; this env var is the fleet-wide override.
+    """
+    val = str(os.environ.get("PRISMOR_APPROVALS", "1")).strip().lower()
+    return val not in ("0", "false", "off", "no")
+
+
 def step_up_finding(decision: Any) -> Optional[Dict[str, Any]]:
     """The blocking finding iff it is a STEP_UP verdict, else None."""
     blocking = getattr(decision, "blocking", None)
@@ -156,7 +169,7 @@ def await_step_up(
     recorded on the signed audit trail.
     """
     finding = step_up_finding(decision)
-    if finding is None:
+    if finding is None or not enabled():
         return False
     ident = _identity.load_identity()
     if not ident or _identity.revoked_backoff_active():
@@ -202,6 +215,31 @@ def await_step_up(
             return False
     _record("timeout", approval_id)
     return False  # timed out → fail closed
+
+
+async def await_step_up_async(
+    decision: Any,
+    *,
+    event: Optional[Dict[str, Any]] = None,
+    agent: str = "",
+    session_id: str = "",
+) -> bool:
+    """Event-loop-safe :func:`await_step_up`.
+
+    The sync poll loop sleeps for up to ``PRISMOR_APPROVAL_TIMEOUT`` seconds;
+    called directly from an ``async def`` tool wrapper it would park the entire
+    event loop - stalling every concurrent tool, LLM stream, and (for
+    browser-use) the CDP socket - until a human decides. This variant runs the
+    wait in a worker thread instead, so the loop keeps servicing. Same
+    contract: True only on an explicit approval, everything else False.
+    """
+    if step_up_finding(decision) is None or not enabled():
+        return False
+    import asyncio
+
+    return await asyncio.to_thread(
+        await_step_up, decision, event=event, agent=agent, session_id=session_id
+    )
 
 
 def _monotonic() -> float:

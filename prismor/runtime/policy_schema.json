@@ -509,7 +509,7 @@
         },
         "event_types": {
           "type": "array",
-          "description": "Event types this rule applies to (shell, file_read, file_write, network, prompt, tool_result, memory, skill_manifest, mcp). A rule listing tool_result is automatically applied to memory (CLAUDE.md/AGENTS.md) content too. The 'mcp' alias matches any MCP tool call regardless of whether it classifies as a remote (network) or local stdio (tool_result) event.",
+          "description": "Event types this rule applies to (shell, file_read, file_write, network, prompt, tool_result, memory, skill_manifest, ui_action, mcp). A rule listing tool_result is automatically applied to memory (CLAUDE.md/AGENTS.md) content too. The 'mcp' alias matches any MCP tool call regardless of whether it classifies as a remote (network) or local stdio (tool_result) event. 'ui_action' is a GUI agent operating an on-screen control (click, key press, typed text) rather than running a command or touching a file.",
           "items": {
             "type": "string",
             "enum": [
@@ -521,6 +521,7 @@
               "tool_result",
               "memory",
               "skill_manifest",
+              "ui_action",
               "mcp"
             ]
           },
@@ -528,7 +529,7 @@
         },
         "fields": {
           "type": "array",
-          "description": "Event fields to match against. Defaults to the canonical field for the event type (command for shell, path for file_*, url for network, combined_text for prompt/tool_result, tool_name for the mcp alias). For MCP guardrails: tool_name is the full mcp__server__tool tag, mcp_server / mcp_tool are the parsed parts, mcp_args is the serialized pre-call arguments regardless of transport, and outbound_payload is the remote-transport raw form of the same.",
+          "description": "Event fields to match against. Defaults to the canonical field for the event type (command for shell, path for file_*, url for network, combined_text for prompt/tool_result, control_label for ui_action, tool_name for the mcp alias). For MCP guardrails: tool_name is the full mcp__server__tool tag, mcp_server / mcp_tool are the parsed parts, mcp_args is the serialized pre-call arguments regardless of transport, and outbound_payload is the remote-transport raw form of the same. For GUI guardrails (ui_action): control_label is the target control's accessibility label, ax_role its accessibility role, app_name the owning application, and typed_text the text about to be committed.",
           "items": {
             "type": "string",
             "enum": [
@@ -540,7 +541,16 @@
               "mcp_server",
               "mcp_tool",
               "mcp_args",
-              "outbound_payload"
+              "outbound_payload",
+              "prompt",
+              "response",
+              "content",
+              "stdout",
+              "stderr",
+              "control_label",
+              "ax_role",
+              "app_name",
+              "typed_text"
             ]
           }
         },
@@ -662,6 +672,16 @@
             "type": "string"
           },
           "minItems": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "veto"
+          ],
+          "default": "allow",
+          "description": "allow (default) suppresses a matching finding. veto does the opposite and wins: a matching veto disqualifies every allowlist from suppressing that finding, so a broad exception can be carved back without making its patterns brittle. Vetoes are resolved before any allow, independent of entry order.",
+          "$comment": "A field on the entry rather than a separate section: a veto is scoped by rule_ids and matched by patterns exactly like an allow, and sharing the shape keeps both halves of a carve-out in one list."
         },
         "reason": {
           "type": "string",

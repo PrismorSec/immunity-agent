@@ -49,12 +49,13 @@ From inside a project:
 prismor cloak install
 ```
 
-This merges four hook entries into `.claude/settings.json` (preserving any Prismor runtime-monitor hooks already there):
+This merges the hook entries into `.claude/settings.json` (preserving any Prismor runtime-monitor hooks already there):
 
 | Event | Matcher | Script | Purpose |
 |---|---|---|---|
 | `PreToolUse` | `Bash\|Write\|Edit\|MultiEdit\|mcp__.*` | `secret-guard.sh` | Detect raw secrets in tool input, vault + deny |
 | `PreToolUse` | `Read` | `read-guard.sh` | Deny a Read of a file that holds a registered secret |
+| `PreToolUse` | `Read\|Bash` | `env-guard.sh` | Deny content access to a dotenv file until its entries are imported into the vault |
 | `PreToolUse` | `Bash` | `decloak.sh` | Substitute placeholders, wrap output through `scrub-stream.sh` |
 | `PostToolUse` | `mcp__.*` | `recloak-mcp.sh` | Scrub real values from MCP responses |
 | `UserPromptSubmit` | — | `userprompt-guard.sh` | Soft-block + auto-cloak pasted secrets |
@@ -70,8 +71,38 @@ Flags:
 prismor cloak install --scope user           # install globally in ~/.claude
 prismor cloak install --no-userprompt-guard  # skip the paste-detection hook
 prismor cloak install --no-secret-guard      # skip the tool-call detect-and-block hook
+prismor cloak install --no-env-guard         # skip the unimported-.env bootstrap guard
 prismor cloak install --sweep-on-stop        # add the Stop-hook sweep
 ```
+
+### The bootstrap gap (`env-guard.sh`)
+
+`read-guard.sh` and the decloak output scrub only protect values **already
+registered** in the vault. Without `env-guard.sh`, the very first thing an
+agent does in a fresh workspace — `cat .env` or `Read(.env)` — leaks every
+secret before any of them has a placeholder.
+
+`env-guard.sh` denies content access (built-in `Read`, or a Bash command that
+reads content: `cat`, `head`, `sed`, a bare `grep`, `< .env` redirection, …)
+to a dotenv-style file **while it holds values missing from the vault**, and
+the deny reason is itself the fix:
+
+```
+prismor cloak add --env-file .env
+```
+
+That command parses the file in the CLI process and registers every entry as
+its own `@@SECRET:name@@` placeholder — only names and byte counts are ever
+printed, so the values never enter model context. Once every entry is
+imported, the guard stands down and the registration-based hooks take over.
+The unimported-entry check runs through the same parser the importer uses
+(`env_guard.py` → `secrets_store._parse_env_line`), so guard and importer can
+never disagree about what "fully imported" means.
+
+Deliberately allowed even before import: `prismor cloak …` commands (the
+ingestion path), append-only writes (`echo KEY=@@SECRET:KEY@@ >> .env`), and
+presence checks (`grep -q '^KEY=' .env`). Example/sample/template env files
+are exempt — reading those is how an agent learns which keys a project needs.
 
 Uninstall leaves unrelated Claude Code settings untouched:
 
@@ -228,6 +259,7 @@ prismor/runtime/cloaking/
 ├── __init__.py             # public API re-exports
 ├── installer.py            # install/uninstall settings.json merger
 ├── secrets_store.py        # add/list/remove operations on $PRISMOR_SECRETS_DIR
+├── env_guard.py            # unimported-entry check shared with env-guard.sh
 ├── patterns.py             # built-in + custom detection-pattern management
 ├── builtin_patterns.txt    # single source of truth for detection regexes
 ├── hooks/
@@ -235,6 +267,7 @@ prismor/runtime/cloaking/
 │   ├── decloak.sh          # PreToolUse:Bash — placeholder substitution + output scrub
 │   ├── scrub-stream.sh     # stdin filter — masks registered secrets in command output
 │   ├── read-guard.sh       # PreToolUse:Read — deny reads of secret-bearing files
+│   ├── env-guard.sh        # PreToolUse:Read|Bash — deny access to unimported .env files
 │   ├── secret-guard.sh     # PreToolUse — detect raw secrets, vault + deny
 │   ├── recloak-mcp.sh      # PostToolUse:mcp__.*
 │   ├── userprompt-guard.sh # UserPromptSubmit soft-block
@@ -242,4 +275,8 @@ prismor/runtime/cloaking/
 └── README.md               # this file
 ```
 
-Hook scripts are pure bash and depend only on `jq`. No Python startup cost on the hot path.
+Hook scripts are pure bash and depend only on `jq`. No Python startup cost on
+the hot path — the one exception is `env-guard.sh`, which shells out to
+`env_guard.py` only after it has already found an existing dotenv-style file
+in the tool input (so the common case stays bash-only), because the
+unimported-entry check must share the importer's parser.

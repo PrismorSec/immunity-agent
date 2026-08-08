@@ -57,10 +57,11 @@ prismor
 │   ├─ scan                   Scan MCP servers & skills for risk
 │   ├─ deps                   Check project deps vs. threat feed
 │   ├─ analyze / ingest       Run the engine over a JSONL session
+│   ├─ ingest --discover      Reconstruct past agent activity from on-disk transcripts
 │   ├─ sessions / session     List / show stored sessions
 │   ├─ trail <action>         verify · show · checkpoint — signed audit trail
 │   ├─ attest [verify|coverage]  Signed evidence bundle + framework coverage
-│   ├─ discover               Sweep host for ungoverned AI agents (shadow AI)
+│   ├─ discover [section]     Sweep host for ungoverned agents, MCP servers, keys (shadow AI)
 │   ├─ status --all           Terminal overview of all workspaces
 │   └─ dashboard              Local web dashboard (127.0.0.1:7070, opens browser)
 │
@@ -114,6 +115,7 @@ Modes (`observe` vs `enforce`): [Prismor](prismor-runtime.md).
 | `prismor semantic-check [TEXT]` | `--mode <hybrid\|heuristic\|api>`, `--json`, `--cli-path` | Run the semantic prompt-injection guard on text or stdin. See [Semantic Guard](semantic-guard.md). |
 | `prismor policy init` | `--workspace` | Scaffold `.prismor/policy.yaml`. |
 | `prismor policy show` | `--workspace` | Print active rules after merging defaults + project overrides. |
+| `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
 | `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). |
@@ -149,7 +151,11 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor scan` | `--agent`, `--json` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
 | `prismor deps` | `--json`, `--workspace` | Cross-reference project dependencies against the signed IOC feed + lockfile integrity. See [Supply Chain](supply-chain.md). |
 | `prismor analyze [FILE]` | `--input`, `--json`, `--sarif` | Run the engine over a JSONL session (or the most recent one). SARIF output feeds GitHub Code Scanning. |
-| `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a session and store it in the local DB. |
+| `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a single pre-normalized JSONL session and store it in the local DB. |
+| `prismor ingest --discover` | `--agent`, `--since`, `--max-events`, `--no-persist`, `--strict`, `--semantic`, `--json` | Sweep this machine for agent transcripts, replay them through the live policy engine, and report what the current policy **would have blocked** vs warned. Backfills the dashboard with history from before install. `--strict` exits non-zero if a non-empty transcript yields no events; `--semantic` re-enables the semantic guard (off during sweeps so it can't fire an LLM call per event across all history). See [Transcript Ingest](transcript-ingest.md). |
+| `prismor ingest --discover --coverage` | `--json` | Show sessions that ran with no live Prismor record — activity that executed ungoverned. |
+| `prismor ingest --discover --show <rule>` | — | List the individual tool calls behind one rule id. |
+| `prismor ingest --discover --export-corpus <dir>` | — | Write redacted, labelled rule fixtures (positives + negatives) from real usage. |
 | `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json` | List stored sessions, optionally only flagged ones, optionally across all workspaces. |
 | `prismor session <id>` | `--json` | Drill into one session's tool-call trace + findings. |
 | `prismor trail verify` | `--pubkey`, `--json` | Verify the signed audit trail end-to-end: recompute hashes, prev-hash linkage, seq gaps, Ed25519 signatures. Exit non-zero on anything but a clean chain. See [Signed Audit Trail](audit-trail.md). |
@@ -158,7 +164,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor attest` | `--out FILE`, `--workspace` | Build a signed evidence bundle: posture findings, agent inventory, and the trail anchor in one Ed25519-signed file. See [Attestation Bundle](attestation-bundle.md). |
 | `prismor attest verify <bundle>` | `--pubkey`, `--json` | Re-verify a bundle's content hash and signature. `--pubkey` pins an out-of-band signer key. Exit non-zero on failure. |
 | `prismor attest coverage` | `--json`, `--workspace` | Show which compliance-framework controls the active policy covers (OWASP LLM/Agentic, NIST AI RMF, EU AI Act). |
-| `prismor discover` | `--json`, `--workspace` | Sweep this host for AI agents and flag any running without Prismor hooks (shadow AI). Host-local, read-only. See [Host discovery](attestation-bundle.md#host-discovery). |
+| `prismor discover [all\|agents\|mcp\|keys]` | `--json`, `--report`, `--no-file-scan`, `--fail-on-shadow`, `--workspace` | Sweep this host for the AI surface running outside Prismor's coverage (shadow AI): agents without hooks, MCP servers not routed through the gateway, and provider keys not registered with Cloak. Ends with a coverage score. Pass a section to limit the report; `--fail-on-shadow` exits 1 for CI; `--report` sends the inventory to your organization console for the fleet-wide Shadow AI view (enrolled devices only, and a no-op otherwise). Host-local, read-only — credential-shaped values in MCP URLs and argv are redacted before they reach output. See [Host discovery](attestation-bundle.md#host-discovery). |
 | `prismor status --all` | `--days N` | Terminal overview of every registered workspace. See [Dashboard](dashboard.md). |
 | `prismor dashboard` | `--port`, `--host`, `--no-open` | Local web dashboard at `http://127.0.0.1:7070` (opens a browser tab). See [Dashboard](dashboard.md). |
 | `prismor serve` | `--port`, `--host`, `--no-open` | _Deprecated_ alias of `dashboard --no-open` (headless server only). |

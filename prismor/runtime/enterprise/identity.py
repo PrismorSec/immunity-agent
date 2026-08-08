@@ -166,6 +166,63 @@ def revoked_info() -> Optional[Dict[str, Any]]:
         return None
 
 
+def verify_remote(timeout: float = 6.0) -> Dict[str, Any]:
+    """Ask the control plane who this key actually is. One authenticated call.
+
+    ``prismor enroll-status`` and ``doctor`` historically reported "Enrolled"
+    from the *local* identity alone, so a typo'd, revoked, or wrong-org key
+    still read as healthy - and an env key (``PRISMOR_AGENT_KEY``) carries no
+    org/device fields at all, printing ``org: None``. A deployed agent then
+    looks fine and reports nothing. This round-trips ``/api/policy/version``
+    (device-authenticated, also bumps ``lastSeenAt``) and returns what the
+    SERVER resolved.
+
+    Returns ``{ok: True, org, device_id, kind, version, full_capture}`` or
+    ``{ok: False, error: <short reason>}``. Never raises: verification failing
+    must not break the command reporting it.
+    """
+    ident = load_identity()
+    if not ident:
+        return {"ok": False, "error": "not enrolled"}
+    key = str(ident.get("device_key") or "")
+    if not key:
+        return {"ok": False, "error": "no device key in identity"}
+
+    import urllib.error
+    import urllib.request
+
+    base = str(ident.get("api_base") or api_base()).rstrip("/")
+    url = f"{base}/api/policy/version"
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {key}"}, method="GET"
+    )
+    try:
+        from prismor.runtime.http_ua import user_agent as _ua
+        req.add_header("User-Agent", _ua())
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"ok": False, "error": f"control plane rejected this key (HTTP {exc.code}) - revoked or wrong key"}
+        return {"ok": False, "error": f"HTTP {exc.code} from {base}"}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"ok": False, "error": f"unreachable ({exc.__class__.__name__})"}
+    except ValueError:
+        return {"ok": False, "error": "malformed response from the control plane"}
+
+    return {
+        "ok": True,
+        "org": data.get("org"),
+        "device_id": data.get("deviceId"),
+        "kind": data.get("deviceKind"),
+        "version": data.get("version"),
+        "full_capture": data.get("fullCapture"),
+    }
+
+
 def revoked_backoff_active() -> bool:
     """True while we should skip control-plane calls after a revocation."""
     import time

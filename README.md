@@ -1,9 +1,4 @@
 <h1 align="center">Prismor</h1>
-
-<h3 align="center">Runtime security hooks for Claude Code, Codex, and other AI coding agents.</h3>
-
-<h5 align="center">Blocks dangerous commands, prompt injection, prevents secret leaks and recommends safe supply chain packages <br><br>Prismor can also be used in observe mode to see agent session activity and dangerous actions in a local self-serve dashboard which grows by time</h4>
-
 <p align="center">
   <a href="https://pypi.org/project/prismor/"><img src="https://img.shields.io/pypi/v/prismor" alt="PyPI"/></a>
   <a href="https://github.com/PrismorSec/prismor/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
@@ -12,6 +7,10 @@
   <a href="https://deepwiki.com/PrismorSec/prismor"><img src="https://img.shields.io/badge/DeepWiki-prismor-blue?logo=bookstack&logoColor=white" alt="DeepWiki" /></a>
   <a href="https://discord.gg/FH2PRX754c"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
+<h3 align="center">Runtime security hooks for Claude Code, Codex, and other AI coding agents.</h3>
+Prismor can also be used in observe mode to see agent session activity and dangerous actions in a local self-serve dashboard</h4>
+
+
 
 <h3 align="center">
   <a href="https://prismor.dev"><b>Website</b></a> &bull;
@@ -61,6 +60,7 @@ Standard OS-level and endpoint security tools monitor the kernel and filesystem.
 
 ```bash
 pip install prismor
+prismor setup
 ```
 
 For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret-cloaking setup, see the [full installation guide](docs/installation.md).
@@ -76,6 +76,8 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - 🛜 [Network Isolation](docs/network-isolation.md) covers policy-driven egress control, raw IP detection, and tunnel blocking
 - 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
 - 🚦 [MCP Guardrails](docs/prismor-runtime.md#custom-guardrails-for-mcp-tools) let you block a specific MCP server or tool, or require human approval before the agent calls it, with a policy rule you write yourself
+- 🛰️ [MCP Gateway](docs/mcp-gateway.md) is a single MCP connector that fronts every other MCP server you use — each `tools/call` is policy-evaluated before it forwards and each response is injection-scanned before the model sees it, so a poisoned tool result never becomes context. `prismor mcp-gateway install` moves an existing `.mcp.json` behind it
+- 🏷️ [Tool Tags](docs/tool-tags.md) classify tools by capability (read, write, network, exec) so a rule can say "nothing that reads private data may also reach the network" instead of naming every tool one by one — MCP tools self-declare via `_meta`, and `prismor tags` lists, tests, and lints the rule expressions
 - 🔐 [Sweep and Cloak](docs/sweep-and-cloak.md) covers secret prevention at tool boundaries, practical setup, best practices, threat model, and cleanup for leaked secrets
 - 🦞 [OpenClaw Integration](docs/openclaw.md) covers runtime hooks, prompt-injection scanning, and project or user-scope setup for OpenClaw
 - 🤖 [Hermes Agent Cloaking](docs/hermes.md) covers Hermes-specific secret cloaking with pip entry-point auto-discovery, filesystem install, and pre_gateway_dispatch paste guard
@@ -87,10 +89,12 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - 🧬 [Learning](docs/learning.md) mines session history to propose new rules, flag false positives, and detect evasion
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
 - 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
-- 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics
+- 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics, with `prismor tokens` breaking down where a session's context and token spend actually went
+- 🩺 [Health and Recovery](docs/cli-reference.md) — `prismor doctor` health-checks every subsystem (hooks, policy signature, enrollment, telemetry sink, chain state), and `prismor pause` / `pause-hard` suspends *enforcement only* for a human during an incident while observe-mode logging keeps running
 - 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
 - 📑 [Attestation Bundle](docs/attestation-bundle.md) packages posture, agent inventory, host discovery, framework-control coverage (OWASP LLM/Agentic, NIST AI RMF, EU AI Act), and the trail anchor into one Ed25519-signed file an auditor re-verifies with `prismor attest verify`
 - 🔦 [Host Discovery](docs/attestation-bundle.md#host-discovery) sweeps the machine with `prismor discover` and flags any AI agent running without Prismor hooks (shadow AI)
+- ⏪ [Transcript Ingest](docs/transcript-ingest.md) reconstructs what your agents did *before* Prismor was installed — `prismor ingest --discover` replays on-disk session transcripts through the live policy engine, so the dashboard is populated on day one and you can see exactly what flipping a rule to enforce would have blocked, plus `--coverage` for sessions that ran unmonitored
 - 🗺️ [Agentic AI Architecture Review](docs/agentic-architecture-review.md) is a design-time checklist for multi-agent/tool-using systems — permission scope, memory integrity, inter-agent trust, human-oversight placement — each item mapped to a real control ID and, where one exists, the Prismor rule that backstops it
 - 🐳 [Docker and Containers](docs/docker.md) covers container hardening, prerequisites, and known limitations
 
@@ -141,99 +145,80 @@ prismor install-hooks --agent all --mode enforce    # honor policy enforce rules
 
 ## Architecture<a name="how-it-works" />
 
-How Prismor's local protections, evidence controls, and optional enterprise
-services fit together:
+Every tool call takes the same path: it enters through an **integration surface**
+(stage 1), is **evaluated before it executes** (stage 2), produces an
+allow/warn/block verdict, and lands in **tamper-evident evidence** (stage 3).
+Stage 4 is optional — a self-hosted control plane whose signed policy becomes
+authoritative for stage 2 once a device is enrolled.
 
 ```mermaid
 flowchart TD
-    Agent["AI coding agents and production frameworks\nClaude Code · Codex · Cursor · OpenClaw · Hermes · SDKs"]
 
-    subgraph Integrations["Integration surfaces"]
-        Hooks["Runtime Hooks\nIDE agents + OpenClaw integration"]
-        Hermes["Hermes Agent Cloaking\nplugin + paste guard"]
-        Frameworks["Framework Agents\nOpenAI Agents · LangChain/LangGraph · CrewAI\nbrowser-use · Vercel AI SDK"]
-        Eval["Eval Server\nHTTP adapter for any framework"]
-    end
+%% ── sources ────────────────────────────────────────────────
+subgraph SRC["Agents Prismor protects"]
+    direction LR
+    AC["<b>Coding agents</b><br/>Claude Code · Codex · Cursor · Windsurf · Copilot<br/>OpenClaw · Hermes · Grok · Kiro · Crush<br/>OpenHands · Qwen · Continue · Goose"]
+    AF["<b>Production frameworks</b><br/>OpenAI Agents · LangChain / LangGraph · CrewAI · browser-use<br/>Pydantic AI · AutoGen Core · Agno · Semantic Kernel · Google ADK<br/>BeeAI · Claude Agent SDK · Vercel AI SDK · Mastra"]
+end
 
-    Agent --> Hooks
-    Agent --> Hermes
-    Agent --> Frameworks
-    Frameworks --> Eval
+%% ── stage 1 ────────────────────────────────────────────────
+subgraph ENTRY["Stage 1  ·  Integration surface"]
+    direction LR
+    H(["<b>Runtime hooks</b><br/>pre / post tool-call<br/>per-agent config"])
+    G(["<b>MCP gateway</b><br/>fronts every MCP server<br/>injection-scans responses"])
+    F(["<b>Framework adapters</b><br/>in-process + HTTP eval server<br/>per-user via use_subject"])
+end
 
-    subgraph Runtime["Prismor local runtime"]
-        Dispatch["Tool-call dispatcher"]
+%% ── stage 2 ────────────────────────────────────────────────
+subgraph EVAL["Stage 2  ·  Evaluated before the call executes"]
+    direction TB
+    D(["<b>Tool-call dispatcher</b>"])
+    P["<b>Policy engine</b><br/>YAML rules · per-rule observe / enforce<br/>layered org → project → repo · non-overridable floor"]
+    CHK["<b>Pre-execution checks</b><br/>Semantic guard · Egress control · MCP guardrails · Tool tags<br/>IAM and agent controls · Scoped session rules<br/>Script-content inspection · Docker sandbox"]
+    SEC["<b>Secret and supply-chain protection</b><br/>Cloak placeholders + output scrub · Env guard · Sweep<br/>Canary tripwires · Skill scanner<br/>Supply-chain scoring → npm · pip · cargo · go"]
+end
 
-        subgraph Enforcement["Pre-execution enforcement"]
-            Policy["Policy Engine\nYAML rules · observe/enforce"]
-            Semantic["Semantic Guard\nhybrid prompt-injection defense"]
-            Network["Network Isolation\negress policy · raw IP · tunnel blocking"]
-            MCP["MCP Guardrails\nallow · block · human approval"]
-            IAM["IAM and Agent Controls\nleast privilege · named agents · suspension"]
-            Scoped["Scoped Agent\ntask-specific session rules"]
-            Sandbox["Docker Sandbox\nisolated command execution"]
-        end
+FEED[/"Signed advisory feed  ·  Prismor intel + NVD"/]
+V{"<b>Allow  ·  Warn  ·  Block</b><br/>every block prints narrowest-first unblock steps"}
 
-        subgraph Protection["Secret and supply-chain protection"]
-            Cloak["Cloak\nlocal placeholder resolution + output scrub"]
-            Sweep["Sweep\nfind and vault leaked secret residue"]
-            Canary["Canary\nhoneytoken tripwires"]
-            Scanner["Skill Scanner\nMCP server and skill risk scanning"]
-            Supply["Supply Chain\nIOC matching + package risk scoring"]
-            Feed["Signed Advisory Feed\nPrismor intelligence + NVD"]
-        end
-    end
+%% ── stage 3 ────────────────────────────────────────────────
+subgraph EV["Stage 3  ·  Evidence and feedback"]
+    direction LR
+    ST[("<b>Session store</b><br/>SQLite + JSONL<br/>session forensics")]
+    VIEW["<b>Views</b><br/>Web + terminal dashboard<br/>Status · Tokens · Audit · Doctor"]
+    PROOF["<b>Tamper-evident</b><br/>Signed trail — hash chain + Ed25519<br/>Attestation bundle · Host discovery"]
+    LEARN["<b>Learning</b><br/>propose rules · flag false<br/>positives · detect evasion"]
+end
 
-    Hooks --> Dispatch
-    Hermes --> Cloak
-    Eval --> Dispatch
-    Dispatch --> Policy
-    Dispatch --> Cloak
-    Dispatch --> Canary
-    Policy -.-> Semantic
-    Policy -.-> Network
-    Policy -.-> MCP
-    Policy -.-> IAM
-    Policy -.-> Scoped
-    Policy -.-> Sandbox
-    Feed --> Supply
+PAST[/"Transcript ingest  ·  replays pre-install history through the live policy"/]
 
-    Policy --> Verdict{"Allow · warn · block"}
-    Supply --> PackageManager["Package managers\nnpm · pip · cargo · go"]
+%% ── stage 4 ────────────────────────────────────────────────
+subgraph ORG["Stage 4  ·  Optional self-hosted control plane"]
+    direction LR
+    RP["<b>Signed remote policy</b><br/>layered rules · time-boxed<br/>exemptions · pause / resume"]
+    TEL["<b>Live telemetry</b><br/>redacted events<br/>offline spool"]
+    OD["<b>Org dashboard</b><br/>policy · devices<br/>sessions · approvals"]
+end
 
-    subgraph Evidence["Visibility, evidence, and continuous improvement"]
-        Store["Session Store\nSQLite + JSONL · session forensics"]
-        Dashboard["Dashboard\nlocal web + terminal views"]
-        Audit["Security Audit\nhooks · policy · cloak · network posture"]
-        Trail["Signed Audit Trail\nhash chain + Ed25519 signatures"]
-        Attest["Attestation Bundle\nposture + framework-control coverage"]
-        Discovery["Host Discovery\nfind ungoverned agents (shadow AI)"]
-        Learning["Learning\npropose rules · flag false positives · detect evasion"]
-        Review["Agentic AI Architecture Review\ndesign-time control checklist"]
-    end
-
-    Verdict --> Store
-    Cloak --> Store
-    Sweep --> Store
-    Canary --> Store
-    Scanner --> Store
-    Supply --> Store
-    Store --> Dashboard
-    Store --> Audit
-    Store --> Trail
-    Trail --> Attest
-    Discovery --> Attest
-    Store --> Learning
-    Learning -.-> Policy
-
-    subgraph Enterprise["Optional self-hosted enterprise control plane"]
-        Layers["Layered Policy and Exemptions\norg · project · repo · time-boxed"]
-        Telemetry["Live Telemetry\nredacted events + offline spool"]
-        OrgDashboard["Organization Dashboard\npolicy, devices, sessions, approvals"]
-    end
-
-    Layers -->|"signed remote policy"| Policy
-    Store -->|"redacted telemetry"| Telemetry
-    Telemetry --> OrgDashboard
+%% ── flow ───────────────────────────────────────────────────
+AC --> ENTRY
+AF --> ENTRY
+ENTRY --> D
+D --> P
+P --> CHK
+P --> SEC
+FEED -.-> SEC
+CHK --> V
+SEC --> V
+V --> ST
+PAST -.-> ST
+ST --> VIEW
+ST --> PROOF
+ST --> LEARN
+LEARN -.->|"proposed rules"| P
+RP ==>|"authoritative once enrolled"| P
+ST -->|"redacted"| TEL
+TEL --> OD
 ```
 
 ---

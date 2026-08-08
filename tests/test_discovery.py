@@ -90,6 +90,40 @@ def test_mixed_host_summary(fake_host):
     assert s["ungoverned"] == 2
 
 
+def test_directory_valued_config_can_be_governed(fake_host):
+    """Nine registry entries point at a directory, not a file. Reading one
+    raises IsADirectoryError, which used to swallow into governed=False — so
+    those agents reported as shadow no matter how they were configured, and
+    that verdict rides in the signed attestation bundle."""
+    discovery, home, ws = fake_host
+    plugins = home / ".config" / "opencode" / "plugins"
+    _write(plugins / "prismor.js", "// prismor hook-dispatch bridge\n")
+    report = discovery.discover(ws)
+    opencode = next(a for a in report["agents"] if a["agent"] == "opencode")
+    assert opencode["present"] and opencode["governed"]
+
+
+def test_directory_without_marker_stays_ungoverned(fake_host):
+    discovery, home, ws = fake_host
+    plugins = home / ".config" / "opencode" / "plugins"
+    _write(plugins / "other.js", "// unrelated plugin\n")
+    report = discovery.discover(ws)
+    opencode = next(a for a in report["agents"] if a["agent"] == "opencode")
+    assert opencode["present"] and not opencode["governed"]
+
+
+def test_glob_config_paths_are_expanded(fake_host):
+    """Registry paths like `cli-agents/*.json` were exists()-checked verbatim,
+    so a glob could never match and those agents were undetectable."""
+    discovery, home, ws = fake_host
+    _write(ws / ".amazonq" / "cli-agents" / "default.json",
+           '{"hooks": {"preToolUse": "prismor hook-dispatch"}}')
+    report = discovery.discover(ws)
+    amazonq = next((a for a in report["agents"] if a["agent"] == "amazon-q"), None)
+    assert amazonq is not None, "amazon-q missing from the sweep"
+    assert amazonq["present"] and amazonq["governed"]
+
+
 def test_workspace_config_marker(fake_host):
     """A project-level config with the marker governs that agent too."""
     discovery, home, ws = fake_host

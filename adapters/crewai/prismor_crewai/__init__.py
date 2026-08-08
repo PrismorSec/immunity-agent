@@ -88,6 +88,7 @@ def prismor_guard_tool(
     session_id: Optional[str] = None,
     event_type: str = "shell",
     raise_on_block: bool = False,
+    approvals: bool = True,
 ) -> Any:
     """Wrap a CrewAI tool's implementation so calls are policy-checked."""
     if getattr(tool, "__prismor_guarded__", False):
@@ -106,12 +107,13 @@ def prismor_guard_tool(
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode
             # Headless STEP_UP → post an approval request and block until an admin
             # decides. Approve → proceed; deny/timeout/not-enrolled → fail closed.
-            try:
-                from prismor.runtime.enterprise import approvals as _approvals
-                if _approvals.await_step_up(decision, agent=agent, session_id=sid):
-                    return None  # approved → allowed
-            except Exception:
-                pass
+            if approvals:
+                try:
+                    from prismor.runtime.enterprise import approvals as _approvals
+                    if _approvals.await_step_up(decision, agent=agent, session_id=sid):
+                        return None  # approved → allowed
+                except Exception:
+                    pass
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)

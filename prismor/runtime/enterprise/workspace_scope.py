@@ -19,11 +19,21 @@ Concretely, "managed" gates two things at the runtime: the org policy overlay
 merge (see policy_engine) — which also carries the org telemetry sink — and the
 per-call heartbeat (see cli hook-dispatch). Personal workspaces therefore emit
 no findings, no volume, and apply no org policy; the org never sees them.
+
+**Deployed workloads.** Scope is inferred from the git remote, which a container
+or CI runner does not have. With no remote and an org that claims patterns, such
+a workspace falls through to local — correct for a laptop, silently wrong for a
+production agent that reports nothing and says so nowhere. ``PRISMOR_WORKSPACE_SCOPE``
+settles it explicitly (``managed`` | ``personal``) for exactly that case: it is
+read from the environment, so it needs no writable ``$PRISMOR_HOME``, and it is
+ranked below an org-claimed pattern — a deployment cannot use it to downgrade a
+repo the org claims.
 """
 from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -119,15 +129,32 @@ def _matches(remote: str, pattern: str) -> bool:
     return fnmatch.fnmatch(remote, pattern) or fnmatch.fnmatch(remote.split("/", 1)[-1], pattern)
 
 
+def _env_scope() -> Optional[str]:
+    """``PRISMOR_WORKSPACE_SCOPE`` — explicit scope for repo-less workloads.
+
+    ``managed`` (org policy + telemetry apply) or ``personal``/``local`` (opt
+    out). Anything else is ignored rather than raising: a typo in a container
+    env must not take the runtime down.
+    """
+    val = str(os.environ.get("PRISMOR_WORKSPACE_SCOPE", "")).strip().lower()
+    if val == "managed":
+        return "managed"
+    if val in ("personal", "local"):
+        return "personal"
+    return None
+
+
 def resolve_scope(workspace: Path) -> Dict[str, Any]:
     """Classify a workspace. Returns {scope: 'managed'|'local', reason, remote,
     org_id}. Decision order:
       1. not enrolled → local (nothing to report to).
       2. remote matches an org-claimed pattern → managed, FORCED (a developer
          cannot downgrade a company/client repo).
-      3. developer override (opt-in 'managed' / opt-out 'personal') for a
+      3. PRISMOR_WORKSPACE_SCOPE env override for a non-claimed workspace →
+         honored (the deployed-workload path: no git remote, no writable home).
+      4. developer override (opt-in 'managed' / opt-out 'personal') for a
          non-claimed repo → honored.
-      4. default: if the org has claimed NO patterns, manage everything
+      5. default: if the org has claimed NO patterns, manage everything
          (backward-compatible "cover all dev machines"); if the org HAS claimed
          patterns, a non-matching repo is the developer's personal space.
     """
@@ -145,6 +172,12 @@ def resolve_scope(workspace: Path) -> Dict[str, Any]:
         for pat in patterns:
             if _matches(remote, pat):
                 return {"scope": "managed", "reason": "org_claimed", "remote": remote, "org_id": org_id, "pattern": pat}
+
+    env_scope = _env_scope()
+    if env_scope == "managed":
+        return {"scope": "managed", "reason": "env_override", "remote": remote, "org_id": org_id}
+    if env_scope == "personal":
+        return {"scope": "local", "reason": "env_opt_out", "remote": remote, "org_id": None}
 
     override = _load_overrides().get(str(workspace.resolve()))
     if override == "managed":

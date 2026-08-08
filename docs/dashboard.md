@@ -155,10 +155,40 @@ prismor ingest --input session.jsonl  # analyze AND store in the DB
 `--sarif` output drops straight into GitHub Code Scanning or the VS Code SARIF
 viewer, with full rule metadata.
 
+## Historical sessions: `ingest --discover`
+
+Hooks only see sessions that start after they are installed, so a fresh install
+opens an empty dashboard. `prismor ingest --discover` reconstructs what your
+agents did *before* that, by replaying their on-disk transcripts through the
+same policy engine live tool calls go through:
+
+```bash
+prismor ingest --discover --since 90d
+```
+
+Reconstructed sessions land in the same store and appear in `prismor sessions`,
+`prismor session <id>`, and every dashboard view. They are distinguishable from
+live capture in two ways:
+
+| | Live capture | Reconstruction |
+|---|---|---|
+| `sessions.source` | `hook` | `transcript` |
+| `session_id` | the agent's own id | `replay:<agent>:<id>` |
+
+The namespacing is not cosmetic: the store is `INSERT OR REPLACE` keyed on
+`session_id`, and an agent's transcript carries the *same* id its live hooks
+used, so an unprefixed replay would overwrite real enforcement history.
+
+A reconstructed finding means a rule matched a recorded action. It does **not**
+mean the action was blocked at the time — Prismor was not running. Use
+`prismor ingest --discover --coverage` to see which sessions had no live record
+at all. See [Transcript Ingest](transcript-ingest.md).
+
 ---
 
 ## See also
 
 - [Prismor](prismor-runtime.md) — session-log schema and the audit command
+- [Transcript Ingest](transcript-ingest.md) — reconstructing pre-install activity
 - [Learning](learning.md) — mines this same history for new rules
 - [CLI Reference](cli-reference.md) — all commands at a glance

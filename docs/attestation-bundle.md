@@ -63,27 +63,59 @@ file you asked for with `--out`.
 
 ## Host discovery
 
-`prismor discover` sweeps this machine for AI agents and flags any that run
-without Prismor hooks. Those are the shadow ones: a Claude Code or Codex install
-making tool calls that never pass through policy.
+`prismor discover` sweeps this machine for AI running outside Prismor's reach —
+shadow AI. It covers three surfaces, each diffed against the governed set that
+actually applies to it:
+
+| Surface | Governed when |
+|---|---|
+| Coding agents | Prismor's hook dispatcher is wired into the agent's config |
+| MCP servers | the server is routed through `prismor mcp-gateway` |
+| Provider keys | the credential is registered with [Cloak](cloaking.md) |
 
 ```
-  PRISMOR  host discovery  (4 present · 2 governed · 2 ungoverned)
+  PRISMOR  discover   ~/src/acme
 
-    ✓ claude     governed
-    ✓ codex      governed
-    ✗ hermes     UNGOVERNED
-    ✗ openclaw   UNGOVERNED
+  AGENTS
+    governed               Claude Code  (enforce)
+    SHADOW                 Gemini CLI (Google)
+    no coverage            Warp (Agent Mode)  (Prismor has no hook for this agent)
 
-  2 agent(s) run without Prismor hooks. Wire them in with:
-    prismor install-hooks --agent <name>
+  MCP SERVERS
+    SHADOW                 context7  [cursor]  medium
+      https://mcp.context7.com/mcp
+      · MCP server 'context7' has a hardcoded secret in headers ('CONTEXT7_API_KEY')
+
+  PROVIDER KEYS
+    SHADOW                 anthropic  ANTHROPIC_API_KEY
+
+  ──────────────────────────────────────────────────────────
+  Coverage:  42%  of discovered AI surface is governed
+  Shadow:    1 agent(s), 1 MCP server(s), 1 key(s)
 ```
 
-The sweep reads config files and agent directories already on disk. An agent
-counts as **governed** when Prismor's hook dispatcher is wired into its config,
-and **present** when its config or install directory exists at all. The same
-result lands in every bundle under `discovery`, so an auditor sees not just what
-Prismor governs but what it doesn't.
+Pass a section (`agents`, `mcp`, `keys`) to limit the report, `--json` for the
+machine-readable form, and `--fail-on-shadow` to exit non-zero in CI.
+
+On an enrolled device this inventory also reaches your organization console,
+where it becomes a fleet-wide Shadow AI view. `prismor enroll` seeds it, and
+the runtime refreshes it once a day from a detached background scan — set
+`PRISMOR_DISCOVER_INTERVAL` (seconds) to change the cadence, or run
+`prismor discover --report` to push one immediately. Reporting is gated on the
+managed workspace, like telemetry: a personal repo never reports what is
+installed on your machine, and an unenrolled device reports nothing at all.
+
+An agent counts as **present** when its config or install directory exists, and
+agents Prismor has no hook for are shown as *no coverage* and left out of the
+shadow count — nothing was skipped, so counting them would inflate the number.
+The agent half of this report lands in every bundle under `discovery`, so an
+auditor sees not just what Prismor governs but what it doesn't.
+
+Credential-shaped values are redacted before they reach output. An MCP endpoint
+often carries the caller's key in a path segment or query parameter, so the raw
+URL is itself a secret; those are masked at the point the record is built, which
+means the JSON output is as safe as the terminal one. Findings under `keys`
+record the provider and the location only — never a value.
 
 This is host-local and read-only. It doesn't scan the network or probe other
 machines. Finding AI across a fleet is a bigger job for a separate tool; here
