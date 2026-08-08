@@ -733,6 +733,13 @@ class TestEvaluateEventEdgeCases(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["category"], "prompt_injection")
 
+    def test_ui_action_is_inert_on_the_hardcoded_path(self):
+        # GUI guardrails live in policy YAML, not in this hardcoded fallback
+        # set. A ui_action event reaching the legacy evaluator must stay silent
+        # rather than have its label scanned as if it were a shell command.
+        event = {"type": "ui_action", "control_label": "Delete everything", "command": "rm -rf /"}
+        self.assertEqual(evaluate_event(event, 0), [])
+
 
 if __name__ == "__main__":
     unittest.main()

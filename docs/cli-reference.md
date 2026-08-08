@@ -113,6 +113,7 @@ Modes (`observe` vs `enforce`): [Prismor](prismor-runtime.md).
 | `prismor semantic-check [TEXT]` | `--mode <hybrid\|heuristic\|api>`, `--json`, `--cli-path` | Run the semantic prompt-injection guard on text or stdin. See [Semantic Guard](semantic-guard.md). |
 | `prismor policy init` | `--workspace` | Scaffold `.prismor/policy.yaml`. |
 | `prismor policy show` | `--workspace` | Print active rules after merging defaults + project overrides. |
+| `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
 | `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). |

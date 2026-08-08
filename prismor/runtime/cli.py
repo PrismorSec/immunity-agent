@@ -2090,6 +2090,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.policy_command == "show":
             _policy_show(workspace)
             return
+        if args.policy_command == "export":
+            _policy_export(workspace, output=getattr(args, "output", None))
+            return
         if args.policy_command == "edit":
             _policy_edit(workspace)
             return
@@ -2099,10 +2102,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         # No action given → print usage instead of the cryptic
         # "Unsupported command: policy" (the command IS supported; it needs an action).
         sys.stderr.write(
-            "Usage: prismor policy {init|validate|show|edit|test}\n"
+            "Usage: prismor policy {init|validate|show|export|edit|test}\n"
             "  init      Write a starter .prismor/policy.yaml\n"
             "  validate  Check a policy file against the schema + floor\n"
             "  show      Print the effective policy for this workspace\n"
+            "  export    Print the effective policy as JSON (for non-Python consumers)\n"
             "  edit      Open the policy in $EDITOR\n"
             "  test      Run policy-tests.yaml against the engine\n"
         )
@@ -2586,6 +2590,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_edit = policy_sub.add_parser("edit", help="Interactive rule toggle — select which rules to enable/disable")
     policy_edit.add_argument("--workspace", help="Workspace path")
+
+    policy_export = policy_sub.add_parser(
+        "export", help="Print the effective merged policy as JSON (stable, diffable)")
+    policy_export.add_argument("--json", action="store_true",
+                               help="Output raw JSON (the only format; accepted for symmetry)")
+    policy_export.add_argument("--output", help="Write to PATH instead of stdout")
+    policy_export.add_argument("--workspace", help="Workspace path")
 
     policy_test = policy_sub.add_parser("test", help="Run declarative policy tests from policy-tests.yaml")
     policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml)")
@@ -3755,6 +3766,28 @@ def _policy_show(workspace: Path) -> None:
         for al in engine.allowlists:
             targets = ", ".join(al.rule_ids) if "*" not in al.rule_ids else "all rules"
             print(f"  {al.id}: {targets}" + (f"  — {al.reason}" if al.reason else ""))
+
+
+def _policy_export(workspace: Path, output: Optional[str] = None) -> None:
+    """Write the effective merged policy as JSON, for non-Python consumers.
+
+    Sorted keys and a trailing newline so the output can be committed and
+    diffed: a policy change should show up as a reviewable diff, not as a
+    reshuffle of an unordered dict.
+    """
+    from prismor.runtime.policy_engine import export_effective_policy
+
+    text = json.dumps(
+        export_effective_policy(PolicyEngine(workspace=workspace)),
+        indent=2, sort_keys=True,
+    ) + "\n"
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"Wrote {path}", file=sys.stderr)
+        return
+    sys.stdout.write(text)
 
 
 def _policy_edit(workspace: Path) -> None:

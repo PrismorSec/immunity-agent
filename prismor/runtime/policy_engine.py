@@ -86,6 +86,15 @@ _DEFAULT_FIELDS: Dict[str, List[str]] = {
     # of its own; evaluate() routes it through the agent-I/O content rules.
     # See PrismorSec/prismor#163.
     "text": ["combined_text"],
+    # A GUI agent operating an on-screen control (click, key press, typing).
+    # The canonical field is the control's accessibility label because that is
+    # what names the act — "Send", "Buy now", "Delete account". The role
+    # (ax_role), owning app (app_name) and text about to be committed
+    # (typed_text) are matchable but secondary: a rule that matches on the role
+    # catches a password box whatever it is labelled, and one that matches on
+    # the app catches a whole surface, but neither answers "what does pressing
+    # this do?", which is the question a GUI guardrail is asking.
+    "ui_action": ["control_label"],
 }
 
 # Default field(s) checked by a rule that opts in via the `mcp` event-type
@@ -343,14 +352,30 @@ class CompiledRule:
 
 
 class AllowlistEntry:
-    """A compiled allowlist entry that suppresses findings."""
+    """A compiled allowlist entry that suppresses findings.
 
-    __slots__ = ("id", "rule_ids", "patterns", "reason")
+    ``type: veto`` inverts the entry: instead of suppressing the finding it
+    disqualifies every allowlist from suppressing it. An allowlist broad enough
+    to be useful is broad enough to over-grant — "address bar" also reads on
+    "Email address" — and the only safe way to carve that back was previously to
+    make the allowlist pattern itself narrower and more brittle. A veto keeps the
+    exception readable and states the carve-out as its own auditable entry.
+    ``type`` is a field on the existing entry rather than a new top-level
+    section because a veto is scoped by ``rule_ids`` and matched by ``patterns``
+    exactly like an allow, and reusing the shape keeps both halves of a
+    carve-out visible in the same list.
+    """
+
+    __slots__ = ("id", "rule_ids", "patterns", "raw_patterns", "reason", "type")
 
     def __init__(self, raw: Dict[str, Any]) -> None:
         self.id: str = raw["id"]
         self.rule_ids: set[str] = set(raw["rule_ids"])
         self.reason: str = raw.get("reason", "")
+        # Absent means allow, so every pre-existing entry keeps its behaviour.
+        _t = str(raw.get("type", "allow")).lower()
+        self.type: str = _t if _t in ("allow", "veto") else "allow"
+        self.raw_patterns: List[str] = [str(p) for p in raw["patterns"]]
         joined = "|".join(f"(?:{p})" for p in raw["patterns"])
         self.patterns: re.Pattern[str] = re.compile(joined, re.IGNORECASE)
 
@@ -1638,8 +1663,16 @@ class PolicyEngine:
         return self.evaluate(event, 0)
 
     def _is_allowlisted(self, rule_id: str, evidence: str) -> bool:
+        # Vetoes are resolved first and unconditionally: a veto that matches
+        # means no allowlist may suppress this finding, whatever order the
+        # entries appear in the merged policy. Without the two passes a
+        # carve-out would silently depend on file ordering, and a later
+        # project-level allowlist could out-rank an org-level veto.
         for entry in self.allowlists:
-            if entry.applies_to(rule_id) and entry.patterns.search(evidence):
+            if entry.type == "veto" and entry.applies_to(rule_id) and entry.patterns.search(evidence):
+                return False
+        for entry in self.allowlists:
+            if entry.type == "allow" and entry.applies_to(rule_id) and entry.patterns.search(evidence):
                 return True
         return False
 
@@ -1831,6 +1864,13 @@ def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
         "content": str(event.get("content", "")),
         "stdout": str(event.get("stdout", "")),
         "stderr": str(event.get("stderr", "")),
+        # GUI-agent surface (event type ui_action). Populated only on ui_action
+        # events; empty elsewhere, which is what keeps a ui_action rule inert
+        # against shell/file/network traffic without any extra gating.
+        "control_label": str(event.get("control_label", "")),
+        "ax_role": str(event.get("ax_role", "")),
+        "app_name": str(event.get("app_name", "")),
+        "typed_text": str(event.get("typed_text", "")),
     }
 
 
@@ -2044,6 +2084,15 @@ def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+# Event types and fields a rule may name. Derived from the engine's own
+# dispatch tables rather than hand-listed, so the validator can never accept an
+# event type evaluate() will not route or reject one it will. A typo'd
+# event_type is otherwise invisible: the rule loads, matches nothing, and the
+# policy looks enforced.
+_VALID_EVENT_TYPES: frozenset[str] = frozenset(set(_DEFAULT_FIELDS) | {"mcp"})
+_VALID_FIELDS: frozenset[str] = frozenset(_extract_fields({}))
+
+
 def validate_policy(path: Path) -> List[str]:
     """Validate a policy YAML file. Returns a list of error messages (empty = valid)."""
     errors: List[str] = []
@@ -2106,6 +2155,17 @@ def validate_policy(path: Path) -> List[str]:
         if rule_id in _NON_OVERRIDABLE_RULE_IDS and rule.get("disable_patterns"):
             errors.append(f"{prefix}: rule '{rule_id}' is a core protection — disable_patterns is not allowed")
 
+        for j, et in enumerate(rule.get("event_types", []) or []):
+            if et not in _VALID_EVENT_TYPES:
+                errors.append(
+                    f"{prefix}.event_types[{j}]: unknown event type '{et}' "
+                    f"(one of {', '.join(sorted(_VALID_EVENT_TYPES))})")
+        for j, fname in enumerate(rule.get("fields", []) or []):
+            if fname not in _VALID_FIELDS:
+                errors.append(
+                    f"{prefix}.fields[{j}]: unknown field '{fname}' "
+                    f"(one of {', '.join(sorted(_VALID_FIELDS))})")
+
         action = rule.get("action", "")
         if action and action not in ("block", "warn", "log", "modify", "step_up", "defer"):
             errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, log, modify, step_up, or defer)")
@@ -2115,6 +2175,9 @@ def validate_policy(path: Path) -> List[str]:
         for field in ("id", "rule_ids", "patterns"):
             if field not in entry:
                 errors.append(f"{prefix}: missing required field '{field}'")
+        entry_type = entry.get("type")
+        if entry_type is not None and entry_type not in ("allow", "veto"):
+            errors.append(f"{prefix}: invalid type '{entry_type}' (must be allow or veto)")
         for j, pattern in enumerate(entry.get("patterns", [])):
             try:
                 re.compile(pattern)
@@ -2144,3 +2207,68 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(f"settings.tool_tags.incompatible[{i}]: needs at least 2 distinct tags")
 
     return errors
+
+
+def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
+    """Serialize a loaded engine as the effective policy, ready for JSON.
+
+    Non-Python consumers (a GUI agent's Swift evaluator, a CI diff) otherwise
+    have to re-implement the merge — defaults + project/remote overrides,
+    add_patterns/disable_patterns, enabled: false — from this module's source,
+    and that reimplementation drifts silently. This emits what the engine
+    actually resolved, so there is nothing left to re-derive: patterns are the
+    post-customization set, disabled rules are absent rather than flagged, and
+    event_types carry the untrusted-content aliases the loader folded in.
+
+    Lists are sorted only where their order carries no meaning; pattern order is
+    preserved because it is the order findings report a match in.
+
+    A rule's ``fields`` stays as declared (often empty) and the canonical
+    per-event-type defaults ship alongside as ``default_fields``. Collapsing the
+    two would be a lie for a rule spanning several event types: the fallback is
+    resolved per *event*, so the same rule checks ``command`` on a shell event
+    and ``path`` on a file one.
+    """
+    return {
+        "version": "1.0",
+        "default_fields": {k: list(v) for k, v in _DEFAULT_FIELDS.items()},
+        "settings": {
+            "default_mode": engine.default_mode,
+            "device_mode": engine.device_mode,
+            "block_categories": sorted(engine.block_categories),
+            "egress_allowlist": list(engine.egress_allowlist),
+            "mcp_transport_action": engine.mcp_transport_action,
+            "supply_chain_install_check": engine.supply_chain_install_check,
+            "supply_chain_transitive_scan": engine.supply_chain_transitive_scan,
+            "semantic_guard": engine.semantic_guard_config,
+            "sandbox": engine.sandbox_config,
+            "tool_tags": engine.tool_tags,
+        },
+        "rules": [
+            {
+                "id": rule.id,
+                "severity": rule.severity,
+                "category": rule.category,
+                "title": rule.title,
+                "event_types": sorted(rule.event_types),
+                "fields": list(rule.fields),
+                "patterns": list(rule.raw_patterns),
+                "action": rule.action,
+                "transform": rule.transform,
+                "mode": rule.mode,
+                "severity_on_write": rule.severity_on_write,
+                "severity_on_manifest": rule.severity_on_manifest,
+            }
+            for rule in sorted(engine.rules, key=lambda r: r.id)
+        ],
+        "allowlists": [
+            {
+                "id": entry.id,
+                "type": entry.type,
+                "rule_ids": sorted(entry.rule_ids),
+                "patterns": list(entry.raw_patterns),
+                "reason": entry.reason,
+            }
+            for entry in sorted(engine.allowlists, key=lambda e: e.id)
+        ],
+    }

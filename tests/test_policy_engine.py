@@ -12,6 +12,69 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prismor.runtime.policy_engine import PolicyEngine, validate_policy, _extract_fields, _DEFAULT_FIELDS
 
 
+def _ui_rule(rule_id, field, patterns, declare_fields=True):
+    """A standalone ui_action policy document with one rule."""
+    return (
+        'version: "1.0"\n'
+        "rules:\n"
+        f"  - id: {rule_id}\n"
+        "    severity: CRITICAL\n"
+        "    category: final_action\n"
+        "    title: GUI control performs a consequential action\n"
+        "    event_types: [ui_action]\n"
+        + (f"    fields: [{field}]\n" if declare_fields else "")
+        + f"    patterns: {patterns}\n"
+        "    action: block\n"
+    )
+
+
+# A rule that fires on every label, so the allowlist/veto interaction is the
+# only thing under test.
+_RETURN_KEY_RULE = (
+    'version: "1.0"\n'
+    "rules:\n"
+    "  - id: gui-return-key\n"
+    "    severity: HIGH\n"
+    "    category: final_action\n"
+    "    title: Return key submits a field\n"
+    "    event_types: [ui_action]\n"
+    "    fields: [control_label]\n"
+    '    patterns: ["^.*$"]\n'
+    "    action: block\n"
+)
+
+_ALLOW_ENTRY = (
+    "  - id: browser-address-bar\n"
+    '    rule_ids: ["gui-return-key"]\n'
+    '    patterns: ["address and search"]\n'
+)
+
+_VETO_ENTRY = (
+    "  - id: form-field-guard\n"
+    '    rule_ids: ["gui-return-key"]\n'
+    "    type: veto\n"
+    '    patterns: ["\\\\bemail\\\\b", "\\\\bbilling\\\\b"]\n'
+)
+
+_VETO_POLICY = _RETURN_KEY_RULE + "allowlists:\n" + _VETO_ENTRY + _ALLOW_ENTRY
+
+
+def _engine_with_policy(text):
+    """Load an engine whose project policy is ``text``."""
+    holder = tempfile.TemporaryDirectory()
+    root = Path(holder.name)
+    (root / ".prismor").mkdir()
+    (root / ".prismor" / "policy.yaml").write_text(text, encoding="utf-8")
+    engine = PolicyEngine(workspace=root)
+    # Keep the directory alive for the engine's lifetime.
+    engine._test_tmpdir = holder
+    return engine
+
+
+def _ui_findings(engine, **fields):
+    return engine.evaluate({"type": "ui_action", **fields}, 0)
+
+
 class TestPolicyEngineDefaults(unittest.TestCase):
     """Test that the default policy loads and detects the same things as legacy."""
 
@@ -843,6 +906,144 @@ class TestPolicyEngineAllowlist(unittest.TestCase):
             )
             engine = PolicyEngine(workspace=Path(tmpdir))
             self.assertTrue(engine.allowlists[0].applies_to("any-rule"))
+
+    def test_entry_without_type_still_allows(self):
+        engine = _engine_with_policy(
+            'version: "1.0"\n'
+            "rules:\n"
+            "  - id: gui-return-key\n"
+            "    severity: HIGH\n"
+            "    category: final_action\n"
+            "    title: Return submits a field\n"
+            "    event_types: [ui_action]\n"
+            "    fields: [control_label]\n"
+            '    patterns: ["^.*$"]\n'
+            "    action: block\n"
+            "allowlists:\n"
+            "  - id: browser-address-bar\n"
+            '    rule_ids: ["gui-return-key"]\n'
+            '    patterns: ["address and search"]\n'
+        )
+        self.assertEqual(engine.allowlists[0].type, "allow")
+        self.assertEqual(_ui_findings(engine, control_label="Address and search bar"), [])
+
+    def test_veto_disqualifies_a_matching_allowlist(self):
+        engine = _engine_with_policy(_VETO_POLICY)
+        # Browser chrome: the allowlist applies and the finding is suppressed.
+        self.assertEqual(_ui_findings(engine, control_label="Address and search bar"), [])
+        # A form field carrying the same word: the veto wins.
+        self.assertEqual(
+            [f["ruleId"] for f in _ui_findings(engine, control_label="Email address and search")],
+            ["gui-return-key"],
+        )
+
+    def test_veto_ordered_after_the_allowlist_still_wins(self):
+        # Ordering must not decide a carve-out. _VETO_POLICY declares the veto
+        # first; this declares it last, and both must block the exception.
+        engine = _engine_with_policy(_RETURN_KEY_RULE + "allowlists:\n" + _ALLOW_ENTRY + _VETO_ENTRY)
+        self.assertEqual([e.id for e in engine.allowlists][0], "browser-address-bar")
+        self.assertEqual(
+            [f["ruleId"] for f in _ui_findings(engine, control_label="Billing address and search")],
+            ["gui-return-key"],
+        )
+
+    def test_veto_scoped_to_other_rules_leaves_the_allowlist_alone(self):
+        engine = _engine_with_policy(
+            _RETURN_KEY_RULE + "allowlists:\n"
+            + _VETO_ENTRY.replace('["gui-return-key"]', '["some-other-rule"]')
+            + _ALLOW_ENTRY)
+        self.assertEqual(_ui_findings(engine, control_label="Email address and search"), [])
+
+
+class TestPolicyEngineUiAction(unittest.TestCase):
+    """Test the ui_action event type used by GUI agents."""
+
+    def test_control_label_is_the_canonical_default_field(self):
+        self.assertEqual(_DEFAULT_FIELDS["ui_action"], ["control_label"])
+        engine = _engine_with_policy(
+            _ui_rule("gui-final-action", "control_label", '["\\\\bsend\\\\b"]', declare_fields=False))
+        self.assertEqual(
+            [f["ruleId"] for f in _ui_findings(engine, control_label="Send message")],
+            ["gui-final-action"],
+        )
+
+    def test_matching_control_label(self):
+        engine = _engine_with_policy(_ui_rule("gui-final-action", "control_label", '["\\\\bsend\\\\b"]'))
+        findings = _ui_findings(engine, control_label="Send message")
+        self.assertEqual([f["ruleId"] for f in findings], ["gui-final-action"])
+        self.assertEqual(findings[0]["severity"], "CRITICAL")
+
+    def test_non_matching_control_label(self):
+        # Word-anchored, so the label that merely contains the letters does not fire.
+        engine = _engine_with_policy(_ui_rule("gui-final-action", "control_label", '["\\\\bsend\\\\b"]'))
+        self.assertEqual(_ui_findings(engine, control_label="Sender name"), [])
+
+    def test_matching_ax_role(self):
+        engine = _engine_with_policy(_ui_rule("gui-secure-field", "ax_role", '["^AXSecureTextField$"]'))
+        self.assertEqual(
+            [f["ruleId"] for f in _ui_findings(engine, ax_role="AXSecureTextField")],
+            ["gui-secure-field"],
+        )
+        self.assertEqual(_ui_findings(engine, ax_role="AXTextField"), [])
+
+    def test_matching_app_name(self):
+        engine = _engine_with_policy(_ui_rule("gui-restricted-app", "app_name", '["\\\\bterminal\\\\b"]'))
+        self.assertEqual(
+            [f["ruleId"] for f in _ui_findings(engine, app_name="Terminal")],
+            ["gui-restricted-app"],
+        )
+        self.assertEqual(_ui_findings(engine, app_name="Notes"), [])
+
+    def test_matching_typed_text(self):
+        engine = _engine_with_policy(_ui_rule("gui-typed-secret", "typed_text", '["sk-[a-z0-9]{8}"]'))
+        self.assertEqual(
+            [f["ruleId"] for f in _ui_findings(engine, typed_text="sk-abcd1234")],
+            ["gui-typed-secret"],
+        )
+
+    def test_ui_rule_ignores_shell_events(self):
+        engine = _engine_with_policy(_ui_rule("gui-final-action", "control_label", '["\\\\bsend\\\\b"]'))
+        self.assertEqual(
+            [f for f in engine.check_command("send-mail --to x") if f["ruleId"] == "gui-final-action"],
+            [],
+        )
+
+    def test_ui_fields_are_extracted(self):
+        values = _extract_fields({
+            "type": "ui_action",
+            "control_label": "Send",
+            "ax_role": "AXButton",
+            "app_name": "Mail",
+            "typed_text": "hello",
+        })
+        self.assertEqual(values["control_label"], "Send")
+        self.assertEqual(values["ax_role"], "AXButton")
+        self.assertEqual(values["app_name"], "Mail")
+        self.assertEqual(values["typed_text"], "hello")
+
+    def test_ui_action_validates(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(_ui_rule("gui-final-action", "control_label", '["\\\\bsend\\\\b"]'))
+            f.flush()
+            self.assertEqual(validate_policy(Path(f.name)), [])
+            os.unlink(f.name)
+
+    def test_unknown_event_type_is_rejected(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(_ui_rule("gui-final-action", "control_label", '["a"]')
+                    .replace("event_types: [ui_action]", "event_types: [gui_action]"))
+            f.flush()
+            errors = validate_policy(Path(f.name))
+            self.assertTrue(any("unknown event type 'gui_action'" in e for e in errors))
+            os.unlink(f.name)
+
+    def test_unknown_field_is_rejected(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(_ui_rule("gui-final-action", "widget_label", '["a"]'))
+            f.flush()
+            errors = validate_policy(Path(f.name))
+            self.assertTrue(any("unknown field 'widget_label'" in e for e in errors))
+            os.unlink(f.name)
 
 
 class TestPolicyEngineOverrides(unittest.TestCase):
