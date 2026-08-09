@@ -1237,6 +1237,39 @@ def _strip_goose(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], b
     return {**config, "hooks": hooks}, removed
 
 
+def _unmapped_tool_event(base: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Fall-through for a tool this adapter does not map to a canonical type.
+
+    The event still normalizes to ``tool_result`` so its payload is scanned by
+    the untrusted-content rules; dropping it would be strictly worse. But a
+    tool that lands here is evaluated against the handful of ``tool_result``
+    rules rather than the ``shell`` / ``file_write`` / ``network`` rules its
+    actual behaviour warrants — for example Claude Code's ``NotebookEdit``,
+    which writes a file but reaches policy as an opaque JSON blob. That is a
+    coverage hole, not coverage.
+
+    Tagging the event makes the hole countable (``prismor tags list`` renders
+    an UNMAPPED kind) instead of being silently indistinguishable from a
+    genuine tool response. Deliberately does NOT change the event type: this
+    is an observability signal, so it can never loosen or tighten what the
+    policy engine already decides about a payload.
+
+    A fall-through with no tool name at all (session/notification hook events)
+    is not an unmapped *tool*, so it is left untagged.
+
+    Known limitation: the ``cursor`` and ``windsurf`` adapters dispatch on the
+    hook EVENT name and their payloads carry no tool identity, so their
+    coverage holes cannot surface through this signal. Measuring those needs a
+    separate event-name-keyed signal.
+    """
+    event = {**base, "type": "tool_result", "response": json.dumps(payload)}
+    metadata = base.get("metadata") or {}
+    tool_name = str(metadata.get("tool_name") or "")
+    if tool_name:
+        event["metadata"] = {**metadata, "unmapped_tool": tool_name}
+    return event
+
+
 def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
     hook_event = payload.get("hookEventName") or payload.get("hook_event_name") or "unknown"
     tool_name = payload.get("toolName") or payload.get("tool_name") or ""
@@ -1279,7 +1312,7 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path
     )
     if mcp_event is not None:
         return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -1333,7 +1366,7 @@ def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) 
     )
     if mcp_event is not None:
         return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -1382,7 +1415,7 @@ def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -
     )
     if mcp_event is not None:
         return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_kiro(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -1423,7 +1456,7 @@ def _normalize_kiro(payload: Dict[str, Any], session_id: str, workspace: Path) -
         return {**base, "type": "file_write", "path": path, "content": content}
     if tool_name in {"web_fetch", "web_search"}:
         return {**base, "type": "network", "url": tool_input.get("url", "")}
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_crush(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
@@ -1453,7 +1486,7 @@ def _normalize_crush(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
         }
     if tool_name in {"fetch", "download", "sourcegraph"}:
         return {**base, "type": "network", "url": tool_input.get("url", "")}
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_openhands(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
@@ -1483,7 +1516,7 @@ def _normalize_openhands(payload: Dict[str, Any], session_id: str) -> Dict[str, 
         }
     if tool_name in {"web_fetch", "web_search"}:
         return {**base, "type": "network", "url": tool_input.get("url", "")}
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_qwen(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -1525,7 +1558,7 @@ def _normalize_qwen(payload: Dict[str, Any], session_id: str, workspace: Path) -
     )
     if mcp_event is not None:
         return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_continue(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -1573,7 +1606,7 @@ def _normalize_continue(payload: Dict[str, Any], session_id: str, workspace: Pat
     )
     if mcp_event is not None:
         return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_goose(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
@@ -1604,7 +1637,7 @@ def _normalize_goose(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
             "path": tool_input.get("path", ""),
             "content": tool_input.get("after", ""),
         }
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _merge_claude_entries(entries: List[Dict[str, Any]], new_entry: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2180,7 +2213,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
     )
     if mcp_event is not None:
         return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_windsurf(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
@@ -2220,7 +2253,7 @@ def _normalize_windsurf(payload: Dict[str, Any], session_id: str, workspace: Pat
                 if inline:
                     mcp_event["url"] = inline
             return mcp_event
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_cursor(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
@@ -2247,7 +2280,7 @@ def _normalize_cursor(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
         return {**base, "type": "file_write", "path": payload.get("path") or payload.get("filePath") or "", "content": payload.get("content", "")}
     if "read" in hook_event.lower():
         return {**base, "type": "file_read", "path": payload.get("path") or payload.get("filePath") or ""}
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_hermes(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
@@ -2259,7 +2292,14 @@ def _normalize_hermes(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
         "session_id": session_id,
         "agent": "hermes",
         "agent_event": hook_event,
-        "metadata": {"gatewayId": payload.get("gatewayId"), "raw": payload},
+        # tool_name is what `prismor tags list` / tag-rule classification key
+        # off (trifecta._tool_name); omitting it made every hermes tool
+        # invisible to tool-tagging and to the unmapped-tool signal.
+        "metadata": {
+            "gatewayId": payload.get("gatewayId"),
+            "tool_name": tool_name,
+            "raw": payload,
+        },
     }
     if hook_event == "message_received":
         return {**base, "type": "prompt", "prompt": tool_input.get("content", "")}
@@ -2273,7 +2313,7 @@ def _normalize_hermes(payload: Dict[str, Any], session_id: str) -> Dict[str, Any
         return {**base, "type": "file_write", "path": tool_input.get("file_path") or tool_input.get("path", ""), "content": tool_input.get("content", "")}
     if tool_name in {"WebFetch", "WebSearch", "web_search", "browser"}:
         return {**base, "type": "network", "url": tool_input.get("url", "")}
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _normalize_openclaw(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
@@ -2285,7 +2325,13 @@ def _normalize_openclaw(payload: Dict[str, Any], session_id: str) -> Dict[str, A
         "session_id": session_id,
         "agent": "openclaw",
         "agent_event": hook_event,
-        "metadata": {"agentId": payload.get("agentId"), "raw": payload},
+        # See the hermes adapter: tool_name must be recorded here or the tool
+        # is invisible to tag classification and the unmapped-tool signal.
+        "metadata": {
+            "agentId": payload.get("agentId"),
+            "tool_name": tool_name,
+            "raw": payload,
+        },
     }
     if hook_event == "message_received":
         return {**base, "type": "prompt", "prompt": tool_input.get("content", "")}
@@ -2299,7 +2345,7 @@ def _normalize_openclaw(payload: Dict[str, Any], session_id: str) -> Dict[str, A
         return {**base, "type": "file_write", "path": tool_input.get("file_path") or tool_input.get("path", ""), "content": tool_input.get("content", "")}
     if tool_name in {"WebFetch", "WebSearch", "web_search", "browser"}:
         return {**base, "type": "network", "url": tool_input.get("url", "")}
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 # ── Gemini CLI adapter ────────────────────────────────────────────────────────
@@ -2499,7 +2545,7 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
     if mcp_event is not None:
         return mcp_event
 
-    return {**base, "type": "tool_result", "response": json.dumps(payload)}
+    return _unmapped_tool_event(base, payload)
 
 
 def _ephemeral_session_id(agent: str, workspace: Path) -> str:

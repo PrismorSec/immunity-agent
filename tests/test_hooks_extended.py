@@ -1104,5 +1104,119 @@ class TestNormalizePayloadGoose(unittest.TestCase):
         self.assertEqual(event["command"], "sudo ls /root")
 
 
+class TestUnmappedToolSignal(unittest.TestCase):
+    """A tool with no branch in its adapter must be *flagged*, not silently
+    absorbed into the generic tool_result bucket.
+
+    Such an event is evaluated against the few tool_result rules instead of the
+    shell/file_write/network rules its behaviour warrants, so it is a coverage
+    hole. Tagging it makes the hole countable in `prismor tags list`.
+    """
+
+    def _event(self, agent, payload):
+        return normalize_payload(
+            agent=agent, payload=payload, workspace=Path("/tmp")
+        )["event"]
+
+    def test_unmapped_tool_is_flagged(self):
+        # NotebookEdit writes a file but has no branch in _normalize_claude.
+        event = self._event("claude", {
+            "hook_event_name": "PreToolUse",
+            "session_id": "c-1",
+            "tool_name": "NotebookEdit",
+            "tool_input": {"notebook_path": "/w/a.ipynb", "new_source": "x = 1"},
+        })
+        self.assertEqual(event["type"], "tool_result")
+        self.assertEqual(event["metadata"]["unmapped_tool"], "NotebookEdit")
+
+    def test_mapped_tool_is_not_flagged(self):
+        event = self._event("claude", {
+            "hook_event_name": "PreToolUse",
+            "session_id": "c-2",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        })
+        self.assertEqual(event["type"], "shell")
+        self.assertNotIn("unmapped_tool", event.get("metadata") or {})
+
+    def test_toolless_event_is_not_flagged(self):
+        """A fall-through with no tool name is a session/notification event,
+        not an unmapped tool — flagging it would inflate the hole count."""
+        event = self._event("claude", {
+            "hook_event_name": "Notification",
+            "session_id": "c-3",
+        })
+        self.assertNotIn("unmapped_tool", event.get("metadata") or {})
+
+    def test_signal_does_not_alter_event_type(self):
+        """The flag is observability only: it must never change what the policy
+        engine sees, or it could silently loosen/tighten enforcement."""
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "k-1",
+            "tool_name": "use_aws",
+            "tool_input": {"service": "s3"},
+        }
+        event = self._event("kiro", payload)
+        self.assertEqual(event["type"], "tool_result")
+        self.assertEqual(event["response"], json.dumps(payload))
+
+    def test_every_tool_dispatched_adapter_flags_unmapped_tools(self):
+        """Every adapter that dispatches on a tool NAME must report unknown
+        tools — none may stay silent while the others report.
+
+        Payload key casing differs per agent (hermes/openclaw use camelCase
+        ``toolName``), so each is exercised with its own real shape rather than
+        a single synthetic one that would pass vacuously.
+
+        `cursor` and `windsurf` are excluded deliberately: they dispatch on the
+        hook EVENT name and carry no tool identity in the payload at all, so
+        there is nothing to flag. Their coverage holes are not visible through
+        this signal — see the class docstring in hooks._unmapped_tool_event.
+        """
+        snake = ["claude", "codex", "copilot", "grok", "kiro", "crush",
+                 "openhands", "qwen", "continue", "goose", "gemini"]
+        camel = ["hermes", "openclaw"]
+        for agent in snake:
+            with self.subTest(agent=agent):
+                event = self._event(agent, {
+                    "hook_event_name": "PreToolUse",
+                    "session_id": f"{agent}-1",
+                    "tool_name": "totally_unknown_tool",
+                    "tool_input": {"foo": "bar"},
+                })
+                self.assertEqual(
+                    (event.get("metadata") or {}).get("unmapped_tool"),
+                    "totally_unknown_tool",
+                )
+        for agent in camel:
+            with self.subTest(agent=agent):
+                event = self._event(agent, {
+                    "hookEvent": "before_tool_call",
+                    "session_id": f"{agent}-1",
+                    "toolName": "totally_unknown_tool",
+                    "toolInput": {"foo": "bar"},
+                })
+                self.assertEqual(
+                    (event.get("metadata") or {}).get("unmapped_tool"),
+                    "totally_unknown_tool",
+                )
+
+    def test_camelcase_adapters_record_tool_name(self):
+        """hermes/openclaw must record tool_name in metadata — tag
+        classification (trifecta._tool_name) reads it from there, so omitting
+        it made every tool from those two agents invisible to `prismor tags`."""
+        for agent in ("hermes", "openclaw"):
+            with self.subTest(agent=agent):
+                event = self._event(agent, {
+                    "hookEvent": "before_tool_call",
+                    "session_id": f"{agent}-2",
+                    "toolName": "shell",
+                    "toolInput": {"command": "ls"},
+                })
+                self.assertEqual(event["type"], "shell")
+                self.assertEqual(event["metadata"]["tool_name"], "shell")
+
+
 if __name__ == "__main__":
     unittest.main()

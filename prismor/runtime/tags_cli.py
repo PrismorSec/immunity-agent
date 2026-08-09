@@ -173,23 +173,50 @@ def _resolve_with_tier(
 def tags_list(workspace: Path, last: int = 50) -> None:
     tt = _effective_tool_tags(workspace)
     seen: Dict[str, Tuple[Set[str], str]] = {}
+    # Normalized event kind per tool. A tool whose adapter has no branch for it
+    # falls through to a tool_result tagged with ``unmapped_tool`` (see
+    # hooks._unmapped_tool_event) — surface that as UNMAPPED so a coverage hole
+    # is visible rather than looking like an ordinary tool response. Tracked
+    # across every event, not just the first: one adapter mapping a tool name
+    # must not mask another adapter that doesn't.
+    kinds: Dict[str, Set[str]] = {}
     for sid, _ in _recent_sessions(workspace, last):
         for ev in _session_events(workspace, sid):
             tool = _tool_name(ev)
-            if not tool or tool in seen:
+            if not tool:
                 continue
             etype = str(ev.get("type") or "")
+            meta = ev.get("metadata") or {}
+            kinds.setdefault(tool, set()).add(
+                "UNMAPPED" if meta.get("unmapped_tool") else etype
+            )
+            if tool in seen:
+                continue
             seen[tool] = _resolve_with_tier(ev, etype, tt)
     if not seen:
         print("no tools recorded yet — run some agent sessions first")
         return
-    print(_c(f"{'TOOL':44s} {'TAGS':34s} TIER", _BOLD))
+    print(_c(f"{'TOOL':36s} {'KIND':14s} {'TAGS':30s} TIER", _BOLD))
     for tool in sorted(seen):
         tags, tier = seen[tool]
         tag_s = ", ".join(sorted(tags)) if tags else _c("(untagged)", _DIM)
         tier_c = {"explicit": _GREEN, "_meta": _CYAN,
                   "default": _YELLOW}.get(tier, _DIM)
-        print(f"{tool:44s} {tag_s:34s} {_c(tier, tier_c)}")
+        tool_kinds = kinds.get(tool) or set()
+        kind_s = ", ".join(sorted(tool_kinds)) or "-"
+        kind_c = _RED if "UNMAPPED" in tool_kinds else _DIM
+        print(f"{tool:36s} {_c(f'{kind_s:14s}', kind_c)} {tag_s:30s} "
+              f"{_c(tier, tier_c)}")
+    unmapped = sorted(t for t, k in kinds.items() if "UNMAPPED" in k and t in seen)
+    if unmapped:
+        print(_c(
+            f"\n{len(unmapped)} of {len(seen)} tools UNMAPPED — reaching policy as "
+            f"opaque tool_result, not as shell/file_write/network:",
+            _RED,
+        ))
+        print(_c(f"  {', '.join(unmapped)}", _RED))
+        print(_c("  each needs a branch in its agent's normalizer "
+                 "(prismor/runtime/hooks.py)", _DIM))
     enabled = "enabled" if tt.get("enabled") else "disabled"
     print(_c(f"\ntool_tags: {enabled}, mode={tt.get('mode', 'observe')}", _DIM))
 
