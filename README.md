@@ -367,11 +367,16 @@ See [benchmark.md](benchmark.md) for the full methodology, per-category breakdow
 
 ## Contributing<a name="contributing" />
 
-PRs are welcome. Guidelines:
+PRs are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before you start — it explains the one thing that matters most here: **reuse the mechanisms that already exist, and solve the problem in the fewest lines you can.** Smaller diffs get merged faster.
 
-- New detection rules go in `prismor/runtime/default_policy.yaml`, following the schema in `prismor/runtime/policy_schema.json`
-- Tests live in `tests/`, so run `pytest` before opening a PR
+The short version:
+
+- New detection rules go in `prismor/runtime/default_policy.yaml`, following the schema in `prismor/runtime/policy_schema.json` — detection patterns never go in Python
+- Check [the extension-point table](./CONTRIBUTING.md#before-you-write-code-check-whether-the-seam-already-exists) before adding a new module; most changes are configuration, not code
+- Tests live in `tests/` — run `bash scripts/run_security_tests.sh` before opening a PR
 - Open an issue first if you're unsure where something fits
+
+By participating you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ---
 
