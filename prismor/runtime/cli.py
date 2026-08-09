@@ -319,6 +319,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         return
 
+    # ── inference-hook-server: provider-side prompt-turn screening ───────
+    if args.command == "inference-hook-server":
+        from prismor.runtime.inference_hook_server import run_inference_hook_server
+        from pathlib import Path as _Path
+        run_inference_hook_server(
+            host=args.host,
+            port=args.port,
+            workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+            api_key=getattr(args, "api_key", None),
+            config_path=_Path(args.config) if getattr(args, "config", None) else None,
+        )
+        return
+
     # ── dashboard / serve: local web dashboard (HTTP server) ─────────────
     # `dashboard` starts the server and opens a browser tab. `serve` is the
     # deprecated alias that defaults to headless (no browser).
@@ -2761,6 +2774,17 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
+
+    # ── inference-hook-server: prompt-turn screening for a model provider ──
+    _ih = subparsers.add_parser(
+        "inference-hook-server",
+        help="Screen prompt turns for a model provider's inference hook (transcript in, allow/deny out)",
+    )
+    _ih.add_argument("--port", type=int, default=7072, help="Port to listen on (default: 7072)")
+    _ih.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    _ih.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
+    _ih.add_argument("--api-key", default=None, help="Single-tenant bearer key (default: $PRISMOR_INFERENCE_HOOK_KEY); use --config for per-org keys")
+    _ih.add_argument("--config", default=None, help="Per-org channel config JSON: keys, fail posture, deny categories (default: $PRISMOR_INFERENCE_HOOK_CONFIG)")
 
     # ── check ──────────────────────────────────────────────────────────
     check_parser = subparsers.add_parser("check", help="Quick pre-check a command or file path")

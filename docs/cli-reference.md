@@ -51,6 +51,7 @@ prismor
 │   ├─ semantic-check         Hybrid LLM prompt-injection guard
 │   ├─ sandbox <action>       status · check · run — Docker command sandbox
 │   ├─ eval-server            HTTP evaluation endpoint for non-Python adapters
+│   ├─ inference-hook-server  Screen prompt turns for a model provider's inference hook
 │   ├─ egress <action>        show · report · test · allow · deny · mode — network egress policy
 │   └─ policy <action>        init · validate · show · edit · test
 │
@@ -194,6 +195,12 @@ outside all of this, the same as every other Prismor control.
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace` | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
+
+### inference-hook-server
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor inference-hook-server` | `--port` (default 7072), `--host` (default 127.0.0.1), `--workspace`, `--api-key`, `--config` | Screens a whole prompt turn for a model provider's inference hook (`POST /v1/inference-hook`): transcript in, allow/deny out, fail-closed by default. Reaches cloud chat surfaces and unmanaged devices where no local hook exists. See [Inference-hook channel](inference-hook.md). |
 
 Full policy model, rule schema, and the default rule list: [Prismor](prismor-runtime.md).
 

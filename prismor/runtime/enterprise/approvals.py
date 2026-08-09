@@ -194,6 +194,60 @@ def redact_approved_payload(payload: Any, *, workspace: Any = None) -> Any:
         return payload
 
 
+def enqueue_step_up(
+    finding: Dict[str, Any],
+    *,
+    event: Optional[Dict[str, Any]] = None,
+    agent: str = "",
+    session_id: str = "",
+    timeout: float = 2.0,
+) -> Optional[str]:
+    """Post an approval request and return immediately with its id (or None).
+
+    The fire-and-forget half of :func:`await_step_up`, for callers that cannot
+    hold the action open while a human decides. The hosted inference-hook
+    channel is the motivating case: it answers Anthropic inside a few-second
+    budget, so a STEP_UP is answered ``deny`` *now* and the request is queued
+    for the approver to resolve out-of-band (the user retries once granted).
+
+    Never raises and never blocks beyond ``timeout``. Returns None when
+    approvals are off, the box is not enrolled, or the post fails — the caller
+    must still fail closed on its own.
+    """
+    if not finding or not enabled():
+        return None
+    ident = _identity.load_identity()
+    if not ident or _identity.revoked_backoff_active():
+        return None  # no control plane to approve through → fail closed
+
+    tool = str(finding.get("toolName") or (event or {}).get("type") or "tool")
+    body = {
+        "fingerprint": _fingerprint(
+            session_id, tool,
+            str(finding.get("evidence_hash") or finding.get("evidenceHash") or ""),
+        ),
+        "tool": tool,
+        "reason": str(finding.get("title") or "policy step-up"),
+        "rule_id": finding.get("ruleId"),
+        "severity": finding.get("severity"),
+        "session_id": session_id or None,
+        "agent": agent or None,
+    }
+    created = _post_request(ident, body, timeout=timeout)
+    approval_id = str(created.get("id")) if created and created.get("id") else None
+    try:
+        _audit_outcome(
+            body,
+            status="queued" if approval_id else "request_failed",
+            approval_id=approval_id,
+            agent=agent,
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+    return approval_id
+
+
 def await_step_up(
     decision: Any,
     *,

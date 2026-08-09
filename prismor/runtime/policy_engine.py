@@ -309,6 +309,40 @@ class _TaintStore:
         return None
 
 
+class InMemoryTaintStore:
+    """Session taint held in memory for the life of one evaluation batch.
+
+    Same surface as :class:`_TaintStore`, minus the disk. Exists for callers
+    that have no local box to persist to and instead reconstruct the session by
+    replaying its history in one pass — the hosted inference-hook channel, where
+    the full transcript is re-sent every turn (see ``inference_hook.py``).
+    Instantiate one per request and share it across the fanned events so an
+    injection found in an earlier ``tool_result`` still escalates a later
+    ``network`` event, exactly as the on-disk store would across hook calls.
+
+    Deliberately not a subclass: ``_TaintStore.__init__`` resolves a data dir
+    and reads a file, which is precisely what this avoids.
+    """
+
+    def __init__(self) -> None:
+        self.injection_detected: bool = False
+        self.injection_event_index: Optional[int] = None
+        self.seen_domains: set = set()
+
+    def mark_injection(self, event_index: int) -> None:
+        self.injection_detected = True
+        # Monotonic + earliest-wins, matching the persistent store: taint is
+        # only ever set, and the index points at the first poisoned event.
+        if not isinstance(self.injection_event_index, int) or event_index < self.injection_event_index:
+            self.injection_event_index = event_index
+
+    def add_domain(self, domain: str) -> None:
+        self.seen_domains.add(domain.lower())
+
+    def is_new_domain(self, domain: str) -> bool:
+        return domain.lower() not in self.seen_domains
+
+
 def _check_cloaked_secrets_in_text(text: str) -> Optional[str]:
     """Check whether any enrolled cloaking secret appears verbatim in ``text``.
 
@@ -675,6 +709,10 @@ class PolicyEngine:
         self.semantic_guard_config: Dict[str, Any] = {}
         self.sandbox_config: Dict[str, Any] = {}
         self._semantic_guard = None  # lazy-instantiated on first uncertain event
+        # Optional caller-supplied taint store, used instead of the per-session
+        # file. Set by stateless callers that reconstruct taint by replay
+        # (see InMemoryTaintStore); None keeps the normal on-disk behaviour.
+        self.taint_override: Optional[Any] = None
         self.remote_policy_meta: Dict[str, Any] = {}
         self._default_mode_explicit: bool = False
         # True when this policy names its blocking set rule by rule
@@ -2576,8 +2614,15 @@ class PolicyEngine:
                     return True
         return False
 
-    def _get_taint(self, session_id: str) -> Optional[_TaintStore]:
-        """Return the taint store for this session, or None if unavailable."""
+    def _get_taint(self, session_id: str) -> Optional[Any]:
+        """Return the taint store for this session, or None if unavailable.
+
+        A caller-supplied ``taint_override`` wins outright: it means this
+        evaluation has no local session file to read (hosted channel), so
+        falling back to the disk store would silently lose the taint.
+        """
+        if self.taint_override is not None:
+            return self.taint_override
         if not session_id or self.workspace is None:
             return None
         try:

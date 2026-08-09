@@ -134,6 +134,8 @@ def evaluate_tool_call(
     subject: Optional[Subject] = None,
     persist: bool = True,
     agent_name: str = "",
+    taint_store: Optional[Any] = None,
+    register_agent: bool = True,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -149,6 +151,16 @@ def evaluate_tool_call(
             ``PRISMOR_SUBJECT`` / device identity so single-user installs are unchanged.
         persist: append the event + write a session snapshot (set ``False`` for
             pure pre-checks like ``immunity check``).
+        taint_store: optional session-taint store to use instead of the on-disk
+            per-session file. Callers with no local box (the hosted
+            inference-hook channel) pass one ``InMemoryTaintStore`` shared
+            across the events of a replayed transcript.
+        register_agent: record this agent + its observed tools in the
+            workspace's agent inventory. Set ``False`` on a multi-tenant server,
+            where the "workspace" is shared infrastructure rather than one
+            developer's project: the inventory would then mix every tenant's
+            agents into one file and put a disk write on the request path.
+            Per-agent controls (kill-switch, mode override) are still resolved.
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -190,6 +202,8 @@ def evaluate_tool_call(
         events = [event]
 
     engine = PolicyEngine(workspace=workspace)
+    if taint_store is not None:
+        engine.taint_override = taint_store
 
     # Resolve per-agent control (kill-switch, mode override, IAM profile).
     # Runs AFTER engine construction so the org's remote controls — carried in
@@ -205,25 +219,26 @@ def evaluate_tool_call(
         # Throttled auto-registration.  The current tool is observed; an SDK
         # may declare its full roster in metadata.available_tools; exact tools
         # in a synthesized session scope are registered as scoped access.
-        from prismor.runtime.scoped_agent import resolve_tool_tags, load_scoped_rules
-        _capabilities = []
-        # A skill call yields both the bare "Skill" tag and the qualified
-        # "Skill:<name>" tag, so the console can inventory which skills this
-        # agent actually reaches for — not just that it uses skills at all.
-        for _tag in resolve_tool_tags(event):
-            _capabilities.append({"name": _tag, "source": "observed"})
-        for _tool in meta.get("available_tools") or []:
-            _capabilities.append({"name": str(_tool), "source": "declared"})
-        _scoped = load_scoped_rules(workspace, session_id) if session_id else None
-        for _tool in (_scoped or {}).get("allowed_tools") or []:
-            # Skip wildcards ("*" and mcp__<server>__* families): they are
-            # permissions, not tools the agent has been seen to hold.
-            if "*" not in str(_tool):
-                _capabilities.append({"name": str(_tool), "source": "scoped"})
-        record_seen(
-            _agent_name, framework=agent, workspace=workspace,
-            tools=_capabilities, session_id=session_id,
-        )
+        if register_agent:
+            from prismor.runtime.scoped_agent import resolve_tool_tags, load_scoped_rules
+            _capabilities = []
+            # A skill call yields both the bare "Skill" tag and the qualified
+            # "Skill:<name>" tag, so the console can inventory which skills this
+            # agent actually reaches for — not just that it uses skills at all.
+            for _tag in resolve_tool_tags(event):
+                _capabilities.append({"name": _tag, "source": "observed"})
+            for _tool in meta.get("available_tools") or []:
+                _capabilities.append({"name": str(_tool), "source": "declared"})
+            _scoped = load_scoped_rules(workspace, session_id) if session_id else None
+            for _tool in (_scoped or {}).get("allowed_tools") or []:
+                # Skip wildcards ("*" and mcp__<server>__* families): they are
+                # permissions, not tools the agent has been seen to hold.
+                if "*" not in str(_tool):
+                    _capabilities.append({"name": str(_tool), "source": "scoped"})
+            record_seen(
+                _agent_name, framework=agent, workspace=workspace,
+                tools=_capabilities, session_id=session_id,
+            )
         # Per-agent mode override: takes precedence over the caller's mode.
         if _control.mode:
             mode = _control.mode
