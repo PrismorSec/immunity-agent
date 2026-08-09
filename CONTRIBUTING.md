@@ -152,7 +152,7 @@ That structure exists because it front-loads the two things a reviewer needs: *d
 
 - **Regular bugs and feature ideas** — open a GitHub issue. Include what you ran, what you expected, and what happened.
 - **Security vulnerabilities in Prismor itself** — do not open a public issue. Report privately via GitHub's security advisory tab on the repository.
-- **Code of Conduct concerns** — conduct@prismor.dev.
+- **Code of Conduct concerns** — contact@prismor.dev.
 
 ## License
 
