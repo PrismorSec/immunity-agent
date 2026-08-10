@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from prismor.runtime.hooks import _extract_mcp_response_text, _mcp_endpoint_meta
 
@@ -810,29 +810,43 @@ def _blocked_result(prefix: str, blocking: Dict[str, Any]) -> Dict[str, Any]:
 DEFAULT_GATEWAY_CONFIG = Path.home() / ".prismor" / "mcp-gateway.json"
 
 
-def install_gateway(workspace: Path) -> str:
-    """Move the workspace ``.mcp.json`` servers behind the gateway.
+# Top-level keys an MCP server block is declared under. ``mcpServers`` is the
+# Claude Code / Claude Desktop / Cursor / Windsurf / Cline spelling; ``servers``
+# is VS Code's. Anything else — Zed's ``context_servers``, Codex's TOML — is
+# left alone rather than guessed at: this function rewrites files the developer
+# owns, so an unrecognised shape must mean "don't touch", never "assume".
+_MCP_BLOCK_KEYS = ("mcpServers", "servers")
 
-    The existing ``mcpServers`` block is moved verbatim into
-    ``~/.prismor/mcp-gateway.json`` and ``.mcp.json`` is rewritten to the
-    single prismor entry. The original file is kept as ``.mcp.json.bak``.
-    """
-    mcp_json = workspace / ".mcp.json"
-    if not mcp_json.exists():
-        return f"No .mcp.json found in {workspace} — nothing to install."
-    data = json.loads(mcp_json.read_text(encoding="utf-8"))
-    servers = data.get("mcpServers") or {}
-    if not servers:
-        return f"{mcp_json} has no mcpServers — nothing to install."
-    if list(servers.keys()) == ["prismor"]:
-        return "Gateway already installed (only the prismor entry remains)."
+
+@dataclass
+class MigrationResult:
+    """What happened to one config file."""
+
+    path: Path
+    #: migrated | skipped | failed
+    status: str
+    moved: int = 0
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "migrated"
+
+
+def _gateway_entry() -> Dict[str, Any]:
+    return {"command": "prismor",
+            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG)]}
+
+
+def _absorb(servers: Dict[str, Any]) -> int:
+    """Merge servers into the gateway config. Returns how many moved."""
     DEFAULT_GATEWAY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     existing: Dict[str, Any] = {}
     if DEFAULT_GATEWAY_CONFIG.exists():
         try:
             existing = (json.loads(DEFAULT_GATEWAY_CONFIG.read_text(encoding="utf-8"))
                         .get("mcpServers") or {})
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, OSError):
             existing = {}
     moved = {k: v for k, v in servers.items() if k != "prismor"}
     existing.update(moved)
@@ -842,14 +856,97 @@ def install_gateway(workspace: Path) -> str:
         os.chmod(DEFAULT_GATEWAY_CONFIG, 0o600)  # may hold tokens in env blocks
     except OSError:
         pass
-    mcp_json.with_suffix(".json.bak").write_text(
-        json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    data["mcpServers"] = {"prismor": {
-        "command": "prismor",
-        "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG)],
-    }}
-    mcp_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return (f"Moved {len(moved)} server(s) into {DEFAULT_GATEWAY_CONFIG}.\n"
+    return len(moved)
+
+
+def migrate_config(path: Path) -> MigrationResult:
+    """Move one config file's MCP servers behind the gateway.
+
+    Everything in the file that is not the server block is preserved verbatim —
+    these are live configs carrying the developer's own settings, and a
+    migration that dropped an unrelated key would be a far worse bug than the
+    ungoverned server it set out to fix. The original is kept alongside as
+    ``<name>.bak`` before anything is written.
+    """
+    if not path.exists():
+        return MigrationResult(path, "skipped", detail="file no longer exists")
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return MigrationResult(path, "failed", detail=f"not valid JSON: {exc}")
+    except OSError as exc:
+        return MigrationResult(path, "failed", detail=str(exc))
+    if not isinstance(data, dict):
+        return MigrationResult(path, "skipped", detail="not a JSON object")
+
+    key = next((k for k in _MCP_BLOCK_KEYS
+                if isinstance(data.get(k), dict) and data.get(k)), None)
+    if key is None:
+        return MigrationResult(
+            path, "skipped",
+            detail="no recognised MCP server block (mcpServers/servers)")
+
+    servers = data[key]
+    if list(servers.keys()) == ["prismor"]:
+        return MigrationResult(path, "skipped", detail="already behind the gateway")
+
+    moved = _absorb(servers)
+    if not moved:
+        return MigrationResult(path, "skipped", detail="nothing to move")
+
+    backup = Path(str(path) + ".bak")
+    try:
+        backup.write_text(raw, encoding="utf-8")
+    except OSError as exc:
+        # No backup, no rewrite. Losing the original is not an acceptable
+        # trade for governing a server.
+        return MigrationResult(path, "failed", detail=f"could not write backup: {exc}")
+
+    data[key] = {"prismor": _gateway_entry()}
+    try:
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return MigrationResult(path, "failed", detail=str(exc))
+    return MigrationResult(path, "migrated", moved=moved,
+                           detail=f"moved {moved} server(s); backup at {backup}")
+
+
+def migrate_configs(paths: Iterable[Path]) -> List[MigrationResult]:
+    """Migrate several configs. One bad file never stops the rest."""
+    seen: set = set()
+    out: List[MigrationResult] = []
+    for path in paths:
+        try:
+            key = str(Path(path).resolve())
+        except (OSError, ValueError):
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(migrate_config(Path(path)))
+    return out
+
+
+def install_gateway(workspace: Path) -> str:
+    """Move the workspace ``.mcp.json`` servers behind the gateway.
+
+    Scope is deliberately this one file. ``migrate_configs`` handles the wider
+    sweep (Claude Desktop, Cursor, VS Code …); broadening this entry point
+    would mean ``prismor mcp-gateway install`` silently rewriting configs the
+    developer did not point it at.
+    """
+    mcp_json = workspace / ".mcp.json"
+    if not mcp_json.exists():
+        return f"No .mcp.json found in {workspace} — nothing to install."
+    result = migrate_config(mcp_json)
+    if result.status == "failed":
+        raise GatewayConfigError(f"{mcp_json}: {result.detail}")
+    if result.status == "skipped":
+        if "already behind the gateway" in result.detail:
+            return "Gateway already installed (only the prismor entry remains)."
+        return f"{mcp_json} has no mcpServers — nothing to install."
+    return (f"Moved {result.moved} server(s) into {DEFAULT_GATEWAY_CONFIG}.\n"
             f"{mcp_json} now routes through the Prismor gateway "
             f"(backup: {mcp_json.with_suffix('.json.bak')}).")
 
@@ -884,10 +981,49 @@ def _shim_name(argv: List[str]) -> str:
     return "upstream"
 
 
+def _install_everywhere(workspace: Path) -> str:
+    """Migrate every MCP config ``discover`` can find on this machine.
+
+    Uses discovery's own enumeration rather than a second list, so the set of
+    files this rewrites is exactly the set the sweep reports as ungoverned —
+    two lists would drift, and the gap would be servers reported as shadow that
+    nothing can ever fix.
+    """
+    try:
+        from prismor.runtime.discover import discover_mcp
+    except Exception as exc:  # pragma: no cover - import guard
+        return f"Could not enumerate MCP configs: {exc}"
+    sources = []
+    for record in discover_mcp(workspace):
+        if record.is_gateway or record.managed or not record.source:
+            continue
+        sources.append(Path(record.source))
+    if not sources:
+        return "No ungoverned MCP servers found — nothing to install."
+
+    results = migrate_configs(sources)
+    lines = []
+    total = 0
+    for r in results:
+        if r.ok:
+            total += r.moved
+            lines.append(f"  migrated  {r.path}  ({r.moved} server(s))")
+        elif r.status == "failed":
+            lines.append(f"  FAILED    {r.path}  — {r.detail}")
+        else:
+            lines.append(f"  skipped   {r.path}  — {r.detail}")
+    head = (f"Moved {total} server(s) into {DEFAULT_GATEWAY_CONFIG} "
+            f"from {sum(1 for r in results if r.ok)} config file(s).")
+    return head + "\n" + "\n".join(lines)
+
+
 def run_gateway(args, workspace: Path) -> int:
     """Entry point for ``prismor mcp-gateway`` (called from cli.main)."""
     action = getattr(args, "action", None) or "serve"
     if action == "install":
+        if getattr(args, "all", False):
+            print(_install_everywhere(workspace))
+            return 0
         print(install_gateway(workspace))
         return 0
     if action == "uninstall":

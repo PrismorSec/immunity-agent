@@ -465,3 +465,134 @@ def test_meta_tags_classification_tier():
     # disabled -> falls through to inference (tool_result -> untrusted)
     tt2 = {"meta_tags_enabled": False, "defaults_enabled": False}
     assert classify_tool_tags(ev, "tool_result", set(), tt2) == {"untrusted_content"}
+
+
+# ── generalized migration (migrate_config / migrate_configs) ─────────────────
+
+@pytest.fixture()
+def gw_home(tmp_path, monkeypatch):
+    """Point DEFAULT_GATEWAY_CONFIG at a temp file.
+
+    It is a module-level constant resolved from Path.home() at import time, so
+    patching Path.home() alone would not move it and the tests would write to
+    the developer's real gateway config.
+    """
+    import prismor.runtime.mcp_gateway as gw_mod
+    target = tmp_path / "gwhome" / "mcp-gateway.json"
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", target)
+    return target
+
+
+def _cfg(tmp_path, name, payload):
+    p = tmp_path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return p
+
+
+class TestMigrateConfig:
+    """These rewrite files the developer owns, so the bar is: preserve
+    everything not being moved, never write without a backup, and refuse any
+    shape we do not understand."""
+
+    def test_moves_servers_and_leaves_the_gateway_entry(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config, DEFAULT_GATEWAY_CONFIG
+        p = _cfg(tmp_path, ".mcp.json", {"mcpServers": {"a": {"command": "x"},
+                                                        "b": {"url": "https://y/mcp"}}})
+        r = migrate_config(p)
+        assert r.status == "migrated" and r.moved == 2
+        assert list(json.loads(p.read_text())["mcpServers"]) == ["prismor"]
+        moved = json.loads(DEFAULT_GATEWAY_CONFIG.read_text())["mcpServers"]
+        assert sorted(moved) == ["a", "b"]
+
+    def test_preserves_every_unrelated_key(self, tmp_path, gw_home):
+        """A migration that dropped a setting would be a far worse bug than the
+        ungoverned server it set out to fix."""
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = _cfg(tmp_path, ".mcp.json", {
+            "mcpServers": {"a": {"command": "x"}},
+            "permissions": {"allow": ["Bash"]},
+            "theme": "dark",
+        })
+        migrate_config(p)
+        after = json.loads(p.read_text())
+        assert after["permissions"] == {"allow": ["Bash"]}
+        assert after["theme"] == "dark"
+
+    def test_writes_a_backup_before_rewriting(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = _cfg(tmp_path, ".cursor/mcp.json", {"mcpServers": {"a": {"command": "x"}}})
+        original = p.read_text()
+        migrate_config(p)
+        backup = Path(str(p) + ".bak")
+        assert backup.exists() and backup.read_text() == original
+
+    def test_vscode_servers_key(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = _cfg(tmp_path, ".vscode/mcp.json", {"servers": {"a": {"command": "x"}}})
+        assert migrate_config(p).status == "migrated"
+        # Rewritten under the key it was found under, not renamed.
+        after = json.loads(p.read_text())
+        assert list(after["servers"]) == ["prismor"] and "mcpServers" not in after
+
+    def test_is_idempotent(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = _cfg(tmp_path, ".mcp.json", {"mcpServers": {"a": {"command": "x"}}})
+        assert migrate_config(p).status == "migrated"
+        second = migrate_config(p)
+        assert second.status == "skipped" and "already" in second.detail
+
+    def test_merges_into_an_existing_gateway_config(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config, DEFAULT_GATEWAY_CONFIG
+        migrate_config(_cfg(tmp_path, ".mcp.json", {"mcpServers": {"a": {"command": "x"}}}))
+        migrate_config(_cfg(tmp_path, ".cursor/mcp.json",
+                            {"mcpServers": {"b": {"command": "y"}}}))
+        assert sorted(json.loads(DEFAULT_GATEWAY_CONFIG.read_text())["mcpServers"]) == ["a", "b"]
+
+    @pytest.mark.parametrize("payload,why", [
+        ({"context_servers": {"a": {}}}, "recognised"),
+        ({"mcpServers": {}}, "recognised"),
+        ({"other": 1}, "recognised"),
+    ])
+    def test_unrecognised_shapes_are_left_untouched(self, tmp_path, gw_home, payload, why):
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = _cfg(tmp_path, "settings.json", payload)
+        before = p.read_text()
+        r = migrate_config(p)
+        assert r.status == "skipped" and why in r.detail
+        assert p.read_text() == before
+        assert not Path(str(p) + ".bak").exists()
+
+    def test_malformed_json_is_reported_not_rewritten(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = tmp_path / "broken.json"
+        p.write_text("{oops", encoding="utf-8")
+        r = migrate_config(p)
+        assert r.status == "failed" and p.read_text() == "{oops"
+
+    def test_a_missing_file_is_skipped(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config
+        assert migrate_config(tmp_path / "gone.json").status == "skipped"
+
+    def test_a_json_array_is_not_a_config(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_config
+        p = tmp_path / "arr.json"
+        p.write_text("[1,2,3]", encoding="utf-8")
+        assert migrate_config(p).status == "skipped"
+
+
+class TestMigrateConfigs:
+    def test_migrates_several_and_dedupes(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_configs
+        a = _cfg(tmp_path, ".mcp.json", {"mcpServers": {"a": {"command": "x"}}})
+        b = _cfg(tmp_path, ".cursor/mcp.json", {"mcpServers": {"b": {"command": "y"}}})
+        results = migrate_configs([a, b, a])
+        assert len(results) == 2 and all(r.ok for r in results)
+
+    def test_one_bad_file_does_not_stop_the_rest(self, tmp_path, gw_home):
+        from prismor.runtime.mcp_gateway import migrate_configs
+        bad = tmp_path / "bad.json"
+        bad.write_text("{oops", encoding="utf-8")
+        good = _cfg(tmp_path, ".mcp.json", {"mcpServers": {"a": {"command": "x"}}})
+        statuses = {r.path.name: r.status for r in migrate_configs([bad, good])}
+        assert statuses == {"bad.json": "failed", ".mcp.json": "migrated"}

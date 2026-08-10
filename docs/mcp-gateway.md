@@ -50,9 +50,20 @@ install or SDK adapter.
 Or let Prismor do both steps for the current workspace:
 
 ```bash
-prismor mcp-gateway install     # moves .mcp.json servers behind the gateway (backup kept)
-prismor mcp-gateway uninstall   # restores the original .mcp.json
+prismor mcp-gateway install       # moves this workspace's .mcp.json servers (backup kept)
+prismor mcp-gateway install --all # every MCP config on this machine
+prismor mcp-gateway uninstall     # restores the original .mcp.json
 ```
+
+`--all` migrates every config `prismor discover` can find — Claude Desktop,
+Cursor, Windsurf, VS Code, Cline — not just the workspace's own `.mcp.json`.
+It handles any JSON config declaring servers under `mcpServers` or `servers`
+(VS Code's spelling), preserves everything outside that block verbatim, and
+writes a `.bak` alongside each file before changing it.
+
+A config whose shape it does not recognise is reported and **left untouched**
+rather than guessed at — Zed declares servers under `context_servers`, and
+Codex uses TOML. Move those two by hand.
 
 Your agent now sees the same tools, namespaced as `<server>__<tool>`
 (e.g. `github__create_issue`), and every call and response flows through

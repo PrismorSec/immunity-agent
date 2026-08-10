@@ -2856,6 +2856,10 @@ def build_parser() -> argparse.ArgumentParser:
                            default="serve",
                            help="serve (default) | install: move this workspace's .mcp.json servers "
                            "behind the gateway | uninstall: restore the .mcp.json backup")
+    gw_parser.add_argument("--all", action="store_true",
+                           help="With install: migrate every MCP config on this machine "
+                                "(Claude Desktop, Cursor, VS Code, …), not just this "
+                                "workspace's .mcp.json")
     gw_parser.add_argument("--config", help="Downstream servers config (.mcp.json-shaped; "
                            "default: ~/.prismor/mcp-gateway.json)")
     gw_parser.add_argument("--upstream", help="Single upstream shim mode: a URL, or a quoted command "

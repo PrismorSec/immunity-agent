@@ -13,6 +13,7 @@ Run: python3 -m pytest tests/test_remediate.py
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,21 @@ def agent(name="Cursor", agent_id="cursor", managed=False, coverable=True):
 
 def mcp(name="weather", source="/ws/.mcp.json", managed=False, is_gateway=False):
     return {"name": name, "source": source, "managed": managed, "is_gateway": is_gateway}
+
+
+def write_mcp_config(tmp_path, name=".mcp.json", key="mcpServers",
+                     servers=None, raw=None):
+    """A real config on disk. Planning reads the file to decide whether its
+    shape can be rewritten, so a fabricated path would always read as
+    unmigratable."""
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if raw is not None:
+        path.write_text(raw, encoding="utf-8")
+    else:
+        body = servers if servers is not None else {"weather": {"command": "npx"}}
+        path.write_text(json.dumps({key: body}), encoding="utf-8")
+    return str(path)
 
 
 def cred(provider="openai", location="/ws/.env", kind="file", managed=False):
@@ -74,27 +90,54 @@ class TestPlanAgents:
 # ── planning: MCP ────────────────────────────────────────────────────────────
 
 class TestPlanMcp:
-    def test_workspace_mcp_json_is_planned(self):
-        p = remediate.plan(report(servers=[mcp()]))
+    def test_workspace_mcp_json_is_planned(self, tmp_path):
+        src = write_mcp_config(tmp_path)
+        p = remediate.plan(report(servers=[mcp(source=src)]))
         assert len(p.fixable) == 1 and p.fixable[0].kind == "mcp"
+        assert p.fixable[0].subject == src
 
-    def test_server_in_another_config_is_refused(self):
-        # install_gateway only rewrites a workspace .mcp.json. Claiming to fix
-        # a Cursor or Claude Desktop server would be a lie.
-        p = remediate.plan(report(servers=[
-            mcp("context7", source="/home/u/.cursor/mcp.json")]))
-        assert p.fixable == []
-        assert ".cursor/mcp.json" in p.skipped[0].detail
+    def test_a_cursor_config_is_now_migratable(self, tmp_path):
+        """Regression: servers declared outside the workspace .mcp.json were
+        found by discovery and then refused, so most of what the sweep reported
+        could never be governed."""
+        src = write_mcp_config(tmp_path, name=".cursor/mcp.json")
+        p = remediate.plan(report(servers=[mcp("context7", source=src)]))
+        assert len(p.fixable) == 1
 
-    @pytest.mark.parametrize("source", [
-        "/home/u/Library/Application Support/Claude/claude_desktop_config.json",
-        "/ws/.vscode/mcp.json",
-        "/home/u/.config/zed/settings.json",
-        "/home/u/.codex/config.toml",
-    ])
-    def test_every_non_workspace_source_is_refused(self, source):
-        p = remediate.plan(report(servers=[mcp("s", source=source)]))
-        assert p.fixable == [] and len(p.skipped) == 1
+    def test_vscode_servers_key_is_recognised(self, tmp_path):
+        src = write_mcp_config(tmp_path, name=".vscode/mcp.json", key="servers")
+        assert len(remediate.plan(report(servers=[mcp(source=src)])).fixable) == 1
+
+    def test_a_toml_config_is_refused(self, tmp_path):
+        src = str(tmp_path / "config.toml")
+        Path(src).write_text('[mcp_servers.weather]\ncommand = "npx"\n', encoding="utf-8")
+        p = remediate.plan(report(servers=[mcp(source=src)]))
+        assert p.fixable == [] and "TOML" in p.skipped[0].detail
+
+    def test_an_unrecognised_block_is_refused(self, tmp_path):
+        """Zed declares servers under context_servers. Rewriting a shape we do
+        not understand risks destroying the developer's config."""
+        src = write_mcp_config(tmp_path, name="settings.json", key="context_servers")
+        p = remediate.plan(report(servers=[mcp(source=src)]))
+        assert p.fixable == [] and "recognised" in p.skipped[0].detail
+
+    def test_unparseable_json_is_refused(self, tmp_path):
+        src = write_mcp_config(tmp_path, name="broken.json", raw="{oops")
+        p = remediate.plan(report(servers=[mcp(source=src)]))
+        assert p.fixable == [] and "could not be parsed" in p.skipped[0].detail
+
+    def test_a_vanished_file_is_refused(self, tmp_path):
+        p = remediate.plan(report(servers=[mcp(source=str(tmp_path / "gone.json"))]))
+        assert p.fixable == [] and "no longer exists" in p.skipped[0].detail
+
+    def test_the_shape_is_checked_once_per_file(self, tmp_path, monkeypatch):
+        src = write_mcp_config(tmp_path, servers={"a": {}, "b": {}, "c": {}})
+        calls = []
+        real = remediate._why_not_migratable
+        monkeypatch.setattr(remediate, "_why_not_migratable",
+                            lambda p: calls.append(p) or real(p))
+        remediate.plan(report(servers=[mcp("a", src), mcp("b", src), mcp("c", src)]))
+        assert len(calls) == 1
 
     def test_gateway_entry_is_not_remediated(self):
         assert remediate.plan(report(servers=[mcp(is_gateway=True)])).actions == []
@@ -136,8 +179,9 @@ class TestPlanCredentials:
 
 # ── planning: scoping ────────────────────────────────────────────────────────
 
-def test_kinds_limits_what_is_planned():
-    full = report(agents=[agent()], servers=[mcp()], creds=[cred()])
+def test_kinds_limits_what_is_planned(tmp_path):
+    full = report(agents=[agent()], servers=[mcp(source=write_mcp_config(tmp_path))],
+                  creds=[cred()])
     assert {a.kind for a in remediate.plan(full).fixable} == {"agent", "mcp", "credential"}
     assert {a.kind for a in remediate.plan(full, kinds=("agent",)).fixable} == {"agent"}
 
@@ -167,8 +211,9 @@ def levers(monkeypatch):
 
     monkeypatch.setattr(hooks_mod, "install_hooks",
                         lambda **kw: calls["hooks"].append(kw) or [])
-    monkeypatch.setattr(gw_mod, "install_gateway",
-                        lambda ws: calls["gateway"].append(ws) or "moved 2 server(s)")
+    monkeypatch.setattr(gw_mod, "migrate_config",
+                        lambda p: calls["gateway"].append(p) or gw_mod.MigrationResult(
+                            p, "migrated", moved=2, detail="moved 2 server(s)"))
     monkeypatch.setattr(cloak_mod, "add_env_secrets",
                         lambda p: calls["cloak"].append(p) or [{"name": "OPENAI_API_KEY"}])
     return calls
@@ -219,22 +264,55 @@ class TestApplyAgents:
 
 
 class TestApplyMcp:
-    def test_migrates_once_for_many_servers_in_one_file(self, levers, tmp_path):
-        # install_gateway moves the whole mcpServers block, so calling it per
-        # server would migrate an already-migrated file N-1 more times.
-        rep = report(servers=[mcp("a"), mcp("b"), mcp("c")])
+    def test_migrates_once_per_file_not_once_per_server(self, levers, tmp_path):
+        # One migration moves the whole block, so migrating per server would
+        # re-run against an already-rewritten file.
+        src = write_mcp_config(tmp_path, servers={"a": {}, "b": {}, "c": {}})
+        rep = report(servers=[mcp("a", src), mcp("b", src), mcp("c", src)])
         results = _apply(rep, tmp_path)
         assert len(levers["gateway"]) == 1
         assert [r.status for r in results] == ["fixed", "fixed", "fixed"]
 
+    def test_each_distinct_config_is_migrated(self, levers, tmp_path):
+        """The point of the change: a Cursor config and a workspace .mcp.json
+        are two files and both must be governed."""
+        a = write_mcp_config(tmp_path, name=".mcp.json")
+        b = write_mcp_config(tmp_path, name=".cursor/mcp.json")
+        _apply(report(servers=[mcp("x", a), mcp("y", b)]), tmp_path)
+        assert {str(p) for p in levers["gateway"]} == {a, b}
+
     def test_a_failed_migration_is_not_reported_as_fixed_for_the_rest(
             self, levers, tmp_path, monkeypatch):
         import prismor.runtime.mcp_gateway as gw_mod
-        monkeypatch.setattr(gw_mod, "install_gateway",
-                            lambda ws: (_ for _ in ()).throw(ValueError("bad .mcp.json")))
-        results = _apply(report(servers=[mcp("a"), mcp("b")]), tmp_path)
+        src = write_mcp_config(tmp_path, servers={"a": {}, "b": {}})
+        monkeypatch.setattr(gw_mod, "migrate_config",
+                            lambda p: gw_mod.MigrationResult(p, "failed",
+                                                             detail="not valid JSON"))
+        results = _apply(report(servers=[mcp("a", src), mcp("b", src)]), tmp_path)
         # Neither may claim success — the file was never rewritten.
         assert all(r.status == "failed" for r in results)
+
+    def test_one_bad_config_does_not_stop_another(self, levers, tmp_path, monkeypatch):
+        import prismor.runtime.mcp_gateway as gw_mod
+        good = write_mcp_config(tmp_path, name=".mcp.json")
+        bad = write_mcp_config(tmp_path, name=".cursor/mcp.json")
+        monkeypatch.setattr(gw_mod, "migrate_config",
+                            lambda p: gw_mod.MigrationResult(p, "failed", detail="boom")
+                            if str(p) == bad
+                            else gw_mod.MigrationResult(p, "migrated", moved=1))
+        results = _apply(report(servers=[mcp("x", good), mcp("y", bad)]), tmp_path)
+        by = {r.target: r.status for r in results}
+        assert by == {"x": "fixed", "y": "failed"}
+
+    def test_a_migration_that_declines_is_reported_as_skipped(
+            self, levers, tmp_path, monkeypatch):
+        import prismor.runtime.mcp_gateway as gw_mod
+        src = write_mcp_config(tmp_path)
+        monkeypatch.setattr(gw_mod, "migrate_config",
+                            lambda p: gw_mod.MigrationResult(
+                                p, "skipped", detail="already behind the gateway"))
+        results = _apply(report(servers=[mcp("a", src)]), tmp_path)
+        assert results[0].status == "skipped"
 
 
 class TestApplyCredentials:

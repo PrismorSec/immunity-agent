@@ -23,6 +23,7 @@ believes.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -76,6 +77,34 @@ def _is_dotenv(path: str) -> bool:
     return name in _DOTENV_NAMES or name.startswith(".env")
 
 
+def _why_not_migratable(path: Path) -> Optional[str]:
+    """Reason this config cannot be moved behind the gateway, or None.
+
+    Read-only, so planning stays pure. The check is the file's *shape*: a
+    migration rewrites a file the developer owns, so an unrecognised layout
+    must mean "leave it alone", never "guess". Zed's ``context_servers`` and
+    Codex's TOML are the live examples.
+    """
+    if path.suffix.lower() == ".toml":
+        return "a TOML config the gateway migration cannot rewrite; move it by hand"
+    if not path.exists():
+        return "the file no longer exists"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return "the file could not be parsed as JSON; move it by hand"
+    if not isinstance(data, dict):
+        return "the file is not a JSON object"
+    try:
+        from prismor.runtime.mcp_gateway import _MCP_BLOCK_KEYS
+    except Exception:
+        _MCP_BLOCK_KEYS = ("mcpServers", "servers")
+    if not any(isinstance(data.get(k), dict) and data.get(k) for k in _MCP_BLOCK_KEYS):
+        return ("its servers are not under a recognised mcpServers/servers block; "
+                "move it by hand")
+    return None
+
+
 # ── planning ─────────────────────────────────────────────────────────────────
 
 
@@ -109,25 +138,28 @@ def plan(report: Dict[str, Any], *, kinds: Iterable[str] = FIXABLE_KINDS) -> Rem
             ))
 
     if "mcp" in wanted:
+        # Decided per source FILE, not per server: one migration moves every
+        # server in a file, and the answer to "can this be migrated" is a
+        # property of the file's shape.
+        verdicts: Dict[str, Optional[str]] = {}
         for server in report.get("mcp") or []:
             if server.get("managed") or server.get("is_gateway"):
                 continue
             name = str(server.get("name") or "")
             source = str(server.get("source") or "")
-            # install_gateway only rewrites the workspace's own .mcp.json.
-            # Servers declared by Claude Desktop, VS Code, Cursor, Zed and the
-            # rest are found by discovery but cannot be migrated by it.
-            if Path(source).name != ".mcp.json":
+            if source not in verdicts:
+                verdicts[source] = _why_not_migratable(Path(source))
+            reason = verdicts[source]
+            if reason:
                 out.actions.append(Remediation(
                     kind="mcp", target=name, status="skipped",
-                    detail=f"declared in {source} — the gateway migration only rewrites "
-                           f"a workspace .mcp.json; move this one by hand",
+                    detail=f"declared in {source} — {reason}",
                 ))
                 continue
             out.actions.append(Remediation(
                 kind="mcp", target=name, status="planned",
-                detail="move behind the Prismor MCP gateway",
-                command="prismor mcp-gateway install",
+                detail=f"move behind the Prismor MCP gateway ({Path(source).name})",
+                command="prismor mcp-gateway install --all",
                 subject=source,
             ))
 
@@ -189,7 +221,11 @@ def apply(
     todo = (plan_obj or plan(report, kinds=kinds))
     results: List[Remediation] = list(todo.skipped)
 
-    gateway_done = False
+    #: source file -> the Remediation produced by migrating it. One migration
+    #: moves every server in that file, so it must run once per FILE and the
+    #: outcome be attributed to each server it covered — migrating per server
+    #: would re-run against an already-rewritten file.
+    migrated: Dict[str, Remediation] = {}
     dotenv_done: set = set()
 
     for action in todo.fixable:
@@ -197,16 +233,15 @@ def apply(
             results.append(_fix_agent(report, action, repo_root=repo_root,
                                       workspace=workspace, mode=mode))
         elif action.kind == "mcp":
-            # One install_gateway call migrates every server in the file, so
-            # run it once and attribute the outcome to each server it covered.
-            if gateway_done:
+            prior = migrated.get(action.subject)
+            if prior is not None:
                 results.append(Remediation(
-                    kind="mcp", target=action.target, status="fixed",
-                    detail="moved behind the gateway", command=action.command,
+                    kind="mcp", target=action.target, status=prior.status,
+                    detail=prior.detail, command=action.command,
                     subject=action.subject))
                 continue
-            outcome = _fix_mcp(action, workspace=workspace)
-            gateway_done = outcome.ok
+            outcome = _fix_mcp(action)
+            migrated[action.subject] = outcome
             results.append(outcome)
         elif action.kind == "credential":
             path = action.subject
@@ -250,22 +285,29 @@ def _fix_agent(report: Dict[str, Any], action: Remediation, *,
                        command=action.command)
 
 
-def _fix_mcp(action: Remediation, *, workspace: Path) -> Remediation:
+def _fix_mcp(action: Remediation) -> Remediation:
+    """Migrate the config file this server was declared in.
+
+    Keyed on the file rather than the workspace, so a server declared in
+    Claude Desktop or Cursor is governed too — discovery reports those, and
+    before this they were found and then left in place.
+    """
     try:
-        from prismor.runtime.mcp_gateway import install_gateway
+        from prismor.runtime.mcp_gateway import migrate_config
     except Exception as exc:  # pragma: no cover - import guard
         return Remediation(kind="mcp", target=action.target, status="failed",
                            detail=f"could not load the gateway installer: {exc}",
-                           command=action.command)
+                           command=action.command, subject=action.subject)
     try:
-        summary = install_gateway(workspace)
+        result = migrate_config(Path(action.subject))
     except Exception as exc:
         return Remediation(kind="mcp", target=action.target, status="failed",
-                           detail=str(exc), command=action.command)
-    return Remediation(kind="mcp", target=action.target, status="fixed",
-                       detail=str(summary).strip().splitlines()[0] if summary
-                       else "moved behind the gateway",
-                       command=action.command)
+                           detail=str(exc), command=action.command,
+                           subject=action.subject)
+    status = {"migrated": "fixed", "skipped": "skipped"}.get(result.status, "failed")
+    return Remediation(kind="mcp", target=action.target, status=status,
+                       detail=result.detail, command=action.command,
+                       subject=action.subject)
 
 
 def _fix_credential(action: Remediation, *, path: str) -> Remediation:
