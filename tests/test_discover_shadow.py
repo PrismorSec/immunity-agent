@@ -225,7 +225,10 @@ def test_report_payload_flattens_all_three_surfaces(fake_host):
     kinds = {f["kind"] for f in payload["findings"]}
     assert "mcp" in kinds
     assert payload["cli_version"]
-    assert payload["summary"] is report["summary"]
+    # Carried through by content, not identity — report_payload copies the
+    # summary so it can add the fixable count without mutating the report.
+    for key, value in report["summary"].items():
+        assert payload["summary"][key] == value
     for finding in payload["findings"]:
         # The control plane requires these to store a row at all.
         assert finding["kind"] and finding["name"] is not None
@@ -476,3 +479,81 @@ def test_a_non_dotenv_config_is_never_counted_as_vaulted(fake_host, monkeypatch)
     creds = [c for c in discover.discover_credentials(ws)
              if c.location_kind == "file" and c.location.endswith("config.json")]
     assert not any(c.managed for c in creds)
+
+
+# ── fixability on the wire ───────────────────────────────────────────────────
+
+def test_every_finding_carries_a_fixability_verdict(fake_host):
+    """The console needs to distinguish "a developer can clear this in one
+    command" from "this needs a conversation". A list that does not say which
+    is a list nobody triages."""
+    discover, home, ws = fake_host
+    _write(ws / ".mcp.json",
+           {"mcpServers": {"weather": {"command": "npx", "args": ["weather-mcp"]}}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    assert payload["findings"], "expected at least one finding"
+    for f in payload["findings"]:
+        assert "fixable" in f and isinstance(f["fixable"], bool)
+        assert "fix_command" in f and "fix_blocked_reason" in f
+
+
+def test_a_fixable_finding_carries_the_command(fake_host):
+    discover, home, ws = fake_host
+    _write(ws / ".mcp.json", {"mcpServers": {"weather": {"command": "npx"}}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    weather = next(f for f in payload["findings"] if f["name"] == "weather")
+    assert weather["fixable"] and "mcp-gateway" in weather["fix_command"]
+    assert weather["fix_blocked_reason"] == ""
+
+
+def test_an_unfixable_finding_carries_the_reason_not_a_command(fake_host):
+    """A TOML config cannot be rewritten by the migration — the console must
+    say why rather than offer a command that would fail."""
+    discover, home, ws = fake_host
+    (home / ".codex").mkdir(parents=True, exist_ok=True)
+    (home / ".codex" / "config.toml").write_text(
+        'model = "gpt"\n[mcp_servers.codexsrv]\ncommand = "npx"\n', encoding="utf-8")
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    entry = next((f for f in payload["findings"] if f["name"] == "codexsrv"), None)
+    assert entry is not None
+    assert not entry["fixable"] and entry["fix_command"] == ""
+    assert "TOML" in entry["fix_blocked_reason"]
+
+
+def test_summary_counts_only_fixable_shadow(fake_host):
+    discover, home, ws = fake_host
+    _write(ws / ".mcp.json", {"mcpServers": {"weather": {"command": "npx"}}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    expected = sum(1 for f in payload["findings"]
+                   if not f["managed"] and f["fixable"])
+    assert payload["summary"]["fixable"] == expected
+    # Never counts a governed finding as something still to fix.
+    assert payload["summary"]["fixable"] <= len(
+        [f for f in payload["findings"] if not f["managed"]])
+
+
+def test_a_governed_finding_is_not_counted_as_fixable(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    monkeypatch.setattr(discover, "_gateway_servers",
+                        lambda: {"weather": {"name": "weather", "command": ["npx"],
+                                             "url": "", "transport": "stdio",
+                                             "source": "/fake/gw.json"}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    weather = next(f for f in payload["findings"] if f["name"] == "weather")
+    assert weather["managed"]
+    assert payload["summary"]["fixable"] == sum(
+        1 for f in payload["findings"] if not f["managed"] and f["fixable"])
+
+
+def test_planning_failure_does_not_break_the_upload(fake_host, monkeypatch):
+    """Reporting must never depend on the planner succeeding — a device that
+    could not plan should still report what it found."""
+    discover, home, ws = fake_host
+    import prismor.runtime.remediate as rem
+    monkeypatch.setattr(rem, "plan",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    _write(ws / ".mcp.json", {"mcpServers": {"weather": {"command": "npx"}}})
+    payload = discover.report_payload(discover.build_report(ws, scan_files=False))
+    assert payload["findings"]
+    assert all(f["fixable"] is False for f in payload["findings"])
+    assert payload["summary"]["fixable"] == 0

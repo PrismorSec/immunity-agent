@@ -946,52 +946,98 @@ def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
     }
 
 
+def _fix_index(report: Dict[str, Any]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Map (kind, name) -> how this finding could be remediated.
+
+    Computed with the same planner ``--fix`` runs, so the console can never
+    offer a remediation the CLI would refuse. Best-effort: if planning fails,
+    findings simply report no fix rather than the whole upload failing.
+    """
+    out: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    try:
+        from prismor.runtime import remediate as _remediate
+        planned = _remediate.plan(report)
+    except Exception:
+        return out
+    for action in planned.actions:
+        out[(action.kind, action.target)] = {
+            "fixable": action.status == "planned",
+            "fix_command": action.command,
+            "fix_blocked_reason": "" if action.status == "planned" else action.detail,
+        }
+    return out
+
+
 def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a report into the wire shape the control plane accepts.
 
     One flat ``findings`` list rather than three keyed sections: the console
     renders them in one table, and a shape change on either side of a version
     skew should cost a missing column, not a rejected report.
+
+    Each finding also carries whether it is *fixable* and the command that
+    fixes it. An admin looking at the fleet view needs to know which of a
+    hundred findings a developer can clear in one command and which need a
+    conversation — a list that does not distinguish them is a list nobody
+    triages.
     """
+    fixes = _fix_index(report)
+
+    def _fix_for(kind: str, name: str) -> Dict[str, Any]:
+        return fixes.get((kind, name),
+                         {"fixable": False, "fix_command": "", "fix_blocked_reason": ""})
+
     findings: List[Dict[str, Any]] = []
     for agent in report.get("agents") or []:
+        name = agent.get("name") or agent.get("id") or ""
         findings.append({
             "kind": "agent",
-            "name": agent.get("name") or agent.get("id") or "",
+            "name": name,
             "detail": (agent.get("config_paths") or [""])[0],
             "managed": bool(agent.get("managed")),
             "coverable": bool(agent.get("coverable", True)),
             "risk": "none",
             "reasons": [],
+            **_fix_for("agent", name),
         })
     for server in report.get("mcp") or []:
         if server.get("is_gateway"):
             continue  # the gateway is not an inventory item
+        name = server.get("name") or ""
         findings.append({
             "kind": "mcp",
-            "name": server.get("name") or "",
+            "name": name,
             # Already redacted at record construction; see redact_url.
             "detail": server.get("url") or " ".join(server.get("command") or []),
             "managed": bool(server.get("managed")),
             "coverable": True,
             "risk": server.get("risk") or "none",
             "reasons": server.get("findings") or [],
+            **_fix_for("mcp", name),
         })
     for cred in report.get("credentials") or []:
+        provider = cred.get("provider") or ""
         findings.append({
             "kind": "credential",
-            "name": cred.get("provider") or "",
+            "name": provider,
             "detail": cred.get("location") or "",
             "managed": bool(cred.get("managed")),
             "coverable": True,
             "risk": "none",
             "reasons": [],
+            **_fix_for("credential", provider),
         })
 
     from prismor.runtime import __version__ as _version
+    summary = dict(report.get("summary") or {})
+    # How much of the shadow could be cleared by one `prismor discover --fix`.
+    # The console leads with this: "31 ungoverned" is a number to despair at,
+    # "31 ungoverned, 24 fixable in one command" is a number to act on.
+    summary["fixable"] = sum(
+        1 for f in findings if not f.get("managed") and f.get("fixable"))
     return {
         "findings": findings,
-        "summary": report.get("summary") or {},
+        "summary": summary,
         "cli_version": _version,
     }
 
