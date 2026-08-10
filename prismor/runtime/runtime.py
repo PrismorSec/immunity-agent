@@ -42,6 +42,13 @@ class Decision:
     blocking: Optional[Dict[str, Any]] = None
     reason: Optional[str] = None
     subject: Optional[Subject] = None
+    # Set when a finding WOULD have blocked but an observe downgrade dropped it.
+    # Carries the finding and the source that suppressed it ("org-agent-control"
+    # / "local-dry-run"), so callers and the audit trail can tell a suppressed
+    # block apart from an ordinary warn-level detection — they are otherwise
+    # byte-identical at every surface. See issue #256.
+    suppressed: Optional[Dict[str, Any]] = None
+    suppressed_by: Optional[str] = None
     # Engine kept so callers that need post-decision config (e.g. the Claude
     # sandbox rewrite path) don't have to re-instantiate it.
     engine: Optional[PolicyEngine] = None
@@ -523,6 +530,8 @@ def evaluate_tool_call(
         except Exception:
             pass
 
+    _suppressed = None
+    _suppressed_by = None
     blocking = should_block(findings, event)
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
@@ -554,11 +563,26 @@ def evaluate_tool_call(
             # Re-scan rather than just dropping: should_block() returns the FIRST
             # enforce-rated finding, which may be an ordinary detection sitting
             # ahead of an authoritative one that observe mode must not suppress.
+            _would_have_blocked = blocking
             blocking = should_block(
                 [f for f in findings
                  if f.get("category") == "agent-control" or f.get("authoritative")],
                 event,
             )
+            if blocking is None and _would_have_blocked is not None:
+                # Enforcement was dropped. Remember what and why: an operator
+                # reading `verdict: warned` cannot otherwise tell that a block
+                # was suppressed rather than that the rule is warn-level.
+                _suppressed = _would_have_blocked
+                _suppressed_by = (
+                    "org-agent-control" if _org_chose_observe else "local-dry-run"
+                )
+                sys.stderr.write(
+                    f"[prismor] would block: [{_suppressed.get('severity', 'high')}] "
+                    f"{_suppressed.get('title', 'finding')} "
+                    f"(rule: {_suppressed.get('ruleId', 'unknown')}) — SUPPRESSED by "
+                    f"{_suppressed_by} observe mode; the action was allowed to proceed.\n"
+                )
 
     # Tamper-evident signed audit trail: one chained + signed record per
     # evaluated call — every verdict, not just findings — so the local trail
@@ -579,6 +603,8 @@ def evaluate_tool_call(
                 subject=subject.as_dict(),
                 mode=mode,
                 eval_ms=_eval_ms,
+                suppressed=_suppressed,
+                suppressed_by=_suppressed_by,
             )
     except Exception as exc:
         sys.stderr.write(f"[prismor] audit trail error: {exc}\n")
@@ -604,6 +630,8 @@ def evaluate_tool_call(
         findings=findings,
         blocking=blocking,
         reason=_block_reason(blocking) if blocking else None,
+        suppressed=_suppressed,
+        suppressed_by=_suppressed_by,
         subject=subject,
         engine=engine,
     )
