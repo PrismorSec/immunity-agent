@@ -105,6 +105,13 @@ and imports dotenv provider keys into Cloak. It shows the plan, states what it
 cannot fix and why, and asks before writing to your config files — `--yes`
 skips the prompt, `--fix-mode enforce` installs in enforce rather than observe.
 
+Every finding an enrolled device reports also carries whether it is fixable,
+the command that fixes it, and — when it is not — the reason. The console uses
+that to separate *"a developer clears this in one command"* from *"this needs a
+decision"*, which is the difference between a list that gets triaged and one
+that gets ignored. The verdicts come from the same planner `--fix` runs, so the
+console can never offer a remediation the CLI would refuse.
+
 There is a hard limit worth understanding. Prismor cannot constrain an agent it
 has not hooked: egress screening, the sandbox, tool denies and kill switches all
 act on a hook payload, and an unhooked agent never produces one. So `--fix`

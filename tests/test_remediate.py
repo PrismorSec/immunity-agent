@@ -453,3 +453,21 @@ class TestConsentGate:
         assert applied == []
         out = capsys.readouterr().out
         assert "CANNOT FIX AUTOMATICALLY" in out
+
+    def test_a_section_only_remediates_its_own_kind(self, cli, tmp_path):
+        """`discover keys --fix` must not quietly hook agents too. Verified
+        live as a subprocess as well, but pinned here so a refactor of the
+        CLI's kwargs cannot silently widen the blast radius."""
+        discover_cli, applied = cli
+        discover_cli.run_fix(
+            report(agents=[agent()], creds=[cred()]),
+            workspace=tmp_path, repo_root=tmp_path,
+            kinds=("credential",), assume_yes=True)
+        assert applied[0]["kinds"] == ("credential",)
+
+    def test_the_default_covers_every_kind(self, cli, tmp_path):
+        discover_cli, applied = cli
+        discover_cli.run_fix(report(agents=[agent()]), workspace=tmp_path,
+                             repo_root=tmp_path, assume_yes=True)
+        assert set(applied[0]["kinds"]) == set(remediate.FIXABLE_KINDS)
+
