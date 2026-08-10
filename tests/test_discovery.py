@@ -160,3 +160,38 @@ def test_project_scope_hook_also_counts(fake_host):
            '{"hooks": [{"command": "prismor hook-dispatch"}]}')
     report = discovery.discover(ws)
     assert next(a for a in report["agents"] if a["agent"] == "cursor")["governed"]
+
+
+def test_an_unhookable_agent_never_reads_as_governed(fake_host):
+    """Regression: hooks._config_path falls through to the Windsurf path for
+    any agent it does not recognise, so asking about warp/trae/antigravity
+    returned Windsurf's answer. Every unhookable agent inherited Windsurf's
+    hook status and reported as GOVERNED, inflating fleet coverage with
+    agents Prismor cannot govern at all."""
+    discovery, home, ws = fake_host
+    # Windsurf present AND hooked.
+    _write(home / ".codeium" / "windsurf" / "mcp_config.json", '{"mcpServers": {}}')
+    _write(ws / ".windsurf" / "hooks.json",
+           '{"hooks": [{"command": "prismor hook-dispatch"}]}')
+    # An agent with no hook surface, merely present.
+    (home / ".warp").mkdir(parents=True, exist_ok=True)
+    (home / ".trae").mkdir(parents=True, exist_ok=True)
+
+    report = discovery.discover(ws)
+    by = {a["agent"]: a for a in report["agents"]}
+    assert by["windsurf"]["governed"], "windsurf really is hooked"
+    for unhookable in ("warp", "trae"):
+        if unhookable in by and by[unhookable]["present"]:
+            assert not by[unhookable]["governed"], (
+                f"{unhookable} has no hook surface and must never read as governed")
+
+
+def test_hook_installed_refuses_an_unknown_agent(fake_host):
+    from prismor.runtime import hooks
+    discovery, home, ws = fake_host
+    _write(ws / ".windsurf" / "hooks.json",
+           '{"hooks": [{"command": "prismor hook-dispatch"}]}')
+    assert hooks.hook_installed("windsurf", "project", ws) is True
+    # Same path, different agent name — must not borrow the answer.
+    assert hooks.hook_installed("warp", "project", ws) is False
+    assert hooks.hook_installed("not-a-real-agent", "project", ws) is False

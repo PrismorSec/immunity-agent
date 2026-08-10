@@ -1065,6 +1065,13 @@ def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
             },
             method="POST",
         )
+        # Every other control-plane call sets this. Without it the request goes
+        # out as bare `Python-urllib/3.x`, which the WAF in front of the
+        # production console rejects with a 403 (Cloudflare 1010) — so
+        # automatic reporting silently never worked against prod, while
+        # working perfectly against a local server. See prismor/runtime/http_ua.
+        from prismor.runtime.http_ua import user_agent as _ua
+        request.add_header("User-Agent", _ua())
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return 200 <= resp.status < 300
     except Exception:

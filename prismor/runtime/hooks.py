@@ -129,6 +129,13 @@ def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
     ``scope`` ("project" | "global"). Text-based — the dispatcher command embeds
     the stable ``hook-dispatch`` marker in every agent's config format — so it
     works regardless of the JSON/TOML shape."""
+    # _config_path falls through to the Windsurf path for any agent it does
+    # not recognise, so asking it about an unhookable agent (warp, trae,
+    # antigravity) returns Windsurf's answer. That made every such agent
+    # inherit Windsurf's hook status and report as governed, inflating the
+    # coverage number with agents Prismor cannot govern at all.
+    if agent not in _SUPPORTED_AGENTS:
+        return False
     try:
         path = _config_path(agent, scope, workspace)
         return path.exists() and "hook-dispatch" in path.read_text(encoding="utf-8")

@@ -1,3 +1,10 @@
+## [Unreleased]
+
+### Fixed
+
+- **Automatic reporting never worked against the production console.** `send_report` was the only control-plane call in the runtime that did not set a `User-Agent`, so its request went out as bare `Python-urllib/3.x` and the WAF in front of prod rejected it with a 403 (Cloudflare error 1010). It worked perfectly against a local server, which is exactly why nothing caught it until a real enrolled device reported to the real console. Now uses the shared `http_ua.user_agent()` like `identity`, `remote_policy`, `sinks` and `approvals` already did.
+- **Agents Prismor cannot hook were reported as governed, inflating fleet coverage.** `hooks._config_path` falls through to the Windsurf path for any agent it does not recognise, so asking `hook_installed` about Warp, Trae or Antigravity returned *Windsurf's* answer — every unhookable agent inherited Windsurf's hook status. On a machine with Windsurf hooked, coverage read 91% while counting four agents Prismor cannot govern at all. `hook_installed` now refuses an agent outside `_SUPPORTED_AGENTS` instead of borrowing another agent's config path.
+
 ## [1.40.0] — 2026-08-10
 
 ### Added

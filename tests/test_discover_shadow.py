@@ -557,3 +557,34 @@ def test_planning_failure_does_not_break_the_upload(fake_host, monkeypatch):
     assert payload["findings"]
     assert all(f["fixable"] is False for f in payload["findings"])
     assert payload["summary"]["fixable"] == 0
+
+
+def test_send_report_identifies_itself(fake_host, monkeypatch):
+    """Regression: send_report was the only control-plane call that did not
+    set a User-Agent, so it went out as bare `Python-urllib/3.x` and the WAF
+    in front of the production console rejected it with 403 (Cloudflare 1010).
+    Automatic reporting worked against a local server and silently never
+    worked against prod — the exact failure a local-only test cannot see."""
+    discover, home, ws = fake_host
+    from prismor.runtime.enterprise import identity as _identity
+    monkeypatch.setattr(_identity, "load_identity",
+                        lambda: {"device_key": "k", "api_base": "https://x.invalid"})
+    monkeypatch.setattr(_identity, "revoked_info", lambda: None)
+
+    seen = {}
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=5):
+        seen["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert discover.send_report({"summary": {}}) is True
+    assert seen["ua"], "no User-Agent set"
+    assert "urllib" not in seen["ua"].lower()
+    from prismor.runtime.http_ua import user_agent
+    assert seen["ua"] == user_agent()
