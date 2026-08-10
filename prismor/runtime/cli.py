@@ -1195,9 +1195,25 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"No Prismor hooks found for {item['agent']} at {item['configPath']}")
         return
 
-    # ── mcp-gateway (single MCP connector for all downstream servers) ──
-    if args.command == "mcp-gateway":
+    # ── gateway (two data-plane lanes: tools via MCP, models via HTTP) ──
+    # `mcp-gateway` predates the split and stays as an alias for the tool lane.
+    if args.command in ("gateway", "mcp-gateway"):
+        lane = getattr(args, "lane", None)
+        if args.command == "mcp-gateway":
+            lane = "mcp"
+        if not lane:
+            sys.stderr.write(
+                "[prismor] pick a lane: `prismor gateway mcp` (tools) or "
+                "`prismor gateway llm` (models)\n")
+            sys.exit(2)
         register_workspace(workspace)
+        if lane == "llm":
+            from prismor.runtime.llm_gateway import run_llm_gateway, LlmGatewayError
+            try:
+                sys.exit(run_llm_gateway(args, workspace))
+            except LlmGatewayError as exc:
+                sys.stderr.write(f"[prismor] {exc}\n")
+                sys.exit(2)
         from prismor.runtime.mcp_gateway import run_gateway, GatewayConfigError
         try:
             sys.exit(run_gateway(args, workspace))
@@ -2832,36 +2848,86 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user"], default="project", help="Hook scope")
 
-    # ── mcp-gateway ────────────────────────────────────────────────────
+    # ── gateway ────────────────────────────────────────────────────────
+    def _add_mcp_lane_args(parser):
+        parser.add_argument("action", nargs="?", choices=["serve", "install", "uninstall"],
+                            default="serve",
+                            help="serve (default) | install: move this workspace's .mcp.json servers "
+                            "behind the gateway | uninstall: restore the .mcp.json backup")
+        parser.add_argument("--config", help="Downstream servers config (.mcp.json-shaped; "
+                            "default: ~/.prismor/mcp-gateway.json)")
+        parser.add_argument("--upstream", help="Single upstream shim mode: a URL, or a quoted command "
+                            "(e.g. --upstream 'npx -y @modelcontextprotocol/server-github')")
+        parser.add_argument("--server", action="append",
+                            help="Inline upstream as name=<url|command> (repeatable)")
+        parser.add_argument("--mode", choices=["observe", "enforce"], default="observe",
+                            help="observe=log only (default), enforce=block policy violations")
+        parser.add_argument("--workspace", help="Workspace path for policy + session store")
+        parser.add_argument("--session-id", dest="session_id", default="",
+                            help="Stable session id (default: fresh per process). Hosted deployments "
+                            "set this so restored session state survives gateway restarts. "
+                            "Env fallback: PRISMOR_SESSION_ID")
+        parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
+                            help="plain=<server>__<tool> (default); none=raw tool names "
+                            "(single-upstream shim only)")
+
+    def _add_llm_lane_args(parser):
+        parser.add_argument("--port", type=int, default=8787,
+                            help="Listen port (default: 8787)")
+        parser.add_argument("--host", default="127.0.0.1",
+                            help="Bind address (default: 127.0.0.1 — loopback only)")
+        parser.add_argument("--provider", choices=["anthropic", "openai"],
+                            help="Pin one provider. Omit to pick per request from the "
+                            "path (/anthropic/..., /openai/..., or the native API path)")
+        parser.add_argument("--base-url", dest="base_url", default="",
+                            help="Override the upstream base URL (self-hosted or proxied providers)")
+        parser.add_argument("--mode", choices=["observe", "enforce"], default="observe",
+                            help="observe=log only (default), enforce=block policy violations")
+        parser.add_argument("--workspace", help="Workspace path for policy + session store")
+        parser.add_argument("--session-id", dest="session_id", default="",
+                            help="Stable session id (default: fresh per process). "
+                            "Env fallback: PRISMOR_SESSION_ID")
+        parser.add_argument("--agent-name", dest="agent_name", default="llm-gateway",
+                            help="Instance label reported in telemetry (default: llm-gateway)")
+        parser.add_argument("--pricing", help="JSON file of {\"model-prefix\": [usd_per_mtok_in, "
+                            "usd_per_mtok_out]} overriding the built-in cost table")
+        parser.add_argument("--flush-interval", dest="flush_interval", type=float, default=30.0,
+                            help="Seconds between usage telemetry flushes (default: 30)")
+
+    gateway_parser = subparsers.add_parser(
+        "gateway",
+        help="Run a Prismor gateway lane — tools (MCP) or models (LLM)",
+        description="The data plane. Two lanes share one policy engine: `gateway mcp` "
+        "aggregates and guards your MCP servers; `gateway llm` proxies model API "
+        "traffic, brokering credentials and metering tokens. Both emit to the same "
+        "control plane, so a session's tool calls and model calls land on one trace.",
+    )
+    gateway_lanes = gateway_parser.add_subparsers(dest="lane")
+    _add_mcp_lane_args(gateway_lanes.add_parser(
+        "mcp",
+        help="Tool lane: one MCP connector fronting and guarding all your MCP servers",
+        description="Aggregates the MCP servers in --config behind a single stdio MCP server. "
+        "Every tools/call is policy-evaluated before forwarding and every response is "
+        "injection-scanned before the model sees it."))
+    _add_llm_lane_args(gateway_lanes.add_parser(
+        "llm",
+        help="Model lane: a local HTTP proxy that governs, brokers, and meters model API calls",
+        description="Point an SDK's base URL at this proxy. Each request is policy-evaluated "
+        "as a network event (egress allowlist, secret-in-payload), the real provider key "
+        "is resolved server-side so it never has to live on the client, tokens and cost are "
+        "metered per session, and the completion is scanned before it is returned."))
+
+    # ── mcp-gateway (alias for `gateway mcp`, kept for compatibility) ───
     gw_parser = subparsers.add_parser(
         "mcp-gateway",
-        help="Run the Prismor MCP gateway — one MCP connector that fronts and guards all your MCP servers",
+        help="Alias for `prismor gateway mcp`",
         description="Aggregates the MCP servers in --config behind a single stdio MCP server. "
         "Every tools/call is policy-evaluated before forwarding and every response is "
         "injection-scanned before the model sees it. Point your agent's .mcp.json at "
         "`prismor mcp-gateway` and move your existing mcpServers block into the gateway config "
         "(or run `prismor mcp-gateway install` to do that automatically).",
     )
-    gw_parser.add_argument("action", nargs="?", choices=["serve", "install", "uninstall"],
-                           default="serve",
-                           help="serve (default) | install: move this workspace's .mcp.json servers "
-                           "behind the gateway | uninstall: restore the .mcp.json backup")
-    gw_parser.add_argument("--config", help="Downstream servers config (.mcp.json-shaped; "
-                           "default: ~/.prismor/mcp-gateway.json)")
-    gw_parser.add_argument("--upstream", help="Single upstream shim mode: a URL, or a quoted command "
-                           "(e.g. --upstream 'npx -y @modelcontextprotocol/server-github')")
-    gw_parser.add_argument("--server", action="append",
-                           help="Inline upstream as name=<url|command> (repeatable)")
-    gw_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe",
-                           help="observe=log only (default), enforce=block policy violations")
-    gw_parser.add_argument("--workspace", help="Workspace path for policy + session store")
-    gw_parser.add_argument("--session-id", dest="session_id", default="",
-                           help="Stable session id (default: fresh per process). Hosted deployments "
-                           "set this so restored session state survives gateway restarts. "
-                           "Env fallback: PRISMOR_SESSION_ID")
-    gw_parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
-                           help="plain=<server>__<tool> (default); none=raw tool names "
-                           "(single-upstream shim only)")
+    _add_mcp_lane_args(gw_parser)
 
     # ── hook-dispatch (internal) ───────────────────────────────────────
     hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
