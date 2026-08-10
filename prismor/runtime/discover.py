@@ -776,7 +776,7 @@ def discover_credentials(workspace: Path, *, scan_files: bool = True) -> List[Cr
             break
 
     if scan_files:
-        records.extend(_scan_config_credentials(workspace))
+        records.extend(_scan_config_credentials(workspace, cloak))
 
     records.sort(key=lambda r: (r.managed, r.provider, r.location))
     return records
@@ -797,12 +797,13 @@ _CRED_FILES = (
 )
 
 
-def _scan_config_credentials(workspace: Path) -> List[CredentialRecord]:
+def _scan_config_credentials(workspace: Path, cloak: Set[str]) -> List[CredentialRecord]:
     """Look for provider keys embedded in agent config files.
 
     Reuses ``sweep``'s provider patterns. Matched values are discarded
     immediately — only the provider label and the path survive into the record.
-    Everything found here is shadow by construction; see the record site.
+    A dotenv whose every key Cloak already holds counts as governed; see
+    ``_dotenv_is_vaulted``.
     """
     try:
         from prismor.runtime.sweep import _FALLBACK_PATTERNS, TOOL_DIRS
@@ -838,19 +839,40 @@ def _scan_config_credentials(workspace: Path) -> List[CredentialRecord]:
             if key in seen:
                 continue
             seen.add(key)
-            # Always shadow. Reaching here means a provider pattern matched a
-            # literal value in the file; a Cloak-managed key is an inert
-            # @@SECRET:<name>@@ reference, which matches no provider pattern
-            # and so never gets this far.
             records.append(
                 CredentialRecord(
                     provider=provider,
                     location_kind="file",
                     location=str(path),
-                    managed=False,
+                    managed=_dotenv_is_vaulted(path, cloak),
                 )
             )
     return records
+
+
+def _dotenv_is_vaulted(path: Path, cloak: Set[str]) -> bool:
+    """Has Cloak taken custody of every key in this dotenv file?
+
+    The raw value stays on disk after ``cloak add --env-file`` — importing
+    vaults it and stands the env-guard down, it does not rewrite the file. So
+    "a provider pattern still matches here" is not evidence of exposure once
+    Cloak knows the keys, and treating it as such left credentials reading as
+    shadow forever: importing them could never improve coverage, which made
+    the remediation loop impossible to close.
+
+    Every name must be registered, not merely one. A file where three keys are
+    vaulted and a fourth is not is still an exposed key.
+    """
+    try:
+        from prismor.runtime.cloaking import parse_env_file
+        names = list(parse_env_file(path).keys())
+    except Exception:
+        # Not dotenv-shaped (a JSON/TOML agent config), or unreadable: Cloak
+        # has no way to have taken custody, so this is exposure.
+        return False
+    if not names:
+        return False
+    return all(n.lower() in cloak for n in names)
 
 
 # ── report ───────────────────────────────────────────────────────────────────

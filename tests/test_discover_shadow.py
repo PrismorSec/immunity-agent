@@ -429,3 +429,50 @@ def test_agents_delegate_to_the_attested_sweep(fake_host, monkeypatch):
     assert called.get("hit")
     assert [r.id for r in records] == ["claude"]
     assert records[0].shadow
+
+
+# ── credentials: closing the remediation loop ────────────────────────────────
+
+# Assembled from parts so no credential-shaped literal ships in the repo.
+_FAKE_OPENAI = "sk-" + "0123456789abcdef0123"
+_FAKE_STRIPE = "sk_" + "live_" + "notvaulted0123456789"
+
+
+def test_a_fully_vaulted_dotenv_reads_as_governed(fake_host, monkeypatch):
+    """Regression: file credentials were hard-coded managed=False, so importing
+    them into Cloak could never improve coverage — the remediation loop was
+    impossible to close. `cloak add --env-file` vaults the keys and stands the
+    env-guard down; it does not rewrite the file, so a still-matching pattern
+    is not evidence of exposure once Cloak holds every name."""
+    discover, home, ws = fake_host
+    _write(ws / ".env", f"OPENAI_API_KEY={_FAKE_OPENAI}\n")
+    monkeypatch.setattr(discover, "_cloak_names", lambda: {"openai_api_key"})
+    creds = [c for c in discover.discover_credentials(ws) if c.location_kind == "file"]
+    assert creds and all(c.managed for c in creds)
+
+
+def test_a_partially_vaulted_dotenv_is_still_shadow(fake_host, monkeypatch):
+    """One key vaulted and another not is still an exposed key."""
+    discover, home, ws = fake_host
+    _write(ws / ".env", f"OPENAI_API_KEY={_FAKE_OPENAI}\nSTRIPE_KEY={_FAKE_STRIPE}\n")
+    monkeypatch.setattr(discover, "_cloak_names", lambda: {"openai_api_key"})
+    creds = [c for c in discover.discover_credentials(ws) if c.location_kind == "file"]
+    assert creds and not any(c.managed for c in creds)
+
+
+def test_an_unvaulted_dotenv_is_shadow(fake_host, monkeypatch):
+    discover, home, ws = fake_host
+    _write(ws / ".env", f"OPENAI_API_KEY={_FAKE_OPENAI}\n")
+    monkeypatch.setattr(discover, "_cloak_names", lambda: set())
+    creds = [c for c in discover.discover_credentials(ws) if c.location_kind == "file"]
+    assert creds and not any(c.managed for c in creds)
+
+
+def test_a_non_dotenv_config_is_never_counted_as_vaulted(fake_host, monkeypatch):
+    """Cloak cannot take custody of a key embedded in a JSON agent config."""
+    discover, home, ws = fake_host
+    _write(ws / "config.json", '{"apiKey": "' + _FAKE_OPENAI + '"}')
+    monkeypatch.setattr(discover, "_cloak_names", lambda: {"apikey", "openai_api_key"})
+    creds = [c for c in discover.discover_credentials(ws)
+             if c.location_kind == "file" and c.location.endswith("config.json")]
+    assert not any(c.managed for c in creds)

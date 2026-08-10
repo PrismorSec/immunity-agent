@@ -180,6 +180,34 @@ def _registry_config_paths(workspace: Path) -> Dict[str, List[Path]]:
     return out
 
 
+def _hooked(agent: str, workspace: Path) -> bool:
+    """Is a Prismor hook installed where the *installer* would have put it?
+
+    The config paths this module discovers and the paths ``install_hooks``
+    writes to are not the same set. Cursor is the clearest case: discovery
+    finds ``~/.cursor/mcp.json`` (the registry lists no user-scope hook path
+    for it) while the global installer writes ``~/.cursor/hooks.json``. Judging
+    solely on discovered files therefore reported a freshly hooked Cursor as
+    ungoverned forever — and made ``discover --fix`` claim a fix that the very
+    next ``discover`` contradicted.
+
+    Asking ``hooks.hook_installed`` settles it against the installer's own
+    path table, so "governed" means the same thing on both sides. Still a pure
+    filesystem read, so the attested sweep stays deterministic.
+    """
+    try:
+        from prismor.runtime.hooks import hook_installed
+    except Exception:
+        return False
+    for scope in ("project", "global"):
+        try:
+            if hook_installed(agent, scope, workspace):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _known_agent_ids() -> List[str]:
     """Every agent id worth sweeping — registry ∪ scanner ∪ CLI markers."""
     ids = set(_AGENT_CLI_MARKERS)
@@ -236,7 +264,7 @@ def discover(workspace: Optional[Path] = None) -> Dict[str, Any]:
         cfgs = configs_by_agent.get(agent, [])
         cli_present = any((home / m).exists() for m in _AGENT_CLI_MARKERS.get(agent, []))
         present = bool(cfgs) or cli_present
-        governed = any(_config_has_marker(p) for p in cfgs)
+        governed = any(_config_has_marker(p) for p in cfgs) or _hooked(agent, ws)
         reg = registry.get(agent, {})
         agents_out.append({
             "agent": agent,

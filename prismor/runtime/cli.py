@@ -528,7 +528,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     if args.command == "discover":
-        _run_discover(args, workspace)
+        _run_discover(args, workspace, repo_root)
         return
 
     if args.command == "logout":
@@ -2680,6 +2680,16 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument(
         "--quiet", action="store_true",
         help="Print nothing (used by the scheduled background refresh)")
+    discover_parser.add_argument(
+        "--fix", action="store_true",
+        help="Govern what was found: hook unmanaged agents, move MCP servers behind "
+             "the gateway, import exposed keys into Cloak")
+    discover_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Apply --fix without the confirmation prompt")
+    discover_parser.add_argument(
+        "--fix-mode", choices=["observe", "enforce"], default="observe",
+        help="Mode to install newly hooked agents in (default: observe)")
 
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
@@ -3688,7 +3698,7 @@ def _run_trail(args) -> None:
     raise SystemExit(2)
 
 
-def _run_discover(args, workspace: Path) -> None:
+def _run_discover(args, workspace: Path, repo_root: Path) -> None:
     """`prismor discover` — sweep this host for AI agents, MCP servers and
     provider keys running outside Prismor's coverage (shadow AI)."""
     from prismor.runtime import discover_cli
@@ -3697,18 +3707,27 @@ def _run_discover(args, workspace: Path) -> None:
     as_json = getattr(args, "json", False)
     scan_files = not getattr(args, "no_file_scan", False)
 
+    fix = getattr(args, "fix", False)
+    fix_kw = {
+        "fix": fix,
+        "assume_yes": getattr(args, "yes", False),
+        "repo_root": repo_root,
+        "mode": getattr(args, "fix_mode", "observe"),
+    }
+
     if section == "agents":
-        discover_cli.discover_agents(workspace, as_json=as_json)
+        discover_cli.discover_agents(workspace, as_json=as_json, **fix_kw)
     elif section == "mcp":
-        discover_cli.discover_mcp(workspace, as_json=as_json)
+        discover_cli.discover_mcp(workspace, as_json=as_json, **fix_kw)
     elif section == "keys":
-        discover_cli.discover_keys(workspace, as_json=as_json, scan_files=scan_files)
+        discover_cli.discover_keys(workspace, as_json=as_json,
+                                   scan_files=scan_files, **fix_kw)
     else:
         discover_cli.discover_all(
             workspace, as_json=as_json, scan_files=scan_files,
             fail_on_shadow=getattr(args, "fail_on_shadow", False),
             report_to_console=getattr(args, "report", False),
-            quiet=getattr(args, "quiet", False))
+            quiet=getattr(args, "quiet", False), **fix_kw)
 
 
 def _run_attest(args, workspace: Path, repo_root: Path) -> None:

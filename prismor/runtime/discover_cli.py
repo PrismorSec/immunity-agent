@@ -171,12 +171,102 @@ def _print_summary(report: Dict[str, Any]) -> None:
     print()
 
 
+# ── remediation ──────────────────────────────────────────────────────────────
+
+_STATUS_STYLE = {
+    "fixed": (_GREEN, "fixed"),
+    "failed": (_RED, "FAILED"),
+    "skipped": (_YELLOW, "skipped"),
+    "planned": (_CYAN, "will fix"),
+}
+
+
+def _print_remediations(items, *, heading: str) -> None:
+    if not items:
+        return
+    print(f"  {_c(heading, _BOLD)}")
+    for item in items:
+        color, label = _STATUS_STYLE.get(item.status, (_DIM, item.status))
+        print(f"    {_c(label, color):<20} {item.target}")
+        if item.detail:
+            print(f"      {_c(item.detail, _DIM)}")
+    print()
+
+
+def _confirm(prompt: str) -> bool:
+    """Ask before writing to the developer's agent configs.
+
+    Not a TTY? Decline. A remediation that silently rewrote config files
+    because it was piped through a script would be exactly the surprise this
+    prompt exists to prevent — `--yes` is the way to opt in deliberately.
+    """
+    if not sys.stdin.isatty():
+        print(f"  {_c('Not a terminal — re-run with --yes to apply.', _YELLOW)}")
+        print()
+        return False
+    try:
+        answer = input(f"  {prompt} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("y", "yes")
+
+
+def run_fix(report: dict, *, workspace: Path, repo_root: Path, mode: str = "observe",
+            kinds=None, assume_yes: bool = False) -> int:
+    """Plan, confirm, apply. Returns the number of remaining shadow items."""
+    from prismor.runtime import remediate as _remediate
+
+    kinds = kinds or _remediate.FIXABLE_KINDS
+    todo = _remediate.plan(report, kinds=kinds)
+
+    if not todo.fixable and not todo.skipped:
+        print(f"  {_c('Nothing to fix — every discovered surface is governed.', _GREEN)}")
+        print()
+        return 0
+
+    _print_remediations(todo.fixable, heading="WILL FIX")
+    _print_remediations(todo.skipped, heading="CANNOT FIX AUTOMATICALLY")
+
+    if not todo.fixable:
+        print(f"  {_c('Nothing here can be fixed automatically.', _YELLOW)}")
+        print()
+        return len(todo.skipped)
+
+    if not assume_yes:
+        print(f"  {_c('This writes to your agent config files.', _DIM)}")
+        if not _confirm(f"Apply {len(todo.fixable)} fix(es)?"):
+            print(f"  {_c('Nothing changed.', _DIM)}")
+            print()
+            return len(todo.fixable) + len(todo.skipped)
+        print()
+
+    results = _remediate.apply(report, repo_root=repo_root, workspace=workspace,
+                               mode=mode, kinds=kinds, plan_obj=todo)
+    counts = _remediate.summarize(results)
+
+    _print_remediations([r for r in results if r.status == "fixed"], heading="FIXED")
+    _print_remediations([r for r in results if r.status == "failed"], heading="FAILED")
+    _print_remediations([r for r in results if r.status == "skipped"],
+                        heading="LEFT FOR YOU")
+
+    print(f"  {_c('─' * 58, _DIM)}")
+    print(f"  {counts['fixed']} fixed · {counts['failed']} failed · "
+          f"{counts['skipped']} left for you")
+    if counts["fixed"]:
+        print(f"  {_c('Re-run `prismor discover` to confirm the new coverage.', _DIM)}")
+    print()
+    return counts["failed"] + counts["skipped"]
+
+
 # ── commands ─────────────────────────────────────────────────────────────────
 
 
 def discover_all(workspace: Path, *, as_json: bool = False,
                  scan_files: bool = True, fail_on_shadow: bool = False,
-                 report_to_console: bool = False, quiet: bool = False) -> None:
+                 report_to_console: bool = False, quiet: bool = False,
+                 fix: bool = False, assume_yes: bool = False,
+                 repo_root: Optional[Path] = None, mode: str = "observe") -> None:
     """Full report: agents, MCP servers, keys, and a coverage score."""
     report = _discover.build_report(workspace, scan_files=scan_files)
     sent: Optional[bool] = None
@@ -209,6 +299,11 @@ def discover_all(workspace: Path, *, as_json: bool = False,
             print(f"  {_c('Not reported — ' + reason + '.', _YELLOW)}")
             print()
 
+    if fix:
+        run_fix(report, workspace=workspace,
+                repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
+                mode=mode, assume_yes=assume_yes)
+
     if fail_on_shadow:
         summary = report["summary"]
         shadow = (summary["agents_shadow"] + summary["mcp_shadow"]
@@ -217,7 +312,9 @@ def discover_all(workspace: Path, *, as_json: bool = False,
             sys.exit(1)
 
 
-def discover_agents(workspace: Path, *, as_json: bool = False) -> None:
+def discover_agents(workspace: Path, *, as_json: bool = False,
+                    fix: bool = False, assume_yes: bool = False,
+                    repo_root: Optional[Path] = None, mode: str = "observe") -> None:
     """AI coding agents installed here, and whether Prismor hooks them."""
     records = [asdict(a) for a in _discover.discover_agents(workspace)]
     if as_json:
@@ -225,9 +322,15 @@ def discover_agents(workspace: Path, *, as_json: bool = False) -> None:
         return
     print()
     _print_agents(records)
+    if fix:
+        run_fix({"agents": records}, workspace=workspace,
+                repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
+                mode=mode, kinds=("agent",), assume_yes=assume_yes)
 
 
-def discover_mcp(workspace: Path, *, as_json: bool = False) -> None:
+def discover_mcp(workspace: Path, *, as_json: bool = False,
+                 fix: bool = False, assume_yes: bool = False,
+                 repo_root: Optional[Path] = None, mode: str = "observe") -> None:
     """MCP servers declared anywhere, and whether they route through the gateway."""
     records = [asdict(m) for m in _discover.discover_mcp(workspace)]
     if as_json:
@@ -235,10 +338,16 @@ def discover_mcp(workspace: Path, *, as_json: bool = False) -> None:
         return
     print()
     _print_mcp(records)
+    if fix:
+        run_fix({"mcp": records}, workspace=workspace,
+                repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
+                mode=mode, kinds=("mcp",), assume_yes=assume_yes)
 
 
 def discover_keys(workspace: Path, *, as_json: bool = False,
-                  scan_files: bool = True) -> None:
+                  scan_files: bool = True, fix: bool = False,
+                  assume_yes: bool = False, repo_root: Optional[Path] = None,
+                  mode: str = "observe") -> None:
     """AI-provider credentials found here, and whether Cloak has them."""
     records = [asdict(c)
                for c in _discover.discover_credentials(workspace,
@@ -248,3 +357,7 @@ def discover_keys(workspace: Path, *, as_json: bool = False,
         return
     print()
     _print_credentials(records)
+    if fix:
+        run_fix({"credentials": records}, workspace=workspace,
+                repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
+                mode=mode, kinds=("credential",), assume_yes=assume_yes)

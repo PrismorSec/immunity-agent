@@ -17,6 +17,16 @@ _SUPPORTED_AGENTS = [
 ]
 
 
+class HookConfigError(Exception):
+    """An agent's hook config exists but could not be parsed.
+
+    Raised instead of a bare ``json.JSONDecodeError`` so a caller installing
+    hooks without a human present can report *which* agent needs attention.
+    Deliberately not swallowed into an empty config: treating an unparseable
+    file as ``{}`` would overwrite whatever the developer actually had in it.
+    """
+
+
 def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
     """Remove hooks whose command contains `marker`, for the given agent's config."""
     if agent == "claude":
@@ -1784,7 +1794,13 @@ def _merge_windsurf_entries(entries: List[Dict[str, Any]], command: str, workspa
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        # Never fall back to {}: this value is merged and written straight back
+        # out, so an unparseable config would be silently replaced by one
+        # containing nothing but Prismor's own hook.
+        raise HookConfigError(f"{path} is not valid JSON: {exc}") from exc
 
 
 # ── MCP tool-call classification ─────────────────────────────────────────────

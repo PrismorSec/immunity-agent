@@ -131,3 +131,32 @@ def test_workspace_config_marker(fake_host):
     report = discovery.discover(ws)
     claude = next(a for a in report["agents"] if a["agent"] == "claude")
     assert claude["present"] and claude["governed"]
+
+
+def test_hook_at_the_installers_path_counts_as_governed(fake_host):
+    """Regression: `discover --fix` installed Cursor's global hook to
+    ~/.cursor/hooks.json, but this sweep only ever inspected ~/.cursor/mcp.json
+    (the registry lists no user-scope hook path for Cursor). So a freshly
+    hooked Cursor reported as ungoverned forever, and --fix claimed a fix the
+    next discover contradicted. Governed must be judged against the paths the
+    INSTALLER writes, not only the ones discovery happens to enumerate."""
+    discovery, home, ws = fake_host
+    _write(home / ".cursor" / "mcp.json", '{"mcpServers": {}}')
+    report = discovery.discover(ws)
+    cursor = next(a for a in report["agents"] if a["agent"] == "cursor")
+    assert cursor["present"] and not cursor["governed"]
+
+    _write(home / ".cursor" / "hooks.json",
+           '{"hooks": [{"command": "python -m prismor.runtime.immunity_cli hook-dispatch"}]}')
+    report = discovery.discover(ws)
+    cursor = next(a for a in report["agents"] if a["agent"] == "cursor")
+    assert cursor["governed"], "a hooked agent must not read as shadow"
+
+
+def test_project_scope_hook_also_counts(fake_host):
+    discovery, home, ws = fake_host
+    _write(home / ".cursor" / "mcp.json", '{"mcpServers": {}}')
+    _write(ws / ".cursor" / "hooks.json",
+           '{"hooks": [{"command": "prismor hook-dispatch"}]}')
+    report = discovery.discover(ws)
+    assert next(a for a in report["agents"] if a["agent"] == "cursor")["governed"]

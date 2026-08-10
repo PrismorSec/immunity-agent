@@ -97,6 +97,21 @@ actually applies to it:
 Pass a section (`agents`, `mcp`, `keys`) to limit the report, `--json` for the
 machine-readable form, and `--fail-on-shadow` to exit non-zero in CI.
 
+### Governing what it finds
+
+`prismor discover --fix` acts on the report: it installs the global hook for
+every unmanaged agent, moves the workspace's MCP servers behind the gateway,
+and imports dotenv provider keys into Cloak. It shows the plan, states what it
+cannot fix and why, and asks before writing to your config files — `--yes`
+skips the prompt, `--fix-mode enforce` installs in enforce rather than observe.
+
+There is a hard limit worth understanding. Prismor cannot constrain an agent it
+has not hooked: egress screening, the sandbox, tool denies and kill switches all
+act on a hook payload, and an unhooked agent never produces one. So `--fix`
+governs by *eliminating* the shadow rather than policing it, and an agent with
+no hook surface at all — Warp, Trae, Antigravity — is reported as unfixable
+instead of quietly skipped.
+
 On an enrolled device this inventory also reaches your organization console,
 where it becomes a fleet-wide Shadow AI view. `prismor enroll` seeds it, and
 the runtime refreshes it once a day from a detached background scan — set
