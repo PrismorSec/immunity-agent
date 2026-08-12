@@ -1,6 +1,6 @@
 """Prismor local session-security utility."""
 
-__version__ = "1.40.1"
+__version__ = "1.40.1"  # x-release-please-version
 
 from prismor.runtime.semantic_guard import SemanticGuard, SemanticRisk
 from prismor.runtime.semantic_guard_v2 import SemanticGuardV2, HybridRisk

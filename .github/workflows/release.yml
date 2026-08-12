@@ -1,16 +1,31 @@
 name: Release
 
+# Publish job. release-please.yml (triggered on every push to main) owns
+# version bumps + CHANGELOG.md; merging its release PR creates the `vX.Y.Z`
+# tag and a GitHub Release, which fires this workflow's `release: published`
+# event. This job validates that release, builds the PyPI packages + the
+# portable tar.gz/zip bundle, attaches them to the release release-please
+# already created, and publishes to PyPI.
+
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
-  contents: write   # create GitHub Release
+  contents: write   # attach build artifacts to the GitHub Release
   id-token: write   # OIDC token for PyPI trusted publishing
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert tag / CHANGELOG.md / __version__ agree
+        run: python3 scripts/validate_release.py "${{ github.event.release.tag_name }}"
+
   release:
+    needs: validate
     runs-on: ubuntu-latest
     environment: pypi
 
@@ -34,7 +49,7 @@ jobs:
         # it from prismor/runtime/__init__.py instead of trusting it stayed
         # in sync.
         run: |
-          VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' prismor/runtime/__init__.py)
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)".*/\1/p' prismor/runtime/__init__.py)
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" packaging/immunity-agent-shim/pyproject.toml
           sed -i "s/prismor>=[0-9][0-9.]*/prismor>=$VERSION/" packaging/immunity-agent-shim/pyproject.toml
           echo "Synced immunity-agent shim to version $VERSION"
@@ -43,13 +58,17 @@ jobs:
       - name: Build immunity-agent redirect package
         run: python -m build packaging/immunity-agent-shim --outdir dist-shim
 
-      - name: Create GitHub Release
+      - name: Build portable macOS/Linux bundle
+        run: scripts/build_portable.sh dist-portable
+
+      - name: Attach build artifacts to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ github.event.release.tag_name }}
           files: |
             dist/*
             dist-shim/*
+            dist-portable/*
 
       - name: Publish prismor to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
