@@ -9,7 +9,14 @@
 #
 # A vector marked `warn` may still be blocked downstream via a project-level
 # .prismor/policy.yaml override or an org-wide signed policy that reclassifies
-# it — this file documents the DEFAULT posture and the reasoning behind it.
+# it — this file documents the recommended posture and the reasoning behind it.
+#
+# ADVISORY, NOT ENFORCED: this matrix is a decision aid for humans configuring
+# a policy. The recommended `default_action` is NOT wired into the default
+# policy engine — unless a project explicitly reclassifies a vector, the
+# actions here are documentation of intent, not runtime behavior. Do not read
+# "block" here as "Prismor blocks this today"; confirm against
+# prismor/runtime/default_policy.yaml for what is actually enforced.
 #
 # Schema:
 #   id              stable identifier, referenced in PRs and policy overrides
@@ -21,7 +28,8 @@
 #   fp_examples     concrete legitimate use-cases that would break if blocked
 #   default_action  recommended default: warn | block | log
 #   rationale       why this action was chosen over the alternatives
-#   mitigation      compensating control when default_action != block
+#   mitigation      compensating control, exception path, or defense-in-depth
+#                   for the chosen action
 
 # NOTE: the top-level key is `decision_framework`, not `framework`, so that
 # compliance.coverage() does not load this as a compliance-control pack
@@ -70,18 +78,20 @@ vectors:
       This vector is specifically the interactive root shell (`sudo su`,
       `sudo -i`, `sudo -s`), not `sudo <command>` for a single task. An
       interactive root shell defeats per-command audit and grants the agent an
-      unprompted, unattributed root session — a textbook privilege-compromise
-      (T03) with little legitimate automation need. Routine scoped sudo
-      (`sudo apt install`, service restarts) is a different, high-FP vector
-      and is NOT blocked here; the boundary is drawn at opening a root shell,
-      not at scoped sudo invocations. Existing rules already block the
+      unprompted root session whose inner commands escape per-tool-call
+      attribution — a textbook privilege-compromise (T03) with little
+      legitimate automation need. Routine scoped sudo (`sudo apt install`,
+      service restarts) is a different, high-FP vector that is outside this
+      vector and NOT blocked here; the boundary is drawn at opening a root
+      shell, not at scoped sudo invocations. Existing rules already block the
       specific dangerous sudo targets (`sudo rm -rf`, `visudo`,
       `/etc/sudoers` edits, `usermod -aG sudo`).
     mitigation: >
       Agents that legitimately need root for a task should invoke scoped
-      `sudo <command>` (covered separately, not blocked) rather than an
-      interactive shell. Enforce `deny_tools: [Bash]` on the IAM profile, or
-      require `action: step_up` for any interactive-shell request.
+      `sudo <command>` (outside this vector; not classified by the default
+      policy) rather than an interactive shell. Enforce `deny_tools: [Bash]`
+      on the IAM profile, or require `action: step_up` for any
+      interactive-shell request.
 
   - id: BWF-003
     vector: "find ... -delete"
@@ -130,10 +140,11 @@ vectors:
       (`.claude/settings.json`, `.prismor/policy.yaml`). Extending this to
       arbitrary files with a warn posture is appropriate.
     mitigation: >
-      The existing rule BWF-005 (below) handles the critical case: truncation
-      of security-config and system files. For general truncation, the
-      signed audit trail provides a forensic record if a truncation later
-      proves to have been malicious.
+      The `agent-config-tampering` rule already blocks truncation (and
+      modification/deletion) of security-config files such as
+      `.claude/settings.json` and `.prismor/policy.yaml` — the critical case.
+      For general truncation, the signed audit trail provides a forensic
+      record if a truncation later proves to have been malicious.
 
   - id: BWF-005
     vector: "kubectl get secrets -o yaml, aws secretsmanager get-secret-value, vault read"
@@ -150,19 +161,22 @@ vectors:
       and audit trail — a secret-access event that turns an authorized read
       into a persistence risk (a leaked context later exfiltrates the secret).
       The "authorized channel" framing is real but misses that the value
-      itself, not just the channel, is the asset. Prismor cloaking already
-      placeholder-replaces secret values, so an agent should reference
-      secrets through the cloaked path rather than reading live values. The
-      existing secret-exfiltration rule catches data leaving the environment;
-      this vector closes the remaining gap: reading the secret in the first
-      place. Explicit rotation or verification is a step-up scenario, not a
-      default.
+      itself, not just the channel, is the asset. Prismor cloaking
+      placeholder-replaces registered secrets, so an agent should reference
+      enrolled secrets through the cloaked path rather than reading live
+      values. The existing secret-exfiltration rule catches selected
+      exfiltration patterns, and enforced default-deny egress materially
+      improves that coverage; this vector closes the remaining gap — reading
+      the secret in the first place. Explicit rotation or verification is a
+      step-up scenario, not a default.
     mitigation: >
-      (a) Use Prismor cloaking so secret values are placeholder-replaced
-      before reaching the model context — the primary path for agents that
-      need to reference secrets. (b) Require `action: step_up` for explicit
-      credential rotation or verification tasks. (c) Enforce egress screening
-      as defense-in-depth for any value that does surface.
+      (a) Enroll the secret with Prismor cloaking so its value is
+      placeholder-replaced before reaching the model context — the primary
+      path for agents that need to reference secrets. (b) Require
+      `action: step_up` for explicit credential rotation or verification
+      tasks, accepting that approval alone does not scrub the returned value.
+      (c) Enforce default-deny egress screening as defense-in-depth for any
+      value that does surface.
 
   - id: BWF-006
     vector: "chmod 777, chmod -R o+w"
@@ -199,19 +213,19 @@ vectors:
       - "Checking connectivity to a service during debugging"
     default_action: block
     rationale: >
-      Unlike the vectors above, outbound connections to arbitrary hosts are
-      the primary exfiltration channel and have no legitimate unpack-and-go
-      dev workflow that requires unfettered access. The existing egress
-      framework (`prismor egress enable`, allowlists) already provides this
-      control. The default posture should be: block unknown destinations,
-      allow known ones. This is NOT a high-FP vector in routine development
-      because agents predominantly contact well-known services (GitHub, PyPI,
-      npm, API providers) that can be pre-allowlisted.
+      Unlike the warn-defaulted vectors above, outbound connections to
+      arbitrary hosts are the primary exfiltration channel and have no
+      legitimate unpack-and-go dev workflow that requires unfettered access.
+      The existing egress framework (`prismor egress enable`, allowlists)
+      already provides this control. The default posture should be: block
+      unknown destinations, allow known ones. This is NOT a high-FP vector in
+      routine development because agents predominantly contact well-known
+      services (GitHub, PyPI, npm, API providers) that can be pre-allowlisted.
     mitigation: >
-      This is the one vector where the framework recommends block over warn.
-      Use `prismor egress enable` with an allowlist, then observe mode to
-      discover which destinations the agent actually contacts before flipping
-      to enforce.
+      Unlike the destructive dev ops above (which warn), this vector defaults
+      to block. Use `prismor egress enable` with an allowlist, then observe
+      mode to discover which destinations the agent actually contacts before
+      flipping to enforce.
 
   - id: BWF-008
     vector: "docker run --privileged, docker run -v /:/host"
