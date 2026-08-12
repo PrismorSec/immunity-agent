@@ -23,7 +23,11 @@
 #   rationale       why this action was chosen over the alternatives
 #   mitigation      compensating control when default_action != block
 
-framework: block-warn-decision-matrix
+# NOTE: the top-level key is `decision_framework`, not `framework`, so that
+# compliance.coverage() does not load this as a compliance-control pack
+# (those live in this same directory and are keyed on `framework:`).
+
+decision_framework: block-warn-decision-matrix
 title: "Block/Warn Decision Framework for High-FP-Risk Operations"
 version: "1.0"
 vectors:
@@ -57,25 +61,27 @@ vectors:
     category: privilege_escalation
     owasp: [T03]
     risk: critical
-    fp_risk: high
+    fp_risk: low
     fp_examples:
-      - "Installing system packages during dev environment setup"
-      - "Restarting a development service bound to a privileged port"
-      - "Running a system-level diagnostic (dmesg, strace on a root-owned pid)"
-    default_action: warn
+      - "A human explicitly directing the agent to run a one-off command as root"
+      - "Root diagnostics that cannot run under scoped sudo"
+    default_action: block
     rationale: >
-      A root shell is the highest-impact escalation vector, but `sudo` is
-      routine on developer workstations. The existing privilege-escalation
-      rule already blocks `sudo rm -rf`, `visudo`, `/etc/sudoers` edits, and
-      `usermod -aG sudo`. Blocking `sudo su` would stop an agent from becoming
-      root interactively but would also break legitimate dev workflows where
-      the human explicitly asked the agent to install or configure something.
-      The security boundary should be at the specific dangerous sudo commands,
-      not the sudo gateway itself.
+      This vector is specifically the interactive root shell (`sudo su`,
+      `sudo -i`, `sudo -s`), not `sudo <command>` for a single task. An
+      interactive root shell defeats per-command audit and grants the agent an
+      unprompted, unattributed root session — a textbook privilege-compromise
+      (T03) with little legitimate automation need. Routine scoped sudo
+      (`sudo apt install`, service restarts) is a different, high-FP vector
+      and is NOT blocked here; the boundary is drawn at opening a root shell,
+      not at scoped sudo invocations. Existing rules already block the
+      specific dangerous sudo targets (`sudo rm -rf`, `visudo`,
+      `/etc/sudoers` edits, `usermod -aG sudo`).
     mitigation: >
-      Enforce `deny_tools: [Bash]` or `deny_network: true` on the agent's
-      IAM profile. Block specific high-risk sudo targets (mkfs, shutdown,
-      reboot) already covered by destructive-command.
+      Agents that legitimately need root for a task should invoke scoped
+      `sudo <command>` (covered separately, not blocked) rather than an
+      interactive shell. Enforce `deny_tools: [Bash]` on the IAM profile, or
+      require `action: step_up` for any interactive-shell request.
 
   - id: BWF-003
     vector: "find ... -delete"
@@ -111,7 +117,7 @@ vectors:
     fp_risk: medium
     fp_examples:
       - "Zeroing a debug log before re-running a test"
-      - "Clearing a scratch file in a数据处理 pipeline"
+      - "Clearing a scratch file in a data-processing pipeline"
       - "Truncating a growing nohup.out during development"
     default_action: warn
     rationale: >
@@ -136,26 +142,27 @@ vectors:
     risk: high
     fp_risk: medium
     fp_examples:
-      - "Debugging a deployment by inspecting a secret's current value"
       - "Rotating credentials as part of an automated pipeline"
       - "Verifying a vault path after a write"
-    default_action: warn
+    default_action: block
     rationale: >
-      These commands dump live secret values to stdout (and potentially into
-      the agent's context window and audit trail). However, they are also
-      standard operations during deploys, debugging, and credential rotation.
-      A block would prevent an agent from performing legitimate secret
-      management tasks. The critical distinction: these commands READ secrets
-      through authorized channels (authenticated kubectl/aws/vault sessions)
-      rather than EXFILTRATING them to external sinks. The existing
-      secret-exfiltration rule already catches data leaving the environment;
-      this vector is about authorized access that should be logged, not blocked.
+      These commands dump live secret values into the agent's context window
+      and audit trail — a secret-access event that turns an authorized read
+      into a persistence risk (a leaked context later exfiltrates the secret).
+      The "authorized channel" framing is real but misses that the value
+      itself, not just the channel, is the asset. Prismor cloaking already
+      placeholder-replaces secret values, so an agent should reference
+      secrets through the cloaked path rather than reading live values. The
+      existing secret-exfiltration rule catches data leaving the environment;
+      this vector closes the remaining gap: reading the secret in the first
+      place. Explicit rotation or verification is a step-up scenario, not a
+      default.
     mitigation: >
-      (a) Use Prismor cloaking to ensure secret values read via these commands
-      are placeholder-replaced before reaching the model context. (b) Scope
-      agent IAM to deny network on agents that should never access cloud
-      secret stores. (c) Enforce egress screening to catch any subsequent
-      exfiltration of those values.
+      (a) Use Prismor cloaking so secret values are placeholder-replaced
+      before reaching the model context — the primary path for agents that
+      need to reference secrets. (b) Require `action: step_up` for explicit
+      credential rotation or verification tasks. (c) Enforce egress screening
+      as defense-in-depth for any value that does surface.
 
   - id: BWF-006
     vector: "chmod 777, chmod -R o+w"
