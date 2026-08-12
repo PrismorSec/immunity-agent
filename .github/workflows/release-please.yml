@@ -1,0 +1,35 @@
+name: release-please
+
+# Drives semantic-version bumps and CHANGELOG.md generation from
+# conventional-commit history on main. Opens/updates a standing "release PR"
+# with the next version's changelog; merging that PR creates the `vX.Y.Z`
+# tag and a GitHub Release, which `release.yml` then picks up to build and
+# publish artifacts (PyPI packages + the portable tar.gz/zip bundle).
+#
+# Version numbers are tracked in .release-please-manifest.json and written
+# into prismor/runtime/__init__.py (the single source of truth `hatch`
+# already reads for the dynamic package version — see the
+# `# x-release-please-version` marker comment on its `__version__` line) so
+# there is exactly one place a release's version is decided.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

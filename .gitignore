@@ -11,6 +11,8 @@ env/
 # Python build artifacts (sdist/wheel from `python -m build`)
 build/
 dist/
+dist-shim/
+dist-portable/
 *.egg-info/
 .eggs/
 
