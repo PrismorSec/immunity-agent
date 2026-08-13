@@ -1411,6 +1411,159 @@
     .topbar, .page, .prismor-cta { margin-left: 60px; }
   }
 
+  /* ═══════════════════════════════════════════════════════════════════
+     MINIMALIST KIT LAYER — monochrome re-skin mapped from the Figma
+     "Minimalist UI Kit" (near-black #1c1c1c as the only accent, soft
+     diffuse shadows, larger radii, pill controls, Inter). Appended last
+     so single-selector token/style overrides win on source order — same
+     convention as the Material and AgentOS layers above.
+     ═══════════════════════════════════════════════════════════════════ */
+  :root {
+    /* neutral ink ramp (replaces the blue-tinted grays) */
+    --gray-50: #f7f7f8; --gray-100: #f0f0f1; --gray-200: #e6e6e7;
+    --gray-300: #d4d4d6; --gray-400: #94949a; --gray-500: #6b6b70;
+    --gray-600: #48484c; --gray-700: #2e2e31; --gray-800: #232325; --gray-900: #1c1c1c;
+
+    --app-bg: #f3f3f4; --surface: #ffffff; --surface-muted: #f7f7f8; --surface-strong: #ffffff;
+    --overlay: rgba(28,28,28,0.20);
+
+    /* the only accent is near-black */
+    --accent: #1c1c1c;
+    --md-primary: #1c1c1c; --md-primary-d: #000000; --md-primary-soft: rgba(28,28,28,0.07);
+    --pink-600: #1c1c1c;   /* KPI "accent" value → ink, not pink */
+    --purple: #1c1c1c;
+
+    /* Inter (kit type face) — undo the Roboto override */
+    --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    /* soft, diffuse shadow (Figma effect: 6/6, 50 blur, ~5% black) */
+    --md-e1: 0 1px 2px rgba(28,28,28,.04), 0 6px 26px rgba(28,28,28,.05);
+    --md-e2: 0 2px 6px rgba(28,28,28,.06), 0 12px 34px rgba(28,28,28,.07);
+    --md-e3: 0 16px 48px rgba(28,28,28,.16);
+    --md-radius: 14px; --md-radius-sm: 10px;
+
+    /* charts: grayscale ramp + one muted cyan (Secondary/Cyan #a8c5da) */
+    --chart-text: #94949a; --chart-grid: rgba(28,28,28,.06);
+    --chart-passed: #d4d4d6; --chart-intercepted: #1c1c1c;
+    --chart-bar-warm: #1c1c1c; --chart-bar-cool: #a8c5da; --chart-bar-hot: #1c1c1c;
+    --chart-palette-1: #1c1c1c; --chart-palette-2: #5c5c5f; --chart-palette-3: #8a8a8e;
+    --chart-palette-4: #b6b6ba; --chart-palette-5: #a8c5da; --chart-palette-6: #d4d4d6;
+  }
+  html[data-theme="dark"] {
+    /* monochrome dark: accent inverts to near-white (kit's black toggle → white on dark) */
+    --gray-50: #17171a; --gray-100: #1c1c20; --gray-200: #2a2a2f;
+    --gray-300: #3a3a40; --gray-400: #8a8a90; --gray-500: #a6a6ac;
+    --gray-600: #cbcbd0; --gray-700: #e7e7ea; --gray-800: #f2f2f4; --gray-900: #f5f5f6;
+
+    --app-bg: #0b0b0c; --surface: #151517; --surface-muted: #100f11; --surface-strong: #1e1e21;
+    --overlay: rgba(0,0,0,0.72);
+
+    --accent: #f5f5f6;
+    --md-primary: #f5f5f6; --md-primary-d: #ffffff; --md-primary-soft: rgba(255,255,255,0.10);
+    --pink-600: #f5f5f6; --purple: #f5f5f6;
+
+    --md-e1: 0 1px 2px rgba(0,0,0,.4), 0 6px 26px rgba(0,0,0,.38);
+    --md-e2: 0 2px 6px rgba(0,0,0,.5), 0 12px 34px rgba(0,0,0,.45);
+    --md-e3: 0 16px 48px rgba(0,0,0,.6);
+
+    --chart-text: #8a8a90; --chart-grid: rgba(255,255,255,.06);
+    --chart-passed: #3a3a40; --chart-intercepted: #f5f5f6;
+    --chart-bar-warm: #f5f5f6; --chart-bar-cool: #a8c5da; --chart-bar-hot: #f5f5f6;
+    --chart-palette-1: #f5f5f6; --chart-palette-2: #c9c9cd; --chart-palette-3: #98989e;
+    --chart-palette-4: #6a6a70; --chart-palette-5: #a8c5da; --chart-palette-6: #45454b;
+  }
+
+  /* neutral 1px hairline borders + soft shadow + larger radius on surfaces */
+  .card, .agent-hero, .agent-stat, .agent-ctrl-card, .session-hero,
+  .node-panel, .flow-card {
+    border: 1px solid var(--gray-200); box-shadow: var(--md-e1); border-radius: var(--md-radius);
+  }
+  .card:hover { box-shadow: var(--md-e2); }
+
+  /* sidebar: kit's active item is a lifted white pill with ink text */
+  .tab-nav { padding: 16px 12px; }
+  .tab-nav .tab-btn { border-radius: 10px; padding: 9px 11px; }
+  .tab-nav .tab-btn.active {
+    background: var(--surface); color: var(--gray-900); font-weight: 600;
+    border: 1px solid var(--gray-200); box-shadow: 0 2px 10px rgba(28,28,28,.07);
+    border-radius: 10px;
+  }
+  html[data-theme="dark"] .tab-nav .tab-btn.active { box-shadow: 0 2px 10px rgba(0,0,0,.45); }
+  .tab-nav .tab-btn.active .icon { color: var(--gray-900); }
+
+  /* buttons: monochrome ink, sentence case, rounded (kit style) */
+  .btn-primary, .upgrade-btn {
+    text-transform: none; letter-spacing: 0; border-radius: var(--md-radius-sm); font-weight: 600;
+  }
+  .btn-ghost, .fbtn, .view-back, .sess-act-btn, .scope-edit-btn {
+    text-transform: none; letter-spacing: 0; border-radius: var(--md-radius-sm);
+  }
+  .fsel, .finput, .agent-switch, .rules-search { border-radius: var(--md-radius-sm); }
+
+  /* fully-rounded pills/chips + status badge radius parity with the kit */
+  .agent-pill, .src-pill, .status-pill, .scoped-tag, .sev-badge, .adv-pill,
+  .sugg-pill, .trigger-kind, .event-sess-link { border-radius: 999px; }
+
+  /* "Open full drilldown" → a real secondary/outlined pill button (was a text link) */
+  .inline-link-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border: 1px solid var(--gray-300); border-radius: 999px;
+    background: var(--surface); color: var(--gray-900);
+    font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+    text-transform: none; letter-spacing: 0; line-height: 1; cursor: pointer;
+    box-shadow: var(--md-e1); transition: background .15s, box-shadow .15s, border-color .15s;
+  }
+  .inline-link-btn:hover {
+    background: var(--surface-muted); box-shadow: var(--md-e2); border-color: var(--gray-400);
+  }
+
+  /* CTA "Rolling Prismor out to a team?": monochrome black panel (was indigo),
+     kit typography — Inter, 14/20 semibold title · 12/18 regular body. */
+  .prismor-cta {
+    background: #1c1c1c; color: rgba(255,255,255,.72);
+    border: 1px solid var(--gray-200); border-radius: var(--md-radius); box-shadow: var(--md-e1);
+  }
+  .prismor-cta-text strong {
+    font-family: var(--font-ui); font-size: 14px; line-height: 20px;
+    font-weight: 600; letter-spacing: 0; color: #ffffff;
+  }
+  .prismor-cta-text span {
+    font-family: var(--font-ui); font-size: 12px; line-height: 18px;
+    font-weight: 400; letter-spacing: 0; color: rgba(255,255,255,.66);
+  }
+  .prismor-cta-btn {
+    font-family: var(--font-ui); background: #ffffff; color: #1c1c1c;
+    border-radius: var(--md-radius-sm); font-weight: 600;
+  }
+  .prismor-cta-btn:hover { background: #f0f0f1; }
+
+  /* Info / enterprise banners → neutral panel + standard dashboard type.
+     Also fixes the old `.banner-text strong{display:block}` that broke the
+     inline mode names (Blocked / Observe / Enforce) each onto their own line. */
+  .banner {
+    gap: 12px; padding: 14px 16px; border-radius: var(--md-radius-sm);
+    font-size: 12px; line-height: 1.55;
+  }
+  .banner-info, .banner-enterprise {
+    background: var(--surface-muted); border: 1px solid var(--gray-200); color: var(--gray-600);
+  }
+  .banner-icon { color: var(--gray-500); margin-top: 1px; }
+  /* body emphasis stays inline & inky; only the leading title is a block heading */
+  .banner-text strong { display: inline; margin: 0; font-weight: 600; color: var(--gray-900); }
+  .banner-text > strong:first-child { display: block; margin-bottom: 5px; font-size: 13px; }
+  .banner code {
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--surface); border: 1px solid var(--gray-200); color: var(--gray-700);
+    border-radius: 6px; padding: 1px 6px;
+  }
+  html[data-theme="dark"] .banner-info,
+  html[data-theme="dark"] .banner-enterprise {
+    background: var(--surface-muted); border: 1px solid var(--gray-200); color: var(--gray-600);
+  }
+  html[data-theme="dark"] .banner code {
+    background: var(--surface); border-color: var(--gray-200); color: var(--gray-700);
+  }
+
 </style>
 </head>
 <body>
@@ -1764,15 +1917,6 @@
     </div>
   </div>
 
-  <div class="banner banner-enterprise" style="margin-top:16px">
-    <span class="banner-icon"><svg class="icon"><use href="#i-building"/></svg></span>
-    <div class="banner-text">
-      <strong>Need this across your whole org?</strong>
-      Prismor Enterprise adds an org-level kill switch — pause a compromised agent on every
-      enrolled machine at once, with signed policy a local re-enable can't override.
-      <a href="#" onclick="openUpgradeModal();return false" style="color:inherit;font-weight:600">Talk to us →</a>
-    </div>
-  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
