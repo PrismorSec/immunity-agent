@@ -1844,16 +1844,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         subcmd = getattr(args, "agents_subcommand", None)
 
-        if subcmd == "list" or subcmd is None:
-            # Merge org controls (from the cached verified policy) so the table
-            # shows org-pushed pauses, not just local ones.
+        # Org controls (from the cached verified policy). Resolved once for every
+        # subcommand: `show` previously omitted them and printed the LOCAL mode as
+        # if it were effective, which hides an org-pushed observe pin entirely
+        # (issue #256).
+        _remote_ctl = None
+        try:
+            from prismor.runtime.enterprise import remote_policy as _rp
+            _pol = _rp.verify_and_load()
+            _remote_ctl = ((_pol or {}).get("settings") or {}).get("agent_controls")
+        except Exception:
             _remote_ctl = None
-            try:
-                from prismor.runtime.enterprise import remote_policy as _rp
-                _pol = _rp.verify_and_load()
-                _remote_ctl = ((_pol or {}).get("settings") or {}).get("agent_controls")
-            except Exception:
-                _remote_ctl = None
+
+        if subcmd == "list" or subcmd is None:
             agents = _list_agents(workspace, remote_controls=_remote_ctl)
             print(f"\n  {_color('PRISMOR', _BOLD)}  named agents\n")
             print(_fmt_agent_table(agents))
@@ -1865,11 +1868,31 @@ def main(argv: Optional[List[str]] = None) -> None:
             if not agent_name_arg:
                 sys.stderr.write("error: agent name required for 'agents show'\n")
                 raise SystemExit(1)
-            ctl = _resolve_agent_ctl(agent_name_arg, workspace)
+            ctl = _resolve_agent_ctl(
+                agent_name_arg, workspace, remote_controls=_remote_ctl)
+            # Where the effective mode actually came from. Printing the value
+            # without its origin is what let an org observe pin masquerade as
+            # local enforce for a month (issue #256).
+            _local_ctl = _resolve_agent_ctl(agent_name_arg, workspace)
+            _remote_mode = ((_remote_ctl or {}).get(agent_name_arg) or {}).get("mode")
+            if _remote_mode in ("observe", "enforce"):
+                _mode_src = "org"
+            elif _local_ctl.mode:
+                _mode_src = "local"
+            else:
+                _mode_src = None
+            _mode_txt = f"{ctl.mode} (set by {_mode_src})" if _mode_src else "(inherits global)"
+            if _mode_src == "org" and _local_ctl.mode and _local_ctl.mode != _remote_mode:
+                _mode_txt += _color(
+                    f"  [local '{_local_ctl.mode}' is overridden by org]", _YELLOW)
             print(f"\n  name:        {ctl.name}")
             print(f"  framework:   {ctl.framework or '(unknown)'}")
             print(f"  enabled:     {'yes' if ctl.enabled else _color('NO (paused)', _RED)}")
-            print(f"  mode:        {ctl.mode or '(global)'}")
+            print(f"  mode:        {_mode_txt}")
+            if ctl.mode == "observe":
+                print(_color(
+                    "               observe: findings are recorded, nothing is blocked",
+                    _YELLOW))
             print(f"  iam_profile: {ctl.iam_profile or '(none)'}")
             print(f"  last_seen:   {ctl.last_seen or '(never)'}")
             print()

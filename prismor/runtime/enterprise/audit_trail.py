@@ -225,14 +225,28 @@ def _stated_intent(event: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _verdict(findings: List[Dict[str, Any]], blocking: Optional[Dict[str, Any]]) -> str:
+def _verdict(
+    findings: List[Dict[str, Any]],
+    blocking: Optional[Dict[str, Any]],
+    suppressed: Optional[Dict[str, Any]] = None,
+) -> str:
     if blocking is not None:
         action = str(blocking.get("action") or "").lower()
         return "step_up" if action == "step_up" else "blocked"
+    # A block that an observe downgrade dropped is NOT the same as a warn-level
+    # detection, and recording both as "warned" makes a silently disabled
+    # guardrail indistinguishable from a working one (issue #256).
+    if suppressed is not None:
+        return "suppressed"
     return "warned" if findings else "allowed"
 
 
-def _reason(findings: List[Dict[str, Any]], blocking: Optional[Dict[str, Any]]) -> str:
+def _reason(
+    findings: List[Dict[str, Any]],
+    blocking: Optional[Dict[str, Any]],
+    suppressed: Optional[Dict[str, Any]] = None,
+    suppressed_by: Optional[str] = None,
+) -> str:
     """Human-readable rationale for the decision, mirroring
     ``runtime._block_reason`` for blocks."""
     if blocking is not None:
@@ -242,6 +256,13 @@ def _reason(findings: List[Dict[str, Any]], blocking: Optional[Dict[str, Any]]) 
         if blocking.get("remediation"):
             parts.append(f"Recommended fix: {blocking['remediation']}")
         return "\n".join(parts)
+    if suppressed is not None:
+        return (
+            f"WOULD BLOCK, suppressed by {suppressed_by or 'observe mode'}: "
+            f"[{suppressed.get('severity', 'high')}] "
+            f"{suppressed.get('title', 'finding')} "
+            f"(rule: {suppressed.get('ruleId', 'unknown')})"
+        )
     if findings:
         titles = [str(f.get("title") or f.get("ruleId") or "finding") for f in findings]
         return "non-blocking findings: " + "; ".join(titles)
@@ -260,6 +281,8 @@ def append_action_record(
     subject: Optional[Dict[str, Any]] = None,
     mode: str = "",
     eval_ms: Optional[int] = None,
+    suppressed: Optional[Dict[str, Any]] = None,
+    suppressed_by: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Append one signed record for an evaluated tool call (any verdict).
 
@@ -290,14 +313,14 @@ def append_action_record(
         "evidence_hash": hashlib.sha256(_canonical(view)).hexdigest(),
         "agent_stated_intent": _stated_intent(event),
         # Decision.
-        "verdict": _verdict(findings, blocking),
+        "verdict": _verdict(findings, blocking, suppressed),
         "mode": mode,
         "eval_ms": eval_ms,
         "rules": sorted(
             {str(f.get("ruleId") or f.get("rule_id")) for f in findings
              if f.get("ruleId") or f.get("rule_id")}
         ),
-        "reason": _reason(findings, blocking),
+        "reason": _reason(findings, blocking, suppressed, suppressed_by),
     }
     return _append(record)
 
