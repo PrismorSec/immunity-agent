@@ -2177,6 +2177,60 @@ def _read_memory_file(path: Path) -> Optional[str]:
         return None
 
 
+def memory_scanned_marker(session_id: str) -> "Path":
+    """Sidecar marking that this session's project memory was already scanned."""
+    from prismor.runtime.store import prismor_home
+
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(session_id))
+    return prismor_home() / "memory-scan" / f"{safe}.done"
+
+
+def memory_already_scanned(session_id: str) -> bool:
+    try:
+        return memory_scanned_marker(session_id).exists()
+    except Exception:
+        return True  # unreadable state: skip rather than rescan every prompt
+
+
+def mark_memory_scanned(session_id: str) -> None:
+    try:
+        path = memory_scanned_marker(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except Exception:
+        pass  # best-effort: a missed marker costs a duplicate scan, never a hook
+
+
+def build_memory_event(base: Dict[str, Any], memory_root: Path) -> Dict[str, Any]:
+    """Build the `memory` event for a project-memory scan.
+
+    Extracted so agents WITHOUT a session-start hook can emit the same event.
+    Previously only the Claude SessionStart branch produced it, so on every
+    other agent no `memory` event ever existed, `memory-embedded-directive`
+    never ran, and ASI06 was undetected rather than merely unenforced
+    (issue #258).
+    """
+    memory = _read_project_memory(memory_root)
+    base["metadata"]["memory_files"] = memory["files"]
+    # Structural facts about the scan itself, matched directly by the
+    # memory-invisible-text / memory-oversized-instruction-file rules (#153).
+    base["metadata"]["truncated"] = memory["truncated"]
+    base["metadata"]["has_invisible_controls"] = memory["has_invisible_controls"]
+    # Per-file content fingerprints for the drift check in
+    # runtime.evaluate_tool_call (scanner.check_memory_drift).
+    base["metadata"]["memory_digests"] = memory["digests"]
+    # Integrity check (#154): verify instruction files against TOFU baseline.
+    # Runs after content scanning — integrity findings supplement, never
+    # replace, the content-based rules above. All integrity actions are
+    # warn-level; mismatches feed the counter-instruction in cli.py.
+    _read_entries = [{"path": p} for p in memory.get("files", [])]
+    if _read_entries:
+        from prismor.runtime.memory_guard import verify_memory_files
+        _integrity_findings = verify_memory_files(_read_entries, memory_root)
+        base.setdefault("integrity_findings", []).extend(_integrity_findings)
+    return {**base, "type": "memory", "content": memory["content"]}
+
+
 def _read_project_memory(workspace: Path) -> Dict[str, Any]:
     """Collect the instruction-file content the agent loads at session start.
 
@@ -2262,25 +2316,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
         # CLAUDE.md instead of the real project's, regardless of cwd.
         raw_cwd = payload.get("cwd")
         memory_root = Path(raw_cwd) if raw_cwd else workspace
-        memory = _read_project_memory(memory_root)
-        base["metadata"]["memory_files"] = memory["files"]
-        # Structural facts about the scan itself, matched directly by the
-        # memory-invisible-text / memory-oversized-instruction-file rules (#153).
-        base["metadata"]["truncated"] = memory["truncated"]
-        base["metadata"]["has_invisible_controls"] = memory["has_invisible_controls"]
-        # Per-file content fingerprints for the drift check in
-        # runtime.evaluate_tool_call (scanner.check_memory_drift).
-        base["metadata"]["memory_digests"] = memory["digests"]
-        # Integrity check (#154): verify instruction files against TOFU baseline.
-        # Runs after content scanning — integrity findings supplement, never
-        # replace, the content-based rules above. All integrity actions are
-        # warn-level; mismatches feed the counter-instruction in cli.py.
-        _read_entries = [{"path": p} for p in memory.get("files", [])]
-        if _read_entries:
-            from prismor.runtime.memory_guard import verify_memory_files
-            _integrity_findings = verify_memory_files(_read_entries, memory_root)
-            base.setdefault("integrity_findings", []).extend(_integrity_findings)
-        return {**base, "type": "memory", "content": memory["content"]}
+        return build_memory_event(base, memory_root)
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
     if tool_name in {"Task", "Agent"}:
