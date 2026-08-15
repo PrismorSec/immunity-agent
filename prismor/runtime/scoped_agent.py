@@ -262,9 +262,22 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     deny_network = True
 
     # Detect task intent from keywords
-    edit_keywords = {"edit", "fix", "refactor", "update", "change", "modify", "add", "implement", "create", "write"}
-    test_keywords = {"test", "run", "execute", "build", "compile", "lint", "check"}
-    network_keywords = {"fetch", "download", "install", "deploy", "push", "pull", "clone", "api", "http", "url"}
+    # Substring matches (so "appending", "patched", "renamed" all hit). Kept
+    # deliberately broad: a missed verb here means a blocked Edit later, and
+    # the base policy — not this heuristic — is what guards dangerous writes.
+    edit_keywords = {
+        "edit", "fix", "refactor", "update", "change", "modify", "add", "implement", "create", "write",
+        "append", "insert", "remove", "delete", "rename", "replace", "patch", "apply", "generate",
+        "scaffold", "migrate", "bump", "revert", "rewrite", "clean up", "cleanup", "format", "save",
+        "set up", "setup", "configure", "convert", "move", "extract", "inline", "document", "comment",
+        "translate", "port", "upgrade", "downgrade", "make ", "put ", "touch", "mkdir", "new file",
+    }
+    test_keywords = {"test", "run", "execute", "build", "compile", "lint", "check", "verify", "debug", "bench"}
+    network_keywords = {
+        "fetch", "download", "install", "deploy", "push", "pull", "clone", "api", "http", "url",
+        "curl", "wget", "web", "internet", "online", "browse", "request", "endpoint", "publish",
+        "release", "npm", "pip", "webfetch", "websearch", "search the", "look up",
+    }
     search_keywords = {"search", "find", "grep", "look"}
 
     if any(kw in goal_lower for kw in edit_keywords):
