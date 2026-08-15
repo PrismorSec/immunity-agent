@@ -205,3 +205,23 @@ def test_scope_flag_accepts_both_spellings(home, tmp_path):
     assert _cli("install-hooks", "--agent", "claude", "--scope", "global", cwd=ws).returncode == 0
     assert _cli("uninstall-hooks", "--agent", "claude", "--scope", "global", cwd=ws).returncode == 0
     assert _cli("cloak", "status", "--scope", "global", cwd=ws).returncode == 0
+
+
+def test_static_rules_recognise_common_edit_verbs():
+    tools = ["Bash", "Read", "Edit", "MultiEdit", "Write", "WebFetch", "WebSearch"]
+    for goal in ("Now append the line 'x' to README.md (use apply_patch), then cat it",
+                 "insert a docstring", "rename foo to bar", "replace hello with hi",
+                 "delete the unused import", "generate a config file", "patch the parser"):
+        r = sa._static_fallback_rules(goal, tools)
+        assert "Edit" in r["allowed_tools"], goal
+    r = sa._static_fallback_rules("curl the changelog and summarise it", tools)
+    assert r["deny_network"] is False and "WebFetch" in r["allowed_tools"]
+
+
+def test_update_notice_only_for_strictly_newer():
+    from prismor.runtime.immunity_cli import _is_newer
+    assert _is_newer("1.42.1", "1.42.0")
+    assert not _is_newer("1.42.0", "1.42.1")
+    assert not _is_newer("1.42.1", "1.42.1")
+    assert _is_newer("1.42.10", "1.42.9")
+    assert not _is_newer("garbage", "1.42.1") or True  # never raises

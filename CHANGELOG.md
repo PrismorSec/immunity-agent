@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Fixed
+- Static (no-API-key) session-scope heuristic missed common edit verbs (`append`, `insert`, `rename`, `replace`, `delete`, `patch`, `generate`, …) and network hints (`curl`, `web`, `publish`, …), so "append a line to README.md" stayed write-denied. Verified live with Codex.
+- The passive update notice used `!=`, so a fresh release (or a day-old cache) told users on a *newer* version that an older one was "available" and to run `prismor update`. Now only strictly-newer versions trigger it.
+
+## [Unreleased]
+
 ## [1.42.1] — 2026-08-15
 
 ### Fixed

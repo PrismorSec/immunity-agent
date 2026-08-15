@@ -73,6 +73,30 @@ def _deprecation_notice() -> None:
     )
 
 
+def _version_key(v: str):
+    """Numeric-aware sort key: '1.42.10' > '1.42.9'; non-numeric parts sort low."""
+    parts = []
+    for p in str(v).strip().lstrip("v").split("."):
+        num = ""
+        for ch in p:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        parts.append((int(num) if num else -1, p))
+    return parts
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    """True only when PyPI's latest is strictly newer than the running version.
+    A plain `!=` told users on a fresh release (or with a day-old cache) that an
+    OLDER version was 'available' and to run `prismor update`."""
+    try:
+        return _version_key(latest) > _version_key(current)
+    except Exception:
+        return False
+
+
 def _update_notice() -> None:
     """Passive nag when a newer prismor is on PyPI. The actual PyPI check is
     debounced (see version_check.latest_known_version — at most once/day), so
@@ -87,7 +111,7 @@ def _update_notice() -> None:
         latest = latest_known_version()
     except Exception:
         return
-    if not latest or latest == __version__:
+    if not latest or not _is_newer(latest, __version__):
         return
     sys.stderr.write(
         f"\033[33mnote:\033[0m prismor {latest} is available (you're on {__version__}). "
