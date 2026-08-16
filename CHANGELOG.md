@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+## [1.42.2] — 2026-08-16
+
+### Fixed
+- `prismor scope clear` did not stick: it deleted the session's scope file, so the next prompt synthesised a fresh restrictive scope and the agent was blocked again (and told to run `scope clear` again). Clear now records the session as cleared — every tool allowed, auto-scoping off — for the rest of the session; `scope list` shows `(cleared)`.
+- Session scopes could never include MCP tools: the synthesiser was given a fixed list of the seven built-in tools and clamped its output to it, so every `mcp__<server>__<tool>` call in a scoped session was denied by omission on every prompt regardless of what the prompt asked for. The synthesiser now sees one `mcp__<server>__*` family per MCP server the agent can reach (workspace `.mcp.json`, `~/.claude.json`, Claude Code plugin `.mcp.json`), allow/deny entries may be globs, and an auto-synthesised scope with no opinion on MCP falls through to the base policy instead of blocking. Hand-edited scopes remain authoritative.
+- The scoped-rules box wraps long tool lists and its hint separates *adjust* (`scope show|edit`) from *stop scoping* (`scope clear`).
+
 ## [1.42.1] — 2026-08-15
 
 ### Fixed
