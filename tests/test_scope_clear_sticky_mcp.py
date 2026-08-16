@@ -210,6 +210,16 @@ def test_mcp_fallthrough_only_when_scope_is_silent_on_mcp():
     assert sa.check_scoped_rules(silent, _ev("Bash", "shell")) is None
 
 
+def test_hand_edited_scope_does_not_fall_through_for_mcp():
+    """Operator narrowed the scope to Read+Bash without mentioning MCP: that
+    allowlist is authoritative — MCP tools stay blocked (found by the
+    multi-prompt scenario run; auto-synthesised scopes still fall through)."""
+    edited = {"allowed_tools": ["Read", "Bash"], "deny_tools": ["Edit", "Write"], "operator_edited": True}
+    assert sa.check_scoped_rules(edited, _ev(POSTHOG_TOOL)) is not None
+    auto = {"allowed_tools": ["Read", "Bash"], "deny_tools": ["Edit", "Write"]}
+    assert sa.check_scoped_rules(auto, _ev(POSTHOG_TOOL)) is None
+
+
 def test_cleared_scope_allows_everything():
     assert sa.check_scoped_rules(dict(sa.CLEARED_SCOPE), _ev(POSTHOG_TOOL)) is None
     assert sa.check_scoped_rules(dict(sa.CLEARED_SCOPE), _ev("Write", "file_write")) is None

@@ -569,13 +569,16 @@ def check_scoped_rules(
         # prior allowlist, so the deny does not silently turn into an allowlist
         # that blocks every other tool.
         if "*" not in allowed:
-            if is_mcp_tool(tool_name) and not _mentions_mcp(allowed, denied):
-                # The scope has no opinion on MCP at all — it was synthesised
-                # from a tool list that never included this server (undiscovered
-                # plugin, server added mid-session). Denying tools the
-                # synthesiser could not even name is not a control anyone chose;
-                # the call still goes through the base policy and the MCP
-                # gateway's own screening.
+            if (is_mcp_tool(tool_name) and not _mentions_mcp(allowed, denied)
+                    and not rules.get("operator_edited")):
+                # An auto-synthesised scope with no opinion on MCP at all — it
+                # came from a tool list that never included this server
+                # (undiscovered plugin, server added mid-session). Denying tools
+                # the synthesiser could not even name is not a control anyone
+                # chose; the call still goes through the base policy and the
+                # MCP gateway's own screening. A hand-edited scope is different:
+                # a human shaped it, so its allowlist is authoritative and MCP
+                # tools it does not name stay blocked.
                 pass
             elif _tool_matches(tool_name, allowed):
                 pass
