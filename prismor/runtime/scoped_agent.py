@@ -27,6 +27,139 @@ _EVENT_TYPE_TO_TOOL = {
 
 _KNOWN_TOOLS = {"Read", "Write", "Edit", "MultiEdit", "Bash", "WebFetch", "WebSearch"}
 
+# The seven built-in tool tags every scope is synthesised over. MCP tool
+# families (``mcp__<server>__*``) are appended per machine by
+# ``available_tools_for_scope``.
+BUILTIN_SCOPE_TOOLS = ["Bash", "Read", "Edit", "MultiEdit", "Write", "WebFetch", "WebSearch"]
+
+# ── MCP tool families ──────────────────────────────────────────────────────
+# MCP tools arrive under the tag ``mcp__<server>__<tool>`` (Claude Code
+# rewrites ``:`` in a plugin server name — ``plugin:posthog:posthog`` — to
+# ``_``, keeping hyphens). Individual tool names are only known once the agent
+# calls one, so a scope names a *family* per server: ``mcp__<server>__*``.
+
+_MCP_PREFIX = "mcp__"
+_MAX_MCP_CONFIG_BYTES = 8 * 1024 * 1024
+
+
+def is_mcp_tool(tool: str) -> bool:
+    return isinstance(tool, str) and tool.startswith(_MCP_PREFIX)
+
+
+def is_mcp_family(entry: str) -> bool:
+    return is_mcp_tool(entry) and entry.endswith("__*")
+
+
+def mcp_family_for_server(server: str) -> str:
+    """``plugin:posthog:posthog`` → ``mcp__plugin_posthog_posthog__*``."""
+    return f"{_MCP_PREFIX}{server.replace(':', '_')}__*"
+
+
+def _mcp_family_tokens(family: str) -> List[str]:
+    """Human-recognisable words in a family name, for keyword matching:
+    ``mcp__plugin_posthog_posthog__*`` → ["posthog"] (drops "plugin"/"mcp")."""
+    core = family[len(_MCP_PREFIX):-len("__*")] if is_mcp_family(family) else family
+    toks = set()
+    for part in core.replace("-", "_").split("_"):
+        part = part.strip().lower()
+        if len(part) >= 3 and part not in {"plugin", "mcp", "server", "api", "docs"}:
+            toks.add(part)
+    return sorted(toks)
+
+
+def _tool_matches(tool: str, entries: List[str]) -> bool:
+    """Exact tag match, or a glob entry (``mcp__posthog__*``) that covers it."""
+    for e in entries:
+        if not isinstance(e, str):
+            continue
+        if e == tool:
+            return True
+        if "*" in e and e != "*" and fnmatch(tool, e):
+            return True
+    return False
+
+
+def _mentions_mcp(*lists: List[str]) -> bool:
+    """Does any allow/deny list name an MCP tool or family?"""
+    return any(is_mcp_tool(e) for lst in lists for e in (lst or []) if isinstance(e, str))
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        if path.stat().st_size > _MAX_MCP_CONFIG_BYTES:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _mcp_server_names_in(obj: Any) -> List[str]:
+    """Server names from a ``{"mcpServers": {...}}`` blob or a bare map."""
+    if not isinstance(obj, dict):
+        return []
+    servers = obj.get("mcpServers", obj)
+    if not isinstance(servers, dict):
+        return []
+    return [str(k) for k in servers.keys() if isinstance(k, str) and k]
+
+
+def discover_mcp_families(workspace: Path, agent: str = "claude") -> List[str]:
+    """Best-effort inventory of the MCP servers this agent can reach, as
+    ``mcp__<server>__*`` families. Cheap on purpose (a handful of JSON reads —
+    this runs on every prompt) and never raises. Servers it cannot see are
+    not denied by the scope: see ``check_scoped_rules``."""
+    families: List[str] = []
+    seen: set = set()
+
+    def _add(server: str) -> None:
+        fam = mcp_family_for_server(server)
+        if fam not in seen:
+            seen.add(fam)
+            families.append(fam)
+
+    try:
+        home = Path.home()
+        # Workspace-level .mcp.json (Claude Code, Codex, Cursor share the shape).
+        for name in _mcp_server_names_in(_read_json(workspace / ".mcp.json")):
+            _add(name)
+        if agent in ("claude", "claude-code", "claude_code"):
+            cfg = _read_json(home / ".claude.json")
+            if isinstance(cfg, dict):
+                for name in _mcp_server_names_in(cfg.get("mcpServers")):
+                    _add(name)
+                projects = cfg.get("projects")
+                if isinstance(projects, dict):
+                    ws = str(workspace.resolve())
+                    for proj_path, proj in projects.items():
+                        if isinstance(proj, dict) and (proj_path == ws or ws.startswith(proj_path.rstrip("/") + "/")):
+                            for name in _mcp_server_names_in(proj.get("mcpServers")):
+                                _add(name)
+            # Plugin-provided servers: tag is plugin:<plugin>:<server>.
+            installed = _read_json(home / ".claude" / "plugins" / "installed_plugins.json")
+            plugins = installed.get("plugins") if isinstance(installed, dict) else None
+            if isinstance(plugins, dict):
+                for key, entries in plugins.items():
+                    plugin = str(key).split("@", 1)[0]
+                    for entry in entries if isinstance(entries, list) else []:
+                        if not isinstance(entry, dict):
+                            continue
+                        scope = entry.get("scope")
+                        if scope in ("project", "local") and entry.get("projectPath") not in (None, str(workspace.resolve())):
+                            continue
+                        install = entry.get("installPath")
+                        if not install:
+                            continue
+                        for name in _mcp_server_names_in(_read_json(Path(install) / ".mcp.json")):
+                            _add(f"plugin:{plugin}:{name}")
+    except Exception:
+        pass
+    return families
+
+
+def available_tools_for_scope(workspace: Path, agent: str = "claude") -> List[str]:
+    """Built-in tool tags plus the MCP families reachable from this workspace."""
+    return list(BUILTIN_SCOPE_TOOLS) + discover_mcp_families(workspace, agent)
+
 
 def _resolve_tool_name(event: Dict[str, Any]) -> Optional[str]:
     """Resolve the concrete tool name for an event.
@@ -117,6 +250,10 @@ Rules:
 - If the task involves reading/editing code, allow Read/Edit/Write for relevant paths
 - If the task does NOT mention network, web, fetch, install, or download, set deny_network: true
 - Always include Read in allowed_tools (agents need to read files to orient)
+- Entries of the form mcp__<server>__* are MCP tool families (one per connected
+  MCP server). Include a family in allowed_tools when the task needs that
+  service (e.g. an analytics/PostHog task needs the *posthog* family); put the
+  rest in deny_tools like any other unneeded tool.
 - If the task prompt contains @@SECRET:name@@ placeholders, include Bash so shell-based secret use can go through the agent's decloak hook or `prismor cloak run`.
 """
 
@@ -277,6 +414,13 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     if any(kw in goal_lower for kw in search_keywords):
         allowed.update({"Bash"})  # for grep/find
 
+    # MCP tool families: allow a family when the prompt names its server
+    # ("query posthog for ..." → mcp__plugin_posthog_posthog__*).
+    for fam in available_tools:
+        if is_mcp_family(fam) and any(tok in goal_lower for tok in _mcp_family_tokens(fam)):
+            allowed.add(fam)
+            deny_network = False
+
     deny = [t for t in available_tools if t not in allowed]
 
     rules = {
@@ -321,13 +465,34 @@ def load_scoped_rules(workspace: Path, session_id: str) -> Optional[Dict[str, An
         return None
 
 
+# What ``prismor scope clear`` leaves behind. Deleting the sidecar used to be
+# the whole implementation — and the next UserPromptSubmit saw "no scope yet"
+# and synthesised a fresh one, so the user was back to blocked one prompt
+# later (and told, again, to run `scope clear`). A cleared session is instead
+# recorded as allow-everything with auto-scoping switched off, and stays that
+# way until the session ends or an operator edits it again.
+CLEARED_SCOPE: Dict[str, Any] = {
+    "allowed_tools": ["*"],
+    "allowed_paths": ["**"],
+    "deny_tools": [],
+    "deny_network": False,
+    "cleared": True,
+    "operator_edited": True,
+}
+
+
 def clear_scoped_rules(workspace: Path, session_id: str) -> bool:
-    """Remove scoped rules for a session. Returns True if file was deleted."""
-    path = _scoped_path(workspace, session_id)
-    if path.exists():
-        path.unlink()
-        return True
-    return False
+    """Stop scoping a session: replace its rules with ``CLEARED_SCOPE`` so the
+    prompt hook does not re-synthesise them. Returns True if the session had
+    a scope that was not already cleared."""
+    existing = load_scoped_rules(workspace, session_id)
+    had_scope = existing is not None and not existing.get("cleared")
+    save_scoped_rules(workspace, session_id, dict(CLEARED_SCOPE))
+    return had_scope
+
+
+def is_cleared(rules: Optional[Dict[str, Any]]) -> bool:
+    return bool(rules and rules.get("cleared"))
 
 
 def list_scoped_sessions(workspace: Path) -> List[Dict[str, Any]]:
@@ -390,7 +555,9 @@ def check_scoped_rules(
         # deny_tools takes precedence over allowed_tools: an explicitly denied
         # tool is blocked even when a broader allow-rule would otherwise permit
         # it (e.g. allowed_tools:[Read,Edit] + deny_tools:[Write] blocks Write).
-        if tool_name in denied:
+        # Entries may be globs — ``mcp__posthog__*`` covers every tool of that
+        # MCP server.
+        if _tool_matches(tool_name, denied):
             return _scoped_finding(
                 session_id,
                 f"Tool '{tool_name}' is explicitly denied for this session",
@@ -402,19 +569,29 @@ def check_scoped_rules(
         # prior allowlist, so the deny does not silently turn into an allowlist
         # that blocks every other tool.
         if "*" not in allowed:
-            if event_type == "file_write":
+            if is_mcp_tool(tool_name) and not _mentions_mcp(allowed, denied):
+                # The scope has no opinion on MCP at all — it was synthesised
+                # from a tool list that never included this server (undiscovered
+                # plugin, server added mid-session). Denying tools the
+                # synthesiser could not even name is not a control anyone chose;
+                # the call still goes through the base policy and the MCP
+                # gateway's own screening.
+                pass
+            elif _tool_matches(tool_name, allowed):
+                pass
+            elif event_type == "file_write":
                 # A write may arrive as Write, Edit, or MultiEdit. Permit it only if
                 # the concrete tool is allowed, or — when the event carries no
                 # tool name — any write-family tool is allowed and not denied.
                 write_family = ("Write", "Edit", "MultiEdit")
                 permitted = [t for t in write_family if t in allowed and t not in denied]
-                if tool_name not in allowed and not permitted:
+                if not permitted:
                     return _scoped_finding(
                         session_id,
                         f"Tool '{tool_name}' is not in scope for this session",
                         event_type,
                     )
-            elif tool_name not in allowed:
+            else:
                 return _scoped_finding(
                     session_id,
                     f"Tool '{tool_name}' is not in scope for this session",
@@ -478,20 +655,38 @@ def format_scoped_rules_box(rules: Dict[str, Any]) -> str:
     _use_color = sys.stdout.isatty() and not _os.environ.get("NO_COLOR")
     _C = _CYAN if _use_color else ""
     _N = _NC if _use_color else ""
-    allowed = ", ".join(rules.get("allowed_tools", []))
-    paths = ", ".join(rules.get("allowed_paths", []))
-    denied = ", ".join(rules.get("deny_tools", []))
     network = "denied" if rules.get("deny_network", True) else "allowed"
 
+    def _field(label: str, items: List[str]) -> List[str]:
+        # Wrap long lists (a machine with ten MCP servers has ten families in
+        # deny_tools) so the box stays terminal-width instead of one huge line.
+        head = f"  {label:<15} ["
+        indent = " " * len(head)
+        out, cur = [], head
+        for i, item in enumerate(items):
+            piece = str(item) + ("," if i < len(items) - 1 else "")
+            if len(cur) + len(piece) + 1 > 78 and cur.strip() not in ("", head.strip()):
+                out.append(cur.rstrip())
+                cur = indent + piece
+            else:
+                cur = cur + (" " if cur not in (head, indent) else "") + piece if cur != head else cur + piece
+        out.append(cur + "]")
+        return out
+
     content_lines = [
-        f"  allowed_tools:  [{allowed}]",
-        f"  allowed_paths:  [{paths}]",
-        f"  deny_tools:     [{denied}]",
+        *_field("allowed_tools:", rules.get("allowed_tools", [])),
+        *_field("allowed_paths:", rules.get("allowed_paths", [])),
+        *_field("deny_tools:", rules.get("deny_tools", [])),
         f"  deny_network:   {network}",
         "",
         "  Session-only; widened on each new prompt. Stored in $PRISMOR_HOME/scoped/.",
-        "  Adjust: prismor scope show|edit|clear <session-id>",
+        "  Adjust: prismor scope show|edit <session-id>   Stop scoping: prismor scope clear <session-id>",
     ]
+    if rules.get("cleared"):
+        content_lines = [
+            "  cleared — every tool allowed for this session; auto-scoping is off.",
+            "  Re-enable by starting a new session.",
+        ]
 
     max_width = max(len(line) for line in content_lines) + 4
     border = max_width + 2

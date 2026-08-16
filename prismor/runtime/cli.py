@@ -1337,11 +1337,19 @@ def main(argv: Optional[List[str]] = None) -> None:
                     format_scoped_rules_box as _format_scoped_box,
                     merge_scoped_rules as _merge_scoped,
                     apply_agent_invariants as _agent_invariants,
+                    available_tools_for_scope as _available_tools_for_scope,
                 )
                 _existing_scoped = _load_scoped(workspace, normalized["sessionId"])
                 _sc = _existing_scoped or {}
-                if event.get("prompt") and not _sc.get("paused") and not _sc.get("operator_edited"):
-                    _available_tools = ["Bash", "Read", "Edit", "MultiEdit", "Write", "WebFetch", "WebSearch"]
+                # `prismor scope clear` leaves a cleared marker (operator_edited)
+                # rather than deleting the file, so a cleared session is NOT
+                # re-scoped here on the next prompt.
+                if event.get("prompt") and not _sc.get("paused") and not _sc.get("operator_edited") and not _sc.get("cleared"):
+                    # Built-in tags plus the MCP servers this agent can reach
+                    # (as mcp__<server>__* families) — otherwise the synthesiser
+                    # can never put an MCP tool in scope and every MCP call is
+                    # denied by omission, whatever the prompt asks for.
+                    _available_tools = _available_tools_for_scope(workspace, args.agent)
                     _scoped_rules = _synthesize_scoped(
                         goal=event["prompt"],
                         available_tools=_available_tools,
@@ -2497,9 +2505,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 tools = ", ".join(s["rules"].get("allowed_tools", []))
                 when = _dt.fromtimestamp(s["updated"]).strftime("%b %d %H:%M")
                 flags = []
+                if s["rules"].get("cleared"):
+                    flags.append("cleared")
                 if s["rules"].get("paused"):
                     flags.append("paused")
-                if s["rules"].get("operator_edited"):
+                if s["rules"].get("operator_edited") and not s["rules"].get("cleared"):
                     flags.append("hand-edited")
                 if s["rules"].get("prompts_seen"):
                     flags.append(f"{s['rules']['prompts_seen']} prompts")
@@ -2565,9 +2575,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         if sub == "clear":
             sid = args.session_id
             if clear_scoped_rules(workspace, sid):
-                print(_color("Cleared", _GREEN) + f" scoped rules for session '{sid}'")
+                print(_color("Cleared", _GREEN) + f" scoped rules for session '{sid}' "
+                      "— every tool is allowed and auto-scoping is off for the rest of this session.")
             else:
-                print(f"No scoped rules for session '{sid}'")
+                print(f"Session '{sid}' had no active scope; recorded it as cleared so none is synthesized later.")
             return
         # No action → print usage instead of dumping every session's full box.
         sys.stderr.write(
@@ -2575,7 +2586,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "  list             List active scoped sessions (newest first)\n"
             "  show [session]   Show rules — compact for all, full for one session\n"
             "  edit <session>   Edit a session's scoped rules in $EDITOR (turns off auto-widening)\n"
-            "  clear <session>  Remove a session's scoped rules\n"
+            "  clear <session>  Stop scoping a session (all tools allowed; auto-scoping off)\n"
             "  A session may be given as `latest` or any unique prefix of its id.\n"
         )
         raise SystemExit(2)

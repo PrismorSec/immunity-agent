@@ -216,7 +216,9 @@ def evaluate_tool_call(
             _capabilities.append({"name": str(_tool), "source": "declared"})
         _scoped = load_scoped_rules(workspace, session_id) if session_id else None
         for _tool in (_scoped or {}).get("allowed_tools") or []:
-            if _tool != "*":
+            # Skip wildcards ("*" and mcp__<server>__* families): they are
+            # permissions, not tools the agent has been seen to hold.
+            if "*" not in str(_tool):
                 _capabilities.append({"name": str(_tool), "source": "scoped"})
         record_seen(
             _agent_name, framework=agent, workspace=workspace,
