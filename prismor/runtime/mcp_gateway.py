@@ -149,9 +149,13 @@ class Upstream:
     """One downstream MCP server."""
 
     def __init__(self, spec: UpstreamSpec,
-                 on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None):
+                 on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                 guard: Optional[Callable[[UpstreamSpec], None]] = None):
         self.spec = spec
         self.on_notification = on_notification
+        #: Called before the first byte leaves for a remote upstream. Raises
+        #: UpstreamError to refuse the connection. See ``Gateway._egress_guard``.
+        self.guard = guard
 
     def initialize(self, client_params: Dict[str, Any]) -> Dict[str, Any]:
         result = self.request("initialize", client_params, timeout=REQUEST_TIMEOUT)
@@ -336,8 +340,9 @@ class UpstreamHttp(Upstream):
     """
 
     def __init__(self, spec: UpstreamSpec,
-                 on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None):
-        super().__init__(spec, on_notification)
+                 on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                 guard: Optional[Callable[[UpstreamSpec], None]] = None):
+        super().__init__(spec, on_notification, guard)
         self._session_id: Optional[str] = None
         self._counter = 0
         self._lock = threading.Lock()
@@ -346,6 +351,12 @@ class UpstreamHttp(Upstream):
               want_reply: bool) -> Optional[Dict[str, Any]]:
         import urllib.request
         import urllib.error
+        # Before the socket, not after. `initialize` and `tools/list` dial the
+        # server before any tool call exists to screen, so a URL that policy
+        # forbids would otherwise be reached during discovery — the tool
+        # surface is not the only thing that talks to the network.
+        if self.guard is not None:
+            self.guard(self.spec)
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -430,10 +441,11 @@ class UpstreamHttp(Upstream):
 
 
 def make_upstream(spec: UpstreamSpec,
-                  on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None
+                  on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                  guard: Optional[Callable[[UpstreamSpec], None]] = None,
                   ) -> Upstream:
     if spec.remote:
-        return UpstreamHttp(spec, on_notification)
+        return UpstreamHttp(spec, on_notification, guard)
     return UpstreamStdio(spec, on_notification)
 
 
@@ -504,8 +516,16 @@ class Gateway:
         # reset the crossover ledger, reopening the wait-out-the-restart bypass).
         self.session_id = session_id or ("mcp-" + uuid.uuid4().hex[:12])
         self.agent_name = GATEWAY_AGENT
+        #: url -> "" (cleared) or the refusal message. One verdict per upstream
+        #: per session: the handshake must not pay for a policy run on every
+        #: JSON-RPC message it sends. Set up before the upstreams that close
+        #: over the guard using it.
+        self._connect_verdicts: Dict[str, str] = {}
+        self._connect_lock = threading.Lock()
         self.upstreams: List[Upstream] = [
-            make_upstream(s, self._make_notification_handler(s.name)) for s in specs
+            make_upstream(s, self._make_notification_handler(s.name),
+                          self._egress_guard)
+            for s in specs
         ]
         self._routes: Dict[str, _Route] = {}
         self._routes_lock = threading.Lock()
@@ -735,6 +755,66 @@ class Gateway:
             return
 
         self._reply(req_id, result)
+
+    def _egress_guard(self, spec: UpstreamSpec) -> None:
+        """Screen a remote upstream's URL before the gateway dials it.
+
+        The tool surface is not the only thing that reaches the network. The
+        `initialize` handshake and `tools/list` both talk to the server before
+        a single tool call has been screened, and they run automatically at
+        startup with the gateway's network position — so a URL the policy
+        forbids is contacted during discovery, not at call time. Registration
+        alone must not be an execution path.
+
+        Evaluated through the same pipeline as a tool call, so one egress
+        policy governs both, and memoized per URL so a refusal stays refused
+        and an approval is not re-litigated on every JSON-RPC message.
+        """
+        url = spec.url
+        if not url:
+            return
+        with self._connect_lock:
+            if url in self._connect_verdicts:
+                refusal = self._connect_verdicts[url]
+                if refusal:
+                    raise UpstreamError(refusal)
+                return
+
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "session_id": self.session_id,
+            "agent": GATEWAY_AGENT,
+            "agent_event": "PreToolUse",
+            "type": "network",
+            "url": url,
+            "metadata": {
+                "cwd": str(self.workspace),
+                "tool_name": f"mcp__{spec.name}__connect",
+            },
+        }
+        decision = self._evaluate(event)
+        if decision is not None:
+            try:
+                from prismor.runtime.runtime import log_observe_findings
+                log_observe_findings(decision, mode=self.mode,
+                                     tool_name=f"mcp__{spec.name}__connect")
+            except Exception:
+                pass
+
+        refusal = ""
+        if decision is not None and decision.blocking is not None:
+            blocking = decision.blocking
+            refusal = (
+                f"prismor-gateway: upstream '{spec.name}' refused before connect: "
+                f"{blocking.get('title') or 'policy violation'}"
+            )
+            if blocking.get("ruleId"):
+                refusal += f" (rule: {blocking['ruleId']})"
+
+        with self._connect_lock:
+            self._connect_verdicts[url] = refusal
+        if refusal:
+            raise UpstreamError(refusal)
 
     def _evaluate(self, event: Dict[str, Any]):
         """Run one event through the shared runtime pipeline.
