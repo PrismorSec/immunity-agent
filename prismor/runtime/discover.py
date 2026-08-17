@@ -79,6 +79,9 @@ class McpRecord:
     managed: bool = False
     #: this entry *is* the Prismor gateway rather than a server behind it
     is_gateway: bool = False
+    #: declared by a file inside the workspace rather than by the user's own
+    #: config — i.e. it arrived with the code. See ``_is_workspace_scoped``.
+    workspace_scoped: bool = False
     risk: str = "none"
     findings: List[str] = field(default_factory=list)
 
@@ -299,6 +302,31 @@ def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
     return out
 
 
+def _is_workspace_scoped(path: Path, workspace: Path) -> bool:
+    """Did this MCP declaration arrive with the code rather than from the user?
+
+    A config inside the workspace — ``.mcp.json``, ``.vscode/mcp.json``,
+    ``.cursor/mcp.json``, ``.gemini/settings.json`` — is part of the checkout.
+    It travels in a clone, a branch, a pull request, or a dependency's example
+    directory, which means whoever can land a file in the repo can name the
+    command an agent will spawn, and that command inherits the developer's
+    environment. Project metadata and executable authority are not the same
+    thing, and only the file's location tells them apart.
+
+    A workspace that *is* the home directory is not a checkout — everything
+    would qualify and the signal would mean nothing — so it never counts.
+    """
+    try:
+        ws = workspace.expanduser().resolve()
+        home = Path.home().expanduser().resolve()
+        target = path.expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    if ws == home or ws in home.parents:
+        return False
+    return target == ws or ws in target.parents
+
+
 def _gateway_servers() -> Dict[str, Dict[str, Any]]:
     """MCP servers routed through the Prismor gateway, keyed by lowercase name.
 
@@ -415,6 +443,7 @@ def discover_mcp(workspace: Path) -> List[McpRecord]:
                 # the gateway whether or not the gateway also knows the name.
                 managed=False,
                 is_gateway=is_gateway,
+                workspace_scoped=_is_workspace_scoped(path, workspace),
             )
             _score_mcp(record, entry)
             if not is_gateway and name.lower() in gateway:
@@ -698,6 +727,26 @@ def _score_mcp(record: McpRecord, entry: Dict[str, Any]) -> None:
     if record.shadow and record.remote and _RISK_ORDER[risk] > _RISK_ORDER["medium"]:
         risk = "medium"
         reasons.append("remote MCP server not routed through the gateway")
+
+    # Declared by the checkout, not by the user. The gateway's own entry is
+    # exempt: pointing at Prismor is the governed outcome, not a risk.
+    if record.workspace_scoped and not record.is_gateway:
+        if record.command:
+            # The dangerous half: a repo can name the executable, and the
+            # spawned process inherits the developer's shell environment —
+            # cloud credentials, tokens, agent config and all.
+            floor, why = "high", (
+                "declared by a file in this workspace — a repo-supplied command "
+                "runs with your environment; approve it before use")
+        else:
+            floor, why = "medium", (
+                "declared by a file in this workspace — the endpoint travels "
+                "with the checkout; approve it before use")
+        if _RISK_ORDER[risk] > _RISK_ORDER[floor]:
+            risk = floor
+        # Stated whether or not it moved the band: it is the reason the other
+        # findings matter, since the whole file came from the checkout.
+        reasons.insert(0, why)
 
     record.risk = risk
     record.findings = reasons[:5]
