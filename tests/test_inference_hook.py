@@ -252,30 +252,181 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load_config_file(), {})
 
 
-class AuthTest(unittest.TestCase):
-    """The org comes from the key, never from the body."""
+class SignatureTest(unittest.TestCase):
+    """Standard Webhooks verification, exactly as Anthropic signs."""
 
     def setUp(self):
-        from prismor.runtime.inference_hook_server import _resolve_org
-        self._resolve = _resolve_org
-        self.cfg = {"orgs": {"org_a": {"api_key": "key-a"}, "org_b": {"api_key": "key-b"}}}
+        from prismor.runtime import inference_hook as ih
+        self.ih = ih
+        self.secret = ih.generate_secret()
+        self.body = b'{"type":"prompt","request_id":"req_1","messages":[]}'
 
-    def test_key_selects_its_own_org(self):
-        self.assertEqual(self._resolve("key-a", self.cfg, None), (True, "org_a"))
-        self.assertEqual(self._resolve("key-b", self.cfg, None), (True, "org_b"))
+    def _headers(self, secret=None, ts=None, mid="req_1"):
+        return self.ih.signature_headers(secret or self.secret, message_id=mid, body=self.body, timestamp=ts)
 
-    def test_unknown_key_is_rejected(self):
-        self.assertEqual(self._resolve("nope", self.cfg, None), (False, ""))
-        self.assertEqual(self._resolve("", self.cfg, None), (False, ""))
+    def test_secret_format_is_whsec_standard_base64(self):
+        import base64
+        self.assertTrue(self.secret.startswith("whsec_"))
+        base64.b64decode(self.secret[6:], validate=True)  # standard alphabet decodes
 
-    def test_single_tenant_fallback_key(self):
-        ok, org = self._resolve("solo", {"default_org_id": "org_z"}, "solo")
-        self.assertTrue(ok)
-        self.assertEqual(org, "org_z")
+    def test_round_trip_verifies(self):
+        chk = self.ih.verify_signature([self.secret], self._headers(), self.body)
+        self.assertTrue(chk.ok, chk.status)
+        self.assertEqual(chk.message_id, "req_1")
 
-    def test_org_without_a_key_is_not_matchable(self):
-        ok, _ = self._resolve("", {"orgs": {"org_a": {}}}, None)
+    def test_headers_are_case_insensitive(self):
+        h = {k.upper(): v for k, v in self._headers().items()}
+        self.assertTrue(self.ih.verify_signature([self.secret], h, self.body).ok)
+
+    def test_body_bytes_are_bound(self):
+        chk = self.ih.verify_signature([self.secret], self._headers(), self.body + b" ")
+        self.assertEqual((chk.ok, chk.status), (False, "mismatch"))
+
+    def test_wrong_secret_is_mismatch(self):
+        other = self.ih.generate_secret()
+        chk = self.ih.verify_signature([other], self._headers(), self.body)
+        self.assertEqual((chk.ok, chk.status), (False, "mismatch"))
+
+    def test_previous_secret_accepted_during_rotation(self):
+        old = self.ih.generate_secret()
+        chk = self.ih.verify_signature([self.secret, old], self._headers(secret=old), self.body)
+        self.assertTrue(chk.ok)
+
+    def test_stale_timestamp_is_rejected(self):
+        import time
+        h = self._headers(ts=int(time.time()) - 3600)
+        self.assertEqual(self.ih.verify_signature([self.secret], h, self.body).status, "expired")
+
+    def test_multiple_space_separated_candidates(self):
+        h = self._headers()
+        h["webhook-signature"] = "v1,AAAA " + h["webhook-signature"]
+        self.assertTrue(self.ih.verify_signature([self.secret], h, self.body).ok)
+
+    def test_missing_headers_is_unsigned(self):
+        self.assertEqual(self.ih.verify_signature([self.secret], {}, self.body).status, "unsigned")
+
+    def test_malformed_secret_never_raises(self):
+        chk = self.ih.verify_signature(["whsec_not*base64"], self._headers(), self.body)
+        self.assertEqual((chk.ok, chk.status), (False, "bad_secret"))
+
+
+class AuthenticateTest(unittest.TestCase):
+    """Order of trust: signature > bearer > unsigned-only-in-bootstrap."""
+
+    def setUp(self):
+        from prismor.runtime import inference_hook as ih
+        from prismor.runtime.inference_hook_server import authenticate
+        self.ih, self.auth = ih, authenticate
+        self.secret = ih.generate_secret()
+        self.body = b'{"type":"prompt","request_id":"r","tenant_id":"t1","messages":[]}'
+        self.frame = ih.parse_frame(json.loads(self.body))
+
+    def _signed(self, secret=None):
+        return self.ih.signature_headers(secret or self.secret, message_id="r", body=self.body)
+
+    def test_valid_signature_wins(self):
+        cfg = self.ih.ChannelConfig(signing_secret=self.secret)
+        ok, method, _ = self.auth(cfg, self._signed(), self.body, self.frame)
+        self.assertEqual((ok, method), (True, "signature"))
+
+    def test_bad_signature_rejected_even_if_unsigned_allowed(self):
+        cfg = self.ih.ChannelConfig(signing_secret=self.secret, allow_unsigned=True)
+        ok, method, detail = self.auth(cfg, self._signed(self.ih.generate_secret()), self.body, self.frame)
         self.assertFalse(ok)
+        self.assertIn("mismatch", detail)
+
+    def test_unsigned_rejected_once_secret_configured(self):
+        cfg = self.ih.ChannelConfig(signing_secret=self.secret)
+        ok, _, _ = self.auth(cfg, {}, self.body, self.frame)
+        self.assertFalse(ok)
+
+    def test_unsigned_accepted_in_bootstrap(self):
+        ok, method, _ = self.auth(self.ih.ChannelConfig(), {}, self.body, self.frame)
+        self.assertEqual((ok, method), (True, "unsigned-bootstrap"))
+
+    def test_bearer_for_non_anthropic_callers(self):
+        cfg = self.ih.ChannelConfig(api_key="k1")
+        ok, method, _ = self.auth(cfg, {"Authorization": "Bearer k1"}, self.body, self.frame)
+        self.assertEqual((ok, method), (True, "bearer"))
+        ok, _, _ = self.auth(cfg, {"Authorization": "Bearer nope"}, self.body, self.frame)
+        self.assertFalse(ok)
+
+    def test_tenant_secret_from_config_file(self):
+        from prismor.runtime.inference_hook import resolve_config
+        cfg = resolve_config("t1", file_config={"orgs": {"t1": {"signing_secret": self.secret}}})
+        self.assertEqual(cfg.signing_secrets, [self.secret])
+        other = resolve_config("t2", file_config={"orgs": {"t1": {"signing_secret": self.secret}}})
+        self.assertFalse(other.is_signed)
+
+
+class FrameTest(unittest.TestCase):
+    """Anthropic's prompt-frame shape: documented fields in, aliases tolerated."""
+
+    def test_documented_fields(self):
+        from prismor.runtime.inference_hook import parse_frame, sample_frame
+        f = parse_frame(sample_frame("clean"))
+        self.assertEqual(f.type, "prompt")
+        self.assertTrue(f.request_id.startswith("req_"))
+        self.assertEqual(f.actor_email, "alice@example.com")
+        self.assertEqual(f.application, "claude-ai")
+        self.assertIn("user=alice@example.com", f.subject)
+        self.assertIn("org=", f.subject)
+
+    def test_config_test_frame(self):
+        from prismor.runtime.inference_hook import parse_frame, sample_frame
+        f = parse_frame(sample_frame("config-test"))
+        self.assertTrue(f.is_config_test)
+        self.assertIsNone(f.subject)
+
+    def test_tool_name_alias_and_inline_attachment_blocks(self):
+        from prismor.runtime.inference_hook import fan_out
+        ws = Path(tempfile.mkdtemp())
+        fan = fan_out({"messages": [
+            _msg("assistant", {"type": "tool_use", "id": "t1", "tool_name": "Bash",
+                               "input": {"command": "ls"}}),
+            _msg("user", {"type": "tool_result", "tool_use_id": "t1", "tool_name": "Bash",
+                          "is_error": False, "content": "a.txt"}),
+            _msg("user", {"type": "attachment", "file_name": "cards.csv",
+                          "media_type": "text/csv", "size_bytes": 12, "text": "4111 1111 1111 1111"}),
+        ]}, session_id="s", workspace=ws)
+        types = [e["type"] for e in fan.events]
+        self.assertEqual(types, ["shell", "tool_result", "prompt"])
+        self.assertEqual(fan.events[1]["metadata"]["tool_name"], "Bash")
+        self.assertEqual(fan.events[2]["metadata"]["attachment_name"], "cards.csv")
+
+    def test_unknown_block_type_is_skipped_not_fatal(self):
+        from prismor.runtime.inference_hook import fan_out
+        fan = fan_out({"messages": [_msg("user", {"type": "hologram", "beam": 3}, _text("hi"))]},
+                      session_id="s", workspace=Path(tempfile.mkdtemp()))
+        self.assertEqual([e["type"] for e in fan.events], ["prompt"])
+
+
+class WireVerdictTest(unittest.TestCase):
+    """The response body Anthropic parses."""
+
+    def test_allow_shape(self):
+        from prismor.runtime.inference_hook import TurnVerdict
+        w = TurnVerdict(allow=True).to_wire()
+        self.assertEqual(w["action"], "allow")
+        self.assertNotIn("deny_reason", w)
+        self.assertRegex(w["reference_id"], r"^[A-Za-z0-9._:/-]{1,50}$")
+
+    def test_deny_shape_and_limits(self):
+        from prismor.runtime.inference_hook import TurnVerdict, DENY_REASON_MAX
+        w = TurnVerdict(allow=False, reason="x" * 900).to_wire(footer="Contact security@example.com.")
+        self.assertEqual(w["action"], "deny")
+        self.assertLessEqual(len(w["deny_reason"]), DENY_REASON_MAX)
+
+    def test_footer_is_appended(self):
+        from prismor.runtime.inference_hook import TurnVerdict
+        w = TurnVerdict(allow=False, reason="No.").to_wire(footer="Ask #security.")
+        self.assertEqual(w["deny_reason"], "No. Ask #security.")
+
+    def test_reference_id_is_sanitised_never_dropped(self):
+        from prismor.runtime.inference_hook import TurnVerdict
+        v = TurnVerdict(allow=False, reason="r", reference_id="bad id!" + "x" * 80)
+        ref = v.to_wire()["reference_id"]
+        self.assertRegex(ref, r"^[A-Za-z0-9._:/-]{1,50}$")
 
 
 class FailPostureTest(unittest.TestCase):
@@ -304,10 +455,27 @@ class FailPostureTest(unittest.TestCase):
         self.assertNotIn("4111", reason)
 
 
+_ENV_KEYS = ("PRISMOR_HOME", "PRISMOR_APPROVALS", "PRISMOR_INFERENCE_HOOK_SECRET", "PRISMOR_INFERENCE_HOOK_CONFIG")
+
+
+def _snapshot_env():
+    return {k: os.environ.get(k) for k in _ENV_KEYS}
+
+
+def _restore_env(snap):
+    for k, v in snap.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 class EndToEndTest(unittest.TestCase):
     """The real engine, real default policy, real rules."""
 
     def setUp(self):
+        self._env = _snapshot_env()
+        self.addCleanup(_restore_env, self._env)
         self.home = Path(tempfile.mkdtemp(prefix="prismor-ih-home-"))
         self.ws = Path(tempfile.mkdtemp(prefix="prismor-ih-e2e-"))
         os.environ["PRISMOR_HOME"] = str(self.home)
@@ -410,6 +578,154 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(taint.injection_detected,
                         "injection in the replayed tool_result did not set taint")
         self.assertEqual(taint.injection_event_index, 0)
+
+
+class BehaviourTest(unittest.TestCase):
+    """Contract behaviours that are not a single rule: shadow, unknown event,
+    credential screen."""
+
+    def setUp(self):
+        self._env = _snapshot_env()
+        self.addCleanup(_restore_env, self._env)
+        self.home = Path(tempfile.mkdtemp(prefix="prismor-ih-home-"))
+        self.ws = Path(tempfile.mkdtemp(prefix="prismor-ih-b-"))
+        os.environ["PRISMOR_HOME"] = str(self.home)
+        os.environ["PRISMOR_APPROVALS"] = "0"
+        from prismor.runtime.inference_hook import ChannelConfig, evaluate_turn, sample_frame
+        self.evaluate_turn, self.sample_frame, self.ChannelConfig = evaluate_turn, sample_frame, ChannelConfig
+
+    def test_unknown_event_type_allows(self):
+        v = self.evaluate_turn({"type": "response", "messages": []},
+                               config=self.ChannelConfig(workspace=self.ws), workspace=self.ws)
+        self.assertTrue(v.allow)
+        self.assertEqual(v.basis, "unknown_event")
+
+    def test_credential_in_prompt_is_denied(self):
+        v = self.evaluate_turn(self.sample_frame("secret"),
+                               config=self.ChannelConfig(workspace=self.ws, enqueue_approvals=False), workspace=self.ws)
+        self.assertFalse(v.allow)
+        self.assertEqual(v.blocking["ruleId"], "inference-hook-credential-in-transcript")
+        self.assertNotIn("sk_live", v.reason or "")
+        self.assertNotIn("sk_live", json.dumps(v.findings))  # evidence is masked
+
+    def test_credential_screen_can_be_disabled(self):
+        v = self.evaluate_turn(self.sample_frame("secret"),
+                               config=self.ChannelConfig(workspace=self.ws, enqueue_approvals=False, screen_secrets=False),
+                               workspace=self.ws)
+        self.assertTrue(v.allow)
+
+    def test_shadow_mode_returns_allow_but_reports_deny(self):
+        cfg = self.ChannelConfig(workspace=self.ws, enqueue_approvals=False, mode="observe")
+        v = self.evaluate_turn(self.sample_frame("pci"), config=cfg, workspace=self.ws)
+        self.assertTrue(v.allow)
+        self.assertEqual(v.basis, "shadow")
+        self.assertEqual(v.shadow_action, "deny")
+        w = v.to_wire()
+        self.assertEqual(w["action"], "allow")
+        self.assertEqual(w["prismor"]["shadow"]["action"], "deny")
+
+    def test_samples_have_expected_verdicts(self):
+        cfg = self.ChannelConfig(workspace=self.ws, enqueue_approvals=False)
+        for kind, want in (("clean", True), ("config-test", True), ("pci", False), ("secret", False), ("injection", False)):
+            v = self.evaluate_turn(self.sample_frame(kind), config=cfg, workspace=self.ws)
+            self.assertEqual(v.allow, want, f"{kind}: {v.reason}")
+
+
+class HttpTest(unittest.TestCase):
+    """The stdlib server, over a real socket, with real signatures."""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import HTTPServer
+        from socketserver import ThreadingMixIn
+        from prismor.runtime import inference_hook as ih
+        from prismor.runtime.inference_hook_server import InferenceHookHandler, _VerdictCache
+        cls._env = _snapshot_env()
+        cls.home = Path(tempfile.mkdtemp(prefix="prismor-ih-home-"))
+        os.environ["PRISMOR_HOME"] = str(cls.home)
+        os.environ["PRISMOR_APPROVALS"] = "0"
+        os.environ.pop("PRISMOR_INFERENCE_HOOK_SECRET", None)
+        cls.ih = ih
+        cls.secret = ih.generate_secret()
+        cls.ws = Path(tempfile.mkdtemp(prefix="prismor-ih-http-"))
+        InferenceHookHandler.workspace = cls.ws
+        InferenceHookHandler.file_config = {"defaults": {"signing_secret": cls.secret, "enqueue_approvals": False}}
+        InferenceHookHandler.cli_overrides = {}
+        InferenceHookHandler.config_error = None
+        InferenceHookHandler.cache = _VerdictCache()
+
+        class _S(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+        cls.server = _S(("127.0.0.1", 0), InferenceHookHandler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        _restore_env(cls._env)
+
+    def _post(self, frame, *, secret=None, path="/v1/inference-hook", headers=None, unsigned=False):
+        import urllib.request, urllib.error
+        body = json.dumps(frame).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        if not unsigned:
+            for k, v in self.ih.signature_headers(secret or self.secret, message_id=str(frame.get("request_id") or "r"), body=body).items():
+                req.add_header(k, v)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    def test_signed_deny_is_200_with_contract_fields(self):
+        status, w = self._post(self.ih.sample_frame("pci"))
+        self.assertEqual(status, 200)
+        self.assertEqual(w["action"], "deny")
+        self.assertIn("deny_reason", w)
+        self.assertRegex(w["reference_id"], r"^[A-Za-z0-9._:/-]{1,50}$")
+        self.assertEqual(w["prismor"]["auth"], "signature")
+
+    def test_any_path_is_the_endpoint(self):
+        status, w = self._post(self.ih.sample_frame("clean"), path="/anything/the/admin/typed")
+        self.assertEqual((status, w["action"]), (200, "allow"))
+
+    def test_unsigned_is_401_not_a_verdict(self):
+        status, w = self._post(self.ih.sample_frame("clean"), unsigned=True)
+        self.assertEqual(status, 401)
+        self.assertNotIn("action", w)
+
+    def test_forged_signature_is_401(self):
+        status, _ = self._post(self.ih.sample_frame("clean"), secret=self.ih.generate_secret())
+        self.assertEqual(status, 401)
+
+    def test_retry_with_same_webhook_id_is_served_from_cache(self):
+        frame = self.ih.sample_frame("pci")
+        _, first = self._post(frame)
+        _, second = self._post(frame)
+        self.assertEqual(first["reference_id"], second["reference_id"])
+
+    def test_bad_json_is_a_200_fail_posture_verdict(self):
+        import urllib.request
+        body = b"{not json"
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/inference-hook", data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            self.assertEqual(resp.status, 200)
+            w = json.loads(resp.read())
+        self.assertEqual(w["action"], "deny")
+        self.assertEqual(w["prismor"]["basis"], "fail_closed")
+
+    def test_health(self):
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(json.loads(resp.read())["status"], "ok")
 
 
 if __name__ == "__main__":

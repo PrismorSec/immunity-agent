@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Added
+- **Claude Inference Hooks.** `prismor inference-hook serve` runs the AI security server behind Claude Enterprise Inference hooks: Anthropic POSTs each governed prompt from claude.ai, Claude Code and Cowork as a signed prompt frame; Prismor fans the transcript into canonical events, runs the normal policy pipeline (plus a channel deny floor for PII / credentials / prompt injection and a credential-in-transcript screen using the Cloak classifier) and answers `{"action": "allow"|"deny", "deny_reason", "reference_id"}` inside the verdict timeout. Standard Webhooks signature verification (`whsec_`, rotation grace, constant-time), tenant resolution from the signed `tenant_id`, always-HTTP-200 verdicts so a policy deny is never a webhook failure, `webhook-id` idempotency, shadow mode, fail-closed by default. `prismor inference-hook test` sends signed sample frames (or evaluates in-process); `prismor inference-hook secret` mints a secret. Docs: `docs/inference-hook.md`.
+
 ## [1.42.2] — 2026-08-16
 
 ### Fixed

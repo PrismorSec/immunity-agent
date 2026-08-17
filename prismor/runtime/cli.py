@@ -319,17 +319,47 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         return
 
-    # ── inference-hook-server: provider-side prompt-turn screening ───────
-    if args.command == "inference-hook-server":
-        from prismor.runtime.inference_hook_server import run_inference_hook_server
+    # ── inference-hook: Claude Inference Hooks AI-security server + tools ──
+    # `inference-hook-server` is the pre-1.40 spelling, kept as an alias.
+    if args.command in ("inference-hook", "inference-hook-server"):
         from pathlib import Path as _Path
-        run_inference_hook_server(
-            host=args.host,
-            port=args.port,
-            workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
-            api_key=getattr(args, "api_key", None),
-            config_path=_Path(args.config) if getattr(args, "config", None) else None,
-        )
+        sub = getattr(args, "ih_command", None) or "serve"
+        if sub == "serve":
+            from prismor.runtime.inference_hook_server import run_inference_hook_server
+            run_inference_hook_server(
+                host=args.host,
+                port=args.port,
+                workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+                api_key=getattr(args, "api_key", None),
+                config_path=_Path(args.config) if getattr(args, "config", None) else None,
+                signing_secret=getattr(args, "signing_secret", None),
+                previous_signing_secret=getattr(args, "previous_signing_secret", None),
+                allow_unsigned=bool(getattr(args, "allow_unsigned", False)),
+                fail_open=bool(getattr(args, "fail_open", False)),
+                mode=getattr(args, "mode", None),
+                verbose=bool(getattr(args, "verbose", False)),
+            )
+            return
+        if sub == "test":
+            from prismor.runtime.inference_hook_cli import cmd_test
+            sys.exit(cmd_test(
+                url=args.url,
+                secret=args.secret or os.environ.get("PRISMOR_INFERENCE_HOOK_SECRET"),
+                samples=list(args.sample or []),
+                frame_path=args.frame,
+                tenant=args.tenant or "",
+                application=args.application,
+                bearer=args.bearer,
+                unsigned=bool(args.unsigned),
+                timeout=float(args.timeout),
+                workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+                as_json=bool(args.json),
+                expect=args.expect,
+            ))
+        if sub == "secret":
+            from prismor.runtime.inference_hook_cli import cmd_secret
+            sys.exit(cmd_secret())
+        parser.parse_args(["inference-hook", "--help"])
         return
 
     # ── dashboard / serve: local web dashboard (HTTP server) ─────────────
@@ -2775,16 +2805,50 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
 
-    # ── inference-hook-server: prompt-turn screening for a model provider ──
+    # ── inference-hook: Claude Inference Hooks AI-security server ──────
+    def _add_ih_serve_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--port", type=int, default=7072, help="Port to listen on (default: 7072)")
+        p.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1; use 0.0.0.0 behind a TLS proxy)")
+        p.add_argument("--workspace", default=None, help="Workspace whose .prismor/policy.yaml is enforced (default: cwd)")
+        p.add_argument("--signing-secret", default=None, help="whsec_ secret from claude.ai → Inference hooks (default: $PRISMOR_INFERENCE_HOOK_SECRET)")
+        p.add_argument("--previous-signing-secret", default=None, help="Old whsec_ secret to keep accepting for ~1 min after a rotation (default: $PRISMOR_INFERENCE_HOOK_PREVIOUS_SECRET)")
+        p.add_argument("--allow-unsigned", action="store_true", help="Accept unsigned requests even when a secret is set (local testing only)")
+        p.add_argument("--fail-open", action="store_true", help="Allow when Prismor itself cannot decide (timeout/crash). Default: fail closed")
+        p.add_argument("--mode", choices=("enforce", "observe", "shadow"), default=None, help="observe/shadow: compute the verdict, log it, return allow (default: enforce, or $PRISMOR_INFERENCE_HOOK_MODE)")
+        p.add_argument("--api-key", default=None, help="Bearer key for non-Anthropic callers (default: $PRISMOR_INFERENCE_HOOK_KEY)")
+        p.add_argument("--config", default=None, help="Multi-tenant config JSON: per-tenant secrets, fail posture, deny categories (default: $PRISMOR_INFERENCE_HOOK_CONFIG)")
+        p.add_argument("-v", "--verbose", action="store_true", help="Log one line per verdict to stderr")
+
     _ih = subparsers.add_parser(
-        "inference-hook-server",
-        help="Screen prompt turns for a model provider's inference hook (transcript in, allow/deny out)",
+        "inference-hook",
+        help="Claude Inference Hooks: run the AI security server (serve), send signed test frames (test), mint a secret",
+        description=(
+            "Prismor as the AI security server behind Claude Enterprise Inference Hooks. "
+            "Anthropic POSTs each governed prompt (claude.ai, Claude Code, Cowork) to your URL; "
+            "Prismor evaluates the transcript against your policy and answers allow or deny before the model runs."
+        ),
     )
-    _ih.add_argument("--port", type=int, default=7072, help="Port to listen on (default: 7072)")
-    _ih.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
-    _ih.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
-    _ih.add_argument("--api-key", default=None, help="Single-tenant bearer key (default: $PRISMOR_INFERENCE_HOOK_KEY); use --config for per-org keys")
-    _ih.add_argument("--config", default=None, help="Per-org channel config JSON: keys, fail posture, deny categories (default: $PRISMOR_INFERENCE_HOOK_CONFIG)")
+    _ih_sub = _ih.add_subparsers(dest="ih_command")
+    _ih_serve = _ih_sub.add_parser("serve", help="Run the AI security server (POST any path → verdict; GET /health)")
+    _add_ih_serve_args(_ih_serve)
+    _ih_test = _ih_sub.add_parser("test", help="Send signed sample prompt frames to a server (or evaluate in-process) and print verdicts")
+    _ih_test.add_argument("--url", default=None, help="Server URL, e.g. https://hooks.example.com/v1/inference-hook. Omit to evaluate in-process")
+    _ih_test.add_argument("--secret", default=None, help="whsec_ secret to sign with (default: $PRISMOR_INFERENCE_HOOK_SECRET)")
+    _ih_test.add_argument("--sample", action="append", choices=("clean", "pci", "secret", "injection", "config-test", "all"), help="Which built-in frame(s) to send (default: clean, pci, secret, injection)")
+    _ih_test.add_argument("--frame", default=None, help="Send this JSON file as the prompt frame instead of a sample")
+    _ih_test.add_argument("--tenant", default=None, help="tenant_id to stamp on sample frames")
+    _ih_test.add_argument("--application", default="claude-ai", help="source.application to stamp on samples (claude-ai, claude-code, config-test)")
+    _ih_test.add_argument("--bearer", default=None, help="Send Authorization: Bearer instead of a signature")
+    _ih_test.add_argument("--unsigned", action="store_true", help="Send with no signature (to verify the server rejects it)")
+    _ih_test.add_argument("--timeout", default=10.0, type=float, help="HTTP timeout seconds (default 10)")
+    _ih_test.add_argument("--workspace", default=None, help="Workspace for in-process evaluation (default: cwd)")
+    _ih_test.add_argument("--expect", choices=("allow", "deny"), default=None, help="Exit 2 unless every verdict matches")
+    _ih_test.add_argument("--json", action="store_true", help="Print raw verdict JSON")
+    _ih_sub.add_parser("secret", help="Print a fresh whsec_ signing secret for local end-to-end runs")
+
+    # Back-compat alias for the pre-1.40 command name.
+    _ih_legacy = subparsers.add_parser("inference-hook-server")
+    _add_ih_serve_args(_ih_legacy)
 
     # ── check ──────────────────────────────────────────────────────────
     check_parser = subparsers.add_parser("check", help="Quick pre-check a command or file path")

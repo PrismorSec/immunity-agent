@@ -552,6 +552,19 @@ agents:
     notes: "stdio/HTTP shim in front of downstream MCP servers; covers any MCP client."
     sources: ["https://modelcontextprotocol.io/"]
 
+  # ── Universal — provider-side inference hook ─────────────────────────────
+  - id: claude-inference-hooks
+    name: Claude Inference Hooks (claude.ai · Claude Code · Cowork)
+    kind: framework
+    surface: http
+    status: shipped
+    config_paths: {}
+    events: [prompt]
+    blocking: proxy-deny
+    normalizer: prismor.runtime.inference_hook
+    notes: "AI security server for Claude Enterprise Inference hooks (prismor inference-hook serve --port 7072). Anthropic POSTs a signed prompt frame per governed request; Prismor fans the transcript into canonical events, runs the policy pipeline and returns {action: allow|deny}. Covers web, desktop and CLI with nothing installed on user devices."
+    sources: ["https://platform.claude.com/docs/en/manage-claude/inference-hooks", "https://platform.claude.com/docs/en/manage-claude/inference-hooks-endpoint"]
+
   # ── Multiplexers — pass-through, no dedicated adapter ────────────────────
   - id: herdr
     name: Herdr

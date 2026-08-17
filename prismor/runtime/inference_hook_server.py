@@ -1,25 +1,34 @@
 """prismor/runtime/inference_hook_server.py — HTTP surface for the turn channel.
 
-Serves ``POST /v1/inference-hook``: a model provider hands us the transcript it
-is about to send to the model, and we answer allow or deny inside a few-second
-budget. The evaluation itself lives in ``inference_hook.py``; this file owns the
-things that only matter because the caller is remote and multi-tenant:
+Serves the **AI security server** side of Claude Inference Hooks: Anthropic
+POSTs a signed prompt frame to whatever URL the org's admin configured, and we
+answer ``{"action": "allow"}`` or ``{"action": "deny", ...}`` inside the org's
+verdict timeout. The evaluation lives in ``inference_hook.py``; this file owns
+the things that only matter because the caller is remote and multi-tenant:
 
-* **Per-org auth.** Each org gets its own key, and the org is resolved *from the
-  key*, not from a body field — otherwise any valid caller could ask for another
-  org's posture by changing a string.
-* **A hard timeout.** We sit on the critical path of somebody's prompt. Blowing
-  the provider's window degrades their model for every user in the org, so the
-  budget is enforced here rather than hoped for.
-* **A defined fail posture.** Never a naked 500. Every path — bad JSON, crash,
-  timeout, unusable config — resolves to the org's configured posture, which
-  defaults to fail-closed.
+* **Signature verification, not bearer auth.** Anthropic signs every request
+  (Standard Webhooks: ``webhook-id`` / ``webhook-timestamp`` /
+  ``webhook-signature``, HMAC-SHA256 with the ``whsec_`` secret the admin got
+  from claude.ai). The tenant is read from the frame's ``tenant_id`` and the
+  secret is looked up per tenant — a valid signature for org A can never be
+  presented as org B, because the body (with its ``tenant_id``) is what's
+  signed. Bearer keys remain available for non-Anthropic callers.
+* **Always HTTP 200 for a verdict.** Anthropic treats *any* non-200 as a
+  "webhook failure" — it applies the org's fail-open/closed setting and counts
+  toward a circuit breaker that stops enforcement. So a policy deny, a
+  timeout, and a crash all return 200 with the right verdict; only an
+  unauthenticated request gets a 401 (a forged request must not receive a
+  verdict at all).
+* **A hard timeout.** We sit on the critical path of somebody's prompt.
+* **Idempotency on ``webhook-id``.** Anthropic retries once on connection
+  failure with the same id; we answer from a small cache rather than
+  re-evaluate (and re-log) the turn.
 
-This is the stdlib server, which is right for a sidecar and for running the
-channel end to end locally. Hosting it as a real multi-tenant service on the
-critical path wants an ASGI app and a front door with TLS termination, rate
-limiting, and autoscaling; the evaluation core is deliberately framework-free
-so that move is a re-host, not a rewrite.
+This is the stdlib server, right for a sidecar and for running the channel end
+to end locally. For a large org put it behind a TLS-terminating front door
+(nginx/Caddy/ALB) with a body limit of at least 10 MB — Anthropic sends the
+whole transcript untruncated — and scale it horizontally; the evaluation core
+is framework-free so re-hosting on ASGI is a re-host, not a rewrite.
 """
 from __future__ import annotations
 
@@ -27,6 +36,8 @@ import hmac
 import json
 import os
 import sys
+import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -38,61 +49,144 @@ from prismor.runtime.inference_hook import (
     AGENT_ID,
     ChannelConfig,
     ConfigError,
+    Frame,
     TurnVerdict,
     evaluate_turn,
     fail_verdict,
     load_config_file,
+    parse_frame,
     resolve_config,
+    verify_signature,
 )
 
-# Body larger than this is refused unread. A transcript is text; anything at
-# this size is a mistake or an attempt to tie the process up allocating.
-MAX_BODY_BYTES = 32 * 1024 * 1024
+# Anthropic caps a prompt frame at 10 MB. We accept a little more so a proxy
+# that adds framing never turns a legitimate transcript into a webhook failure
+# (which, under fail-open, would let an oversized prompt through uninspected).
+MAX_BODY_BYTES = 12 * 1024 * 1024
+# How many recent webhook-ids to remember for idempotency.
+DEDUPE_SIZE = 4096
+# Default listen port. 7071 is `prismor eval-server`.
+DEFAULT_PORT = 7072
+# Conventional path; the server answers on any path (Anthropic posts to the
+# exact URL the admin configured, so there is no fixed suffix in the contract).
+DEFAULT_PATH = "/v1/inference-hook"
 
 
 class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def _resolve_org(
-    presented_key: str,
-    file_config: Dict[str, Any],
-    fallback_key: Optional[str],
-) -> Tuple[bool, str]:
-    """Authenticate a bearer key and return ``(ok, org_id)``.
+class _VerdictCache:
+    """Tiny LRU keyed on webhook-id → wire body. Thread-safe."""
 
-    The org is derived from whichever key matched, so a caller cannot name an
-    org it does not hold the key for. Comparison is constant-time on every
-    branch — an early return on length or prefix would leak key material by
-    timing just as surely as ``==`` would.
+    def __init__(self, size: int = DEDUPE_SIZE) -> None:
+        self._d: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._size = size
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        if not key:
+            return None
+        with self._lock:
+            val = self._d.get(key)
+            if val is not None:
+                self._d.move_to_end(key)
+            return val
+
+    def put(self, key: str, val: Dict[str, Any]) -> None:
+        if not key:
+            return
+        with self._lock:
+            self._d[key] = val
+            self._d.move_to_end(key)
+            while len(self._d) > self._size:
+                self._d.popitem(last=False)
+
+
+def _env_overrides(cfg: ChannelConfig) -> ChannelConfig:
+    """Environment fills in what the config file did not set (single-tenant
+    deployments usually have no config file at all)."""
+    if not cfg.signing_secret and os.environ.get("PRISMOR_INFERENCE_HOOK_SECRET"):
+        cfg.signing_secret = os.environ["PRISMOR_INFERENCE_HOOK_SECRET"].strip()
+    if not cfg.previous_signing_secret and os.environ.get("PRISMOR_INFERENCE_HOOK_PREVIOUS_SECRET"):
+        cfg.previous_signing_secret = os.environ["PRISMOR_INFERENCE_HOOK_PREVIOUS_SECRET"].strip()
+    if not cfg.api_key and os.environ.get("PRISMOR_INFERENCE_HOOK_KEY"):
+        cfg.api_key = os.environ["PRISMOR_INFERENCE_HOOK_KEY"].strip()
+    if os.environ.get("PRISMOR_INFERENCE_HOOK_ALLOW_UNSIGNED", "").lower() in ("1", "true", "yes"):
+        cfg.allow_unsigned = True
+    if os.environ.get("PRISMOR_INFERENCE_HOOK_FAIL_OPEN", "").lower() in ("1", "true", "yes"):
+        cfg.fail_open = True
+    mode = os.environ.get("PRISMOR_INFERENCE_HOOK_MODE", "").lower()
+    if mode in ("observe", "shadow"):
+        cfg.mode = "observe"
+    return cfg
+
+
+def _bearer(headers: Any) -> str:
+    auth = headers.get("Authorization") or ""
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+
+def authenticate(
+    cfg: ChannelConfig,
+    headers: Any,
+    raw: bytes,
+    frame: Frame,
+    *,
+    cli_overrides: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str, str]:
+    """Decide whether this request may receive a verdict.
+
+    Returns ``(ok, method, detail)`` where method is one of ``signature``,
+    ``bearer``, ``unsigned-bootstrap``, ``unsigned-allowed`` or ``rejected``.
+
+    Order of trust:
+      1. A valid Standard Webhooks signature for this tenant's secret(s).
+      2. A bearer key (non-Anthropic callers: proxies, test rigs).
+      3. Unsigned, only when the org has *no* secret yet (bootstrap — the
+         claude.ai "Test connection" before the first save is unsigned) or the
+         operator explicitly set ``allow_unsigned``.
+    A request that *is* signed but fails verification is always rejected, even
+    if unsigned requests would have been accepted: a bad signature is evidence
+    of forgery or misconfiguration, never a reason to fall back.
     """
-    ok = False
-    org_id = ""
-    orgs = file_config.get("orgs")
-    if isinstance(orgs, dict):
-        for candidate_org, settings in orgs.items():
-            if not isinstance(settings, dict):
-                continue
-            key = settings.get("api_key")
-            if not key:
-                continue
-            if hmac.compare_digest(str(key), presented_key) and not ok:
-                ok, org_id = True, str(candidate_org)
-    if fallback_key and hmac.compare_digest(str(fallback_key), presented_key) and not ok:
-        # Single-tenant deployment: one key, no org registry.
-        ok, org_id = True, str(file_config.get("default_org_id") or "")
-    return ok, org_id
+    overrides = cli_overrides or {}
+    fallback_key = overrides.get("api_key")
+
+    sig = verify_signature(cfg.signing_secrets, headers, raw)
+    if sig.ok:
+        return True, "signature", "verified"
+    if sig.status != "unsigned":
+        return False, "rejected", f"signature {sig.status}"
+
+    presented = _bearer(headers)
+    if presented:
+        for candidate in (cfg.api_key, fallback_key):
+            if candidate and hmac.compare_digest(str(candidate), presented):
+                return True, "bearer", "key matched"
+        return False, "rejected", "bearer key mismatch"
+
+    if cfg.allow_unsigned:
+        return True, "unsigned-allowed", "allow_unsigned is set"
+    if not cfg.is_signed and not cfg.api_key and not fallback_key:
+        # No credential of any kind configured for this org: bootstrap state.
+        return True, "unsigned-bootstrap", "no signing secret configured yet"
+    return False, "rejected", "unsigned request but a signing secret is configured"
 
 
 class InferenceHookHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive between verdicts
     workspace: Path = Path.cwd()
     file_config: Dict[str, Any] = {}
-    fallback_key: Optional[str] = None
+    cli_overrides: Dict[str, Any] = {}
     config_error: Optional[str] = None
     # Bounded pool so a burst cannot spawn unbounded evaluation threads. Each
     # request still gets its own worker; the queue is what absorbs the burst,
     # and the per-request timeout is what keeps the queue from growing forever.
     pool: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=16)
+    cache: _VerdictCache = _VerdictCache()
+    _bootstrap_warned = False
+    verbose: bool = False
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002
         pass  # per-request logging belongs in telemetry, not stderr
@@ -107,40 +201,12 @@ class InferenceHookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_verdict(self, verdict: TurnVerdict, *, org_id: str = "") -> None:
-        """Emit the provider-facing verdict.
-
-        The contract's exact field names are not something we control, so the
-        binary answer is stated three compatible ways (``decision``, ``allow``,
-        ``action``) and the reason under both the plain and the explicit
-        user-facing name. Prismor's own detail is nested under ``prismor`` where
-        it cannot collide with the contract.
-        """
-        reason = verdict.reason or ""
-        self._send_json({
-            "decision": "allow" if verdict.allow else "deny",
-            "allow": verdict.allow,
-            "action": "allow" if verdict.allow else "deny",
-            "reason": reason,
-            "user_facing_reason": reason,
-            "prismor": {
-                "basis": verdict.basis,
-                "rule_id": (verdict.blocking or {}).get("ruleId"),
-                "category": (verdict.blocking or {}).get("category"),
-                "severity": (verdict.blocking or {}).get("severity"),
-                "finding_count": len(verdict.findings),
-                "events_evaluated": verdict.events_evaluated,
-                "transcript_truncated": verdict.truncated,
-                "approval_id": verdict.approval_id,
-                "downgraded_action": verdict.downgraded_action,
-                "eval_ms": verdict.eval_ms,
-                "org_id": org_id or None,
-                "channel": "inference_hook",
-            },
-        })
+    def _drain(self, length: int) -> bytes:
+        return self.rfile.read(length) if length > 0 else b""
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/health":
+        path = self.path.split("?")[0]
+        if path in ("/health", "/healthz", "/livez"):
             # Liveness only — deliberately unauthenticated and free of org
             # detail so a load balancer can poll it.
             self._send_json({
@@ -148,106 +214,132 @@ class InferenceHookHandler(BaseHTTPRequestHandler):
                 "channel": "inference_hook",
                 "ts": datetime.now(timezone.utc).isoformat(),
             }, status=200 if not self.config_error else 503)
-        else:
-            self._send_json({"error": "not found"}, 404)
+            return
+        # Anything else on GET: a human found the URL in a browser. Say what
+        # this is without leaking configuration.
+        self._send_json({
+            "service": "prismor-inference-hook",
+            "protocol": "claude-inference-hooks",
+            "usage": f"POST a signed prompt frame to this URL (conventionally {DEFAULT_PATH}); GET /health for liveness",
+        })
 
     # ── the endpoint ────────────────────────────────────────────────────────
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path.split("?")[0] != "/v1/inference-hook":
-            self._send_json({"error": "not found"}, 404)
+        path = self.path.split("?")[0]
+        if path in ("/health", "/healthz", "/livez"):
+            self._send_json({"error": "method not allowed"}, 405)
             return
-
-        # A config we could not parse means we do not know anybody's posture,
-        # including whether they chose fail-open. Deny and say so.
-        if self.config_error:
-            self._send_verdict(TurnVerdict(
-                allow=False, basis="fail_closed",
-                reason="Security screening is unavailable, so this request was blocked.",
-            ))
-            return
-
-        presented = ""
-        auth = self.headers.get("Authorization") or ""
-        if auth.lower().startswith("bearer "):
-            presented = auth[7:].strip()
-        ok, org_id = _resolve_org(presented, self.file_config, self.fallback_key)
-        if not ok:
-            # 401 rather than a deny verdict: this is not a policy outcome, and
-            # a misconfigured caller should see an auth error, not think its
-            # transcripts are being screened and blocked.
-            self._send_json({"error": "unauthorized"}, 401)
-            return
-
-        cfg = resolve_config(org_id, file_config=self.file_config, workspace=self.workspace)
 
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
             length = 0
+
+        # A config we could not parse means we do not know anybody's posture,
+        # including whether they chose fail-open. Deny and say so.
+        if self.config_error:
+            self._drain(min(length, MAX_BODY_BYTES))
+            self._send_json(TurnVerdict(
+                allow=False, basis="fail_closed",
+                reason="Security screening is misconfigured, so this request was blocked. Contact your administrator.",
+            ).to_wire())
+            return
+
         if length > MAX_BODY_BYTES:
+            # Refused unread. This is a genuine webhook failure (Anthropic's
+            # posture applies) — the alternative is allocating on demand.
             self._send_json({"error": "payload too large"}, 413)
             return
 
+        raw = self._drain(length)
         try:
-            raw = self.rfile.read(length) if length else b"{}"
             body = json.loads(raw or b"{}")
             if not isinstance(body, dict):
                 raise ValueError("body must be a JSON object")
         except Exception as exc:
             # An unparseable body is an unscreenable one. Fail posture, not 400:
             # a caller that can't be understood must not be allowed through just
-            # because the failure was its fault.
+            # because the failure was its fault. Tenant unknown → default posture.
             sys.stderr.write(f"[prismor] inference-hook: bad request body: {exc}\n")
-            self._send_verdict(fail_verdict(cfg, f"bad request body: {exc}"), org_id=org_id)
+            cfg = _env_overrides(resolve_config("", file_config=self.file_config, workspace=self.workspace))
+            self._send_json(fail_verdict(cfg, f"bad request body: {exc}").to_wire())
             return
 
-        session_id = str(
-            body.get("session_id") or body.get("sessionId")
-            or body.get("conversation_id") or ""
-        )
-        subject = (
-            self.headers.get("X-Prismor-Subject")
-            or (str(body.get("subject")) if body.get("subject") else None)
-        )
+        frame = parse_frame(body)
+        cfg = _env_overrides(resolve_config(frame.tenant_id, file_config=self.file_config, workspace=self.workspace))
+        if self.cli_overrides.get("fail_open"):
+            cfg.fail_open = True
+        if self.cli_overrides.get("mode"):
+            cfg.mode = self.cli_overrides["mode"]
+        if self.cli_overrides.get("allow_unsigned"):
+            cfg.allow_unsigned = True
+
+        ok, method, detail = authenticate(cfg, self.headers, raw, frame, cli_overrides=self.cli_overrides)
+        if not ok:
+            # 401 rather than a deny verdict: this is not a policy outcome, and
+            # a forged or misconfigured caller must not learn our verdicts.
+            sys.stderr.write(f"[prismor] inference-hook: rejected request ({detail}; tenant={frame.tenant_id or '-'})\n")
+            self._send_json({"error": "unauthorized", "detail": detail}, 401)
+            return
+        if method == "unsigned-bootstrap" and not InferenceHookHandler._bootstrap_warned:
+            InferenceHookHandler._bootstrap_warned = True
+            sys.stderr.write(
+                "[prismor] inference-hook: accepted an UNSIGNED request because no signing secret is "
+                "configured. Fine for the first claude.ai 'Test connection'; set the secret "
+                "(--signing-secret / PRISMOR_INFERENCE_HOOK_SECRET / config) before enforcing.\n"
+            )
+
+        # Idempotency: Anthropic's one retry reuses webhook-id and the body.
+        webhook_id = self.headers.get("webhook-id") or frame.request_id
+        cached = self.cache.get(webhook_id)
+        if cached is not None:
+            self._send_json(cached)
+            return
 
         future = self.pool.submit(
             evaluate_turn, body,
-            config=cfg, session_id=session_id, subject=subject, workspace=self.workspace,
+            config=cfg, session_id=frame.session_id, subject=frame.subject, workspace=self.workspace,
         )
         try:
             verdict = future.result(timeout=cfg.timeout_s)
         except FutureTimeout:
             # The work keeps running on its pool thread; we stop waiting on it.
-            # Cancelling mid-evaluation would leave the receipt half-written.
             future.cancel()
             sys.stderr.write(
                 f"[prismor] inference-hook: evaluation exceeded {cfg.timeout_s}s "
-                f"(org={org_id or 'default'}) — applying fail posture\n"
+                f"(tenant={frame.tenant_id or 'default'}) — applying fail posture\n"
             )
             verdict = fail_verdict(cfg, "evaluation timed out")
         except Exception as exc:
             sys.stderr.write(f"[prismor] inference-hook: evaluation error: {exc}\n")
             verdict = fail_verdict(cfg, f"evaluation error: {exc}")
 
-        self._send_verdict(verdict, org_id=org_id)
-        _record_receipt(verdict, org_id=org_id, session_id=session_id, workspace=self.workspace)
+        wire = verdict.to_wire(org_id=frame.tenant_id, footer=cfg.deny_footer)
+        wire["prismor"]["auth"] = method
+        wire["prismor"]["application"] = frame.application or None
+        self.cache.put(webhook_id, wire)
+        self._send_json(wire)
+
+        if self.verbose:
+            sys.stderr.write(
+                f"[prismor] inference-hook: {verdict.action:5s} basis={verdict.basis} "
+                f"app={frame.application or '-'} tenant={frame.tenant_id or '-'} "
+                f"actor={frame.actor_email or frame.actor_id or '-'} events={verdict.events_evaluated} "
+                f"ms={verdict.eval_ms} ref={verdict.reference_id}\n"
+            )
+        _record_receipt(verdict, frame=frame, cfg=cfg, workspace=self.workspace)
 
 
-def _record_receipt(
-    verdict: TurnVerdict,
-    *,
-    org_id: str,
-    session_id: str,
-    workspace: Path,
-) -> None:
+def _record_receipt(verdict: TurnVerdict, *, frame: Frame, cfg: ChannelConfig, workspace: Path) -> None:
     """Append one signed turn record to the audit trail.
 
     Signed with this host's key and carrying a null ``device_id``: there is no
     enrolled device on this path, so the record attests that *this service*
     reached this verdict, not that a known machine did. That is genuinely weaker
     non-repudiation than the local channel and is left visible in the record
-    rather than papered over.
+    rather than papered over. The record carries the ``reference_id`` we
+    returned so a denial in Anthropic's Activity Feed joins to it.
 
     Runs after the response is written — the provider is waiting, and a receipt
     is not worth latency on their critical path.
@@ -259,18 +351,29 @@ def _record_receipt(
         event = {
             "type": "prompt",
             "agent_event": "UserPromptSubmit",
-            "session_id": session_id,
+            "session_id": frame.session_id,
             "metadata": {
                 "channel": "inference_hook",
-                "org_id": org_id or None,
+                "protocol": "claude-inference-hooks",
+                "org_id": frame.tenant_id or None,
+                "application": frame.application or None,
+                "model": frame.model or None,
+                "request_id": frame.request_id or None,
+                "reference_id": verdict.reference_id,
                 "attestation": "service",
                 "basis": verdict.basis,
                 "events_evaluated": verdict.events_evaluated,
                 "transcript_truncated": verdict.truncated,
                 "approval_id": verdict.approval_id,
                 "downgraded_action": verdict.downgraded_action,
+                "shadow_action": verdict.shadow_action,
             },
         }
+        subject: Dict[str, Any] = {}
+        if frame.tenant_id:
+            subject["org_id"] = frame.tenant_id
+        if frame.actor_email or frame.actor_id:
+            subject["user_id"] = frame.actor_email or frame.actor_id
         audit_trail.append_action_record(
             event=event,
             findings=verdict.findings,
@@ -278,9 +381,9 @@ def _record_receipt(
             workspace=workspace,
             agent=AGENT_ID,
             agent_name=AGENT_ID,
-            session_id=session_id,
-            subject={"org_id": org_id} if org_id else {},
-            mode="enforce",
+            session_id=frame.session_id,
+            subject=subject,
+            mode=cfg.mode,
             eval_ms=verdict.eval_ms,
         )
     except Exception as exc:
@@ -319,15 +422,31 @@ def _preflight(workspace: Path) -> None:
 
 def run_inference_hook_server(
     host: str = "127.0.0.1",
-    port: int = 7072,
+    port: int = DEFAULT_PORT,
     workspace: Optional[Path] = None,
     api_key: Optional[str] = None,
     config_path: Optional[Path] = None,
+    signing_secret: Optional[str] = None,
+    previous_signing_secret: Optional[str] = None,
+    allow_unsigned: bool = False,
+    fail_open: bool = False,
+    mode: Optional[str] = None,
+    verbose: bool = False,
 ) -> None:
     """Start the inference-hook server (blocking)."""
     ws = workspace or Path.cwd()
     InferenceHookHandler.workspace = ws
-    InferenceHookHandler.fallback_key = api_key or os.environ.get("PRISMOR_INFERENCE_HOOK_KEY") or None
+    InferenceHookHandler.verbose = verbose
+    InferenceHookHandler.cli_overrides = {
+        "api_key": api_key or None,
+        "allow_unsigned": bool(allow_unsigned),
+        "fail_open": bool(fail_open),
+        "mode": ("observe" if mode in ("observe", "shadow") else ("enforce" if mode == "enforce" else None)),
+    }
+    if signing_secret:
+        os.environ["PRISMOR_INFERENCE_HOOK_SECRET"] = signing_secret
+    if previous_signing_secret:
+        os.environ["PRISMOR_INFERENCE_HOOK_PREVIOUS_SECRET"] = previous_signing_secret
 
     try:
         InferenceHookHandler.file_config = load_config_file(config_path)
@@ -341,24 +460,35 @@ def run_inference_hook_server(
         sys.stderr.write(f"[prismor] inference-hook: {exc}\n")
         sys.stderr.write("[prismor] inference-hook: serving in fail-closed mode until fixed.\n")
 
+    default_cfg = _env_overrides(resolve_config("", file_config=InferenceHookHandler.file_config, workspace=ws))
     orgs = InferenceHookHandler.file_config.get("orgs")
     org_count = len(orgs) if isinstance(orgs, dict) else 0
-    if not InferenceHookHandler.fallback_key and org_count == 0 and not InferenceHookHandler.config_error:
+    has_default_cred = bool(default_cfg.is_signed or default_cfg.api_key or api_key)
+    if not has_default_cred and org_count == 0 and not InferenceHookHandler.config_error:
         sys.stderr.write(
-            "[prismor] inference-hook: no credentials configured — every request will 401.\n"
-            "[prismor] inference-hook: pass --api-key, set PRISMOR_INFERENCE_HOOK_KEY, or "
-            "register orgs in --config.\n"
+            "[prismor] inference-hook: no signing secret configured — running in BOOTSTRAP mode "
+            "(unsigned requests accepted).\n"
+            "[prismor] inference-hook: this is what you want for the first claude.ai 'Test connection'. "
+            "After you save the endpoint and copy the whsec_ secret, restart with "
+            "--signing-secret (or PRISMOR_INFERENCE_HOOK_SECRET) so forged requests are refused.\n"
         )
 
     _preflight(ws)
 
     server = _ThreadingHTTPServer((host, port), InferenceHookHandler)
+    effective_mode = InferenceHookHandler.cli_overrides["mode"] or default_cfg.mode
     print(f"[prismor] inference-hook server listening on http://{host}:{port}")
     print(f"[prismor] workspace: {ws}")
-    print(f"[prismor] orgs registered: {org_count}"
-          + (" (+ single-key fallback)" if InferenceHookHandler.fallback_key else ""))
-    print(f"[prismor] POST /v1/inference-hook  →  transcript → allow/deny")
-    print(f"[prismor] GET  /health             →  liveness check")
+    print(f"[prismor] mode: {effective_mode}"
+          + ("  (shadow — logs would-be denies, returns allow)" if effective_mode == "observe" else ""))
+    print(f"[prismor] fail posture: {'open' if (fail_open or default_cfg.fail_open) else 'closed'} "
+          f"· timeout {default_cfg.timeout_s}s · deny floor: {', '.join(sorted(default_cfg.deny_categories))}")
+    print(f"[prismor] auth: "
+          + ("signature (whsec_ configured)" if default_cfg.is_signed else
+             ("bearer key" if (default_cfg.api_key or api_key) else "BOOTSTRAP (unsigned accepted)"))
+          + (f" · {org_count} tenant override(s)" if org_count else ""))
+    print(f"[prismor] POST <any path>   →  prompt frame → {{action: allow|deny}}")
+    print(f"[prismor] GET  /health       →  liveness check")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -370,15 +500,25 @@ def run_inference_hook_server(
 if __name__ == "__main__":
     import argparse as _ap
     _p = _ap.ArgumentParser(description="Prismor inference-hook security server")
-    _p.add_argument("--port", type=int, default=7072)
+    _p.add_argument("--port", type=int, default=DEFAULT_PORT)
     _p.add_argument("--host", default="127.0.0.1")
     _p.add_argument("--workspace", default=None)
     _p.add_argument("--api-key", default=None)
     _p.add_argument("--config", default=None)
+    _p.add_argument("--signing-secret", default=None)
+    _p.add_argument("--allow-unsigned", action="store_true")
+    _p.add_argument("--fail-open", action="store_true")
+    _p.add_argument("--mode", default=None)
+    _p.add_argument("-v", "--verbose", action="store_true")
     _a = _p.parse_args()
     run_inference_hook_server(
         host=_a.host, port=_a.port,
         workspace=Path(_a.workspace) if _a.workspace else None,
         api_key=_a.api_key,
         config_path=Path(_a.config) if _a.config else None,
+        signing_secret=_a.signing_secret,
+        allow_unsigned=_a.allow_unsigned,
+        fail_open=_a.fail_open,
+        mode=_a.mode,
+        verbose=_a.verbose,
     )
