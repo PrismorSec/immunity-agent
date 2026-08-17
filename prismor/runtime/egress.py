@@ -36,13 +36,31 @@ Config shape (see ``settings.egress`` in default_policy.yaml)::
 
 Evaluation order per destination: explicit ``deny`` wins, then private-network
 carve-out, then ``allow``, then ``default``. First match wins within a list.
+
+**Name resolution.** A destination written as a hostname hides the address it
+actually dials, so ``deny: ["169.254.0.0/16"]`` means nothing if the agent
+fetches ``imds.example.com`` instead. Hostnames are therefore resolved and the
+resulting addresses re-checked — but only ever in the *stricter* direction:
+
+* a resolved address can turn an allow into a deny (deny CIDRs, metadata IPs);
+* a resolved address can **never** turn a deny into an allow.
+
+That asymmetry is the whole point. Extending the ``allow_private`` carve-out to
+resolved addresses would hand an attacker the SSRF directly: point a public name
+at 10.0.0.1, and a "private destinations are fine" rule would wave it through.
+Resolution is bounded by ``resolve_timeout`` and cached; set ``resolve: false``
+(or ``PRISMOR_EGRESS_RESOLVE=0``) to switch it off.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import shlex
+import socket
+import threading
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 
@@ -72,13 +90,91 @@ _METADATA_HOSTS = frozenset({
     "100.100.100.200",
 })
 
+#: The addresses behind ``_METADATA_HOSTS``. Checked against *resolved* IPs, so
+#: a hostname pointed at IMDS is caught even when the name looks innocuous.
+_METADATA_IPS = frozenset({
+    "169.254.169.254",
+    "fd00:ec2::254",
+    "100.100.100.200",
+})
+
+
+# ── Name resolution ───────────────────────────────────────────────────────────
+
+#: How long a resolution result stays usable. Short: the point of resolving is
+#: to see where the name points *now*, and DNS answers behind an SSRF are often
+#: deliberately short-lived.
+_RESOLVE_TTL = 30.0
+
+#: Hard cap on the cache so a long-lived gateway process cannot grow without
+#: bound on attacker-chosen hostnames.
+_RESOLVE_CACHE_MAX = 512
+
+_resolve_cache: Dict[str, Tuple[float, Tuple[str, ...]]] = {}
+_resolve_lock = threading.Lock()
+
+
+def _raw_resolve(host: str) -> Tuple[str, ...]:
+    """Every address ``host`` currently resolves to. Overridden in tests."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, OSError, ValueError):
+        return ()
+    out: List[str] = []
+    for info in infos:
+        sockaddr = info[4]
+        if sockaddr and isinstance(sockaddr[0], str) and sockaddr[0] not in out:
+            out.append(sockaddr[0])
+    return tuple(out)
+
+
+def resolve_host(host: str, timeout: float = 1.0) -> Tuple[str, ...]:
+    """Resolve ``host`` with a hard wall-clock bound, cached.
+
+    ``getaddrinfo`` takes no timeout and can block for the resolver's own
+    retry budget, which is far longer than a PreToolUse hook can afford. The
+    lookup therefore runs on a daemon thread we simply stop waiting on. A
+    timeout yields no addresses, which — by the strictness rule above — leaves
+    the verdict exactly as it would have been without resolution.
+    """
+    if not host:
+        return ()
+    now = time.monotonic()
+    with _resolve_lock:
+        hit = _resolve_cache.get(host)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+
+    result: List[Tuple[str, ...]] = []
+
+    def _run() -> None:
+        result.append(_raw_resolve(host))
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(max(0.05, float(timeout)))
+    addrs = result[0] if result else ()
+
+    with _resolve_lock:
+        # A timed-out lookup is cached too — negatively and briefly — so one
+        # slow name cannot cost the timeout on every destination in an event.
+        if len(_resolve_cache) >= _RESOLVE_CACHE_MAX:
+            _resolve_cache.clear()
+        _resolve_cache[host] = (time.monotonic() + _RESOLVE_TTL, addrs)
+    return addrs
+
+
+def _resolution_enabled() -> bool:
+    raw = os.environ.get("PRISMOR_EGRESS_RESOLVE", "").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
 
 # ── Destinations ──────────────────────────────────────────────────────────────
 
 class Destination:
     """One outbound destination extracted from an event."""
 
-    __slots__ = ("host", "port", "scheme", "origin", "evidence")
+    __slots__ = ("host", "port", "scheme", "origin", "evidence", "_resolved")
 
     def __init__(
         self,
@@ -93,6 +189,7 @@ class Destination:
         self.scheme = (scheme or "").lower()
         self.origin = origin          # how we found it: "url", "ssh", "raw", …
         self.evidence = evidence      # the text it came from
+        self._resolved: Optional[Tuple[Any, ...]] = None
 
     # Two destinations are the same finding if they share host+port.
     def key(self) -> Tuple[str, Optional[int]]:
@@ -105,9 +202,53 @@ class Destination:
         except ValueError:
             return None
 
+    def resolved_ips(self, timeout: float = 1.0) -> Tuple[Any, ...]:
+        """Addresses this destination dials, memoized per destination.
+
+        A literal is its own answer and never hits the resolver. Anything else
+        is looked up once; callers must treat an empty result as "unknown",
+        never as "safe".
+        """
+        if self._resolved is not None:
+            return self._resolved
+        literal = self.ip
+        if literal is not None:
+            self._resolved = (literal,)
+            return self._resolved
+        addrs: List[Any] = []
+        if _resolution_enabled():
+            for raw in resolve_host(self.host, timeout=timeout):
+                try:
+                    addrs.append(ipaddress.ip_address(raw))
+                except ValueError:
+                    continue
+        self._resolved = tuple(addrs)
+        return self._resolved
+
+    def is_metadata(self, resolve: bool = False, timeout: float = 1.0) -> bool:
+        """Does this destination reach a cloud metadata endpoint?
+
+        Matches the well-known names outright, and — when ``resolve`` is on —
+        any hostname whose addresses land on a metadata IP. That second half is
+        the one that matters: ``imds.example.com`` is not a suspicious string.
+        """
+        if self.host in _METADATA_HOSTS:
+            return True
+        if self.host in _METADATA_IPS:
+            return True
+        if not resolve:
+            return False
+        return any(str(ip) in _METADATA_IPS for ip in self.resolved_ips(timeout))
+
     @property
     def is_private(self) -> bool:
         """True for loopback / RFC1918 / link-local / .local destinations.
+
+        Deliberately literal-only for hostnames. This property gates the
+        ``allow_private`` carve-out — a permissive path — so resolving names
+        here would let an attacker point a public hostname at 10.0.0.1 and be
+        waved through. Resolution belongs on the deny side; see the module
+        docstring.
 
         Metadata endpoints are excluded on purpose — see ``_METADATA_HOSTS``.
         """
@@ -407,29 +548,42 @@ class EgressEntry:
             {str(a) for a in agents} if isinstance(agents, (list, tuple, set)) and agents else None
         )
 
-    def matches(self, dest: Destination, agent_name: str = "") -> bool:
+    def matches(self, dest: Destination, agent_name: str = "",
+                resolve: bool = False, timeout: float = 1.0) -> bool:
         if self.agents is not None and agent_name not in self.agents:
             return False
         if self.ports is not None and (dest.port is None or dest.port not in self.ports):
             return False
         if self.schemes is not None and dest.scheme not in self.schemes:
             return False
-        return self._host_matches(dest)
+        return self._host_matches(dest, resolve=resolve, timeout=timeout)
 
-    def _host_matches(self, dest: Destination) -> bool:
+    def _host_matches(self, dest: Destination, resolve: bool = False,
+                      timeout: float = 1.0) -> bool:
         if self.any_host:
             return True
         host = dest.host
         if self.wildcard_suffix is not None:
             return host == self.wildcard_suffix or host.endswith("." + self.wildcard_suffix)
         if self.network is not None:
-            ip = dest.ip
-            if ip is None:
+            ips: Sequence[Any]
+            literal = dest.ip
+            if literal is not None:
+                ips = (literal,)
+            elif resolve:
+                # Only deny entries ask to resolve. A hostname that lands inside
+                # a denied CIDR is denied on *any* of its addresses: one route
+                # into the blocked range is enough to make the call unsafe.
+                ips = dest.resolved_ips(timeout)
+            else:
                 return False
-            try:
-                return ip in self.network
-            except TypeError:
-                return False  # v4 address vs v6 network
+            for ip in ips:
+                try:
+                    if ip in self.network:
+                        return True
+                except TypeError:
+                    continue  # v4 address vs v6 network
+            return False
         return host == self.host
 
     def describe(self) -> str:
@@ -445,13 +599,15 @@ class EgressPolicy:
     """Compiled ``settings.egress``. Inert unless enabled."""
 
     __slots__ = ("enabled", "mode", "default", "allow_private", "allow", "deny",
-                 "agents", "source", "legacy", "errors")
+                 "agents", "source", "legacy", "errors", "resolve", "resolve_timeout")
 
     def __init__(self) -> None:
         self.enabled: bool = False
         self.mode: Optional[str] = None       # None -> inherit engine default_mode
         self.default: str = "allow"
         self.allow_private: bool = True
+        self.resolve: bool = True
+        self.resolve_timeout: float = 1.0
         self.allow: List[EgressEntry] = []
         self.deny: List[EgressEntry] = []
         self.agents: Dict[str, "EgressPolicy"] = {}
@@ -508,6 +664,11 @@ class EgressPolicy:
         _default = str(raw.get("default") or "allow").lower()
         pol.default = _default if _default in ("allow", "deny") else "allow"
         pol.allow_private = bool(raw.get("allow_private", True))
+        pol.resolve = bool(raw.get("resolve", True))
+        try:
+            pol.resolve_timeout = max(0.05, float(raw.get("resolve_timeout", 1.0)))
+        except (TypeError, ValueError):
+            pol.resolve_timeout = 1.0
         for key, bucket, act in (("allow", pol.allow, "allow"), ("deny", pol.deny, "deny")):
             for item in raw.get(key) or []:
                 try:
@@ -527,6 +688,8 @@ class EgressPolicy:
                     "mode": sub.get("mode", raw.get("mode")),
                     "default": sub.get("default", pol.default),
                     "allow_private": sub.get("allow_private", pol.allow_private),
+                    "resolve": sub.get("resolve", pol.resolve),
+                    "resolve_timeout": sub.get("resolve_timeout", pol.resolve_timeout),
                     "allow": list(raw.get("allow") or []) + list(sub.get("allow") or []),
                     "deny": list(raw.get("deny") or []) + list(sub.get("deny") or []),
                 }
@@ -546,11 +709,21 @@ class EgressPolicy:
         """Return ``(action, matched_entry)`` for one destination.
 
         Order: explicit deny → private carve-out → allow → default.
+
+        Deny entries and the metadata carve-out see resolved addresses; the
+        allow list does not. Resolution only ever tightens — see the module
+        docstring for why the reverse would be a hole rather than a feature.
         """
+        resolve = self.resolve
+        timeout = self.resolve_timeout
         for entry in self.deny:
-            if entry.matches(dest, agent_name):
+            if entry.matches(dest, agent_name, resolve=resolve, timeout=timeout):
                 return (entry.action if entry.action in ("deny", "warn") else "deny", entry)
-        if self.allow_private and dest.is_private:
+        if (
+            self.allow_private
+            and dest.is_private
+            and not dest.is_metadata(resolve=resolve, timeout=timeout)
+        ):
             return ("allow", None)
         for entry in self.allow:
             if entry.matches(dest, agent_name):

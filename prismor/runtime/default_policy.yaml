@@ -52,6 +52,16 @@ settings:
     default: allow        # verdict when nothing matches. `deny` = strict allowlist
     allow_private: true   # loopback/RFC1918/.local skip the check. Cloud metadata
                           # endpoints (169.254.169.254 et al) NEVER count as private.
+    resolve: true         # re-check hostnames against the addresses they resolve to,
+                          # so the deny entries below cannot be sidestepped by naming
+                          # the metadata endpoint instead of dialling its IP. Only ever
+                          # tightens a verdict: a resolved address can turn an allow
+                          # into a deny, never a deny into an allow (that direction
+                          # would let a public name point at 10.0.0.1 and be waved
+                          # through). Set false, or PRISMOR_EGRESS_RESOLVE=0, to skip
+                          # the lookup entirely.
+    resolve_timeout: 1.0  # seconds; a lookup that overruns is treated as unresolved,
+                          # which leaves the verdict exactly as it was without it.
     allow: []             # entries: "*.github.com" | {host, ports, schemes, agents, reason}
     deny:
       # Cloud metadata endpoints — these are the classic SSRF pivot for AI
