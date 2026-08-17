@@ -9,6 +9,10 @@ Prismor finding (a blocked `rm -rf`, a secret-exfil attempt, a risky MCP call),
 it should appear in the dashboard within seconds, **redacted** (metadata +
 hashes, never raw commands or secrets).
 
+Each record on that wire is a signed receipt. The format is specified in
+[Signed Telemetry Receipts](telemetry-receipts.md) — canonical bytes, the two
+integrity layers, and a reference verifier for consumers that are not Prismor.
+
 ## How it's supposed to work (the pipeline)
 
 ```

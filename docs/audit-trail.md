@@ -25,6 +25,12 @@ pip install "prismor[signing]"
 
 Without it, records are still hash-chained but unsigned.
 
+> This page covers the **local** trail, which hashes every field of every
+> record. The records a device *reports* are a narrower format with a different
+> integrity model — the chain there covers seven fields and not the timestamp.
+> If you are writing a verifier for exported records, see
+> [Signed Telemetry Receipts](telemetry-receipts.md).
+
 ## What a record captures
 
 | Field | Meaning |
