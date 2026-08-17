@@ -33,10 +33,19 @@ for t in \
 done
 
 # ── Policy + detect-and-block regression (pytest) ──────────────────────────
+# Also covers the boundary controls a rule change cannot see: egress name
+# resolution (a hostname must not hide the address it dials), the gateway's
+# pre-connect screen (discovery reaches the network before any tool call), the
+# repo-local MCP classification, and the published receipt schema (its verifier
+# is executed straight out of the docs, so the spec cannot drift from the code).
 pytest_targets=()
 for t in \
   tests/test_policies.py \
   tests/test_cloak_secret_guard.py \
+  tests/test_egress_resolve.py \
+  tests/test_mcp_gateway_connect_guard.py \
+  tests/test_discover_workspace_mcp.py \
+  tests/test_telemetry_receipt_schema.py \
   ; do
   [[ -f "$t" ]] && pytest_targets+=("$t")
 done
