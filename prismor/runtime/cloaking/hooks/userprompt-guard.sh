@@ -9,12 +9,17 @@
 # placeholder, never the raw value.
 #
 # UserPromptSubmit hooks cannot rewrite the prompt (Claude Code exposes only
-# block/add-context on this event). One re-paste is the smallest achievable
-# UX cost for a leak-proof user-prompt boundary.
+# block/add-context on this event). To avoid a manual re-paste, the sanitized
+# prompt is STASHED under $PRISMOR_HOME/prompt_stash/<session_id> when we
+# block; on the user's next (clean) prompt in that session the stash is
+# auto-loaded via `additionalContext` and then deleted, so the model receives
+# the sanitized request without the user ever copying it. Any follow-up
+# message ("go", "continue", a clarification) triggers the reload.
 #
 # Stdin:  Claude Code UserPromptSubmit JSON payload
 # Stdout: JSON with decision=block and a reason (if a secret was detected),
-#         or empty (no-op) otherwise.
+#         JSON with hookSpecificOutput.additionalContext (if a stashed
+#         sanitized prompt is being reloaded), or empty (no-op) otherwise.
 set -uo pipefail
 
 # shellcheck source=_patterns.sh
@@ -24,17 +29,62 @@ SECRETS_DIR="$(prismor_secrets_dir)"
 mkdir -p "$SECRETS_DIR"
 chmod 700 "$SECRETS_DIR" 2>/dev/null || true
 
+# Stash directory for sanitized-but-blocked prompts (one file per session).
+STASH_DIR="${PRISMOR_PROMPT_STASH_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/prompt_stash}"
+# A stash older than this is ignored (and removed) rather than injected into an
+# unrelated later conversation. Seconds; overridable for tests.
+STASH_TTL="${PRISMOR_PROMPT_STASH_TTL:-1800}"
+
 command -v jq >/dev/null 2>&1 || exit 0
 
 input="$(cat)"
 prompt="$(printf '%s' "$input" | jq -r '.prompt // empty')"
 [[ -n "$prompt" ]] || exit 0
 
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' | tr -cd 'A-Za-z0-9._-')"
+[[ -n "$session_id" ]] || session_id="default"
+stash_file="$STASH_DIR/$session_id"
+
+# prismor_stash_age_ok <file> — 0 if the stash is younger than STASH_TTL.
+prismor_stash_age_ok() {
+  local f="$1" mtime now
+  mtime="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+  now="$(date +%s)"
+  [[ $(( now - mtime )) -le "$STASH_TTL" ]]
+}
+
+# prismor_emit_stash_context — if a fresh stash exists for this session, emit
+# it as additionalContext (so the model receives the sanitized request) and
+# delete it. Called only on the pass-through paths, never on a block.
+prismor_emit_stash_context() {
+  [[ -f "$stash_file" ]] || return 0
+  if ! prismor_stash_age_ok "$stash_file"; then
+    rm -f "$stash_file"
+    return 0
+  fi
+  local stashed
+  stashed="$(cat "$stash_file")"
+  rm -f "$stash_file"
+  # If the user pasted the sanitized text themselves, the current prompt
+  # already carries it — no need to inject a duplicate copy.
+  if [[ "$(printf '%s' "$prompt" | tr -d '[:space:]')" == "$(printf '%s' "$stashed" | tr -d '[:space:]')" ]]; then
+    return 0
+  fi
+  local ctx
+  ctx="Prismor cloaking: the user's previous prompt in this session was blocked because it contained secret(s). Those values are now registered in the Prismor vault and replaced below with @@SECRET:name@@ placeholders, which are substituted with the real values at tool-call time — use the placeholders verbatim in commands and never ask the user for the raw values. Treat the sanitized prompt below as the user's actual request; the message they just sent is a follow-up to it (attachments such as images from the blocked prompt were not carried over).
+
+--- BEGIN SANITIZED PROMPT ---
+${stashed}
+--- END SANITIZED PROMPT ---"
+  jq -n --arg c "$ctx" '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
+}
+
 # Optional user bypass: a prompt starting with `!!allow ` (ignoring leading
 # whitespace) is passed through unchanged. Useful when the user is deliberately
 # discussing a secret in prose and doesn't want auto-cloaking.
 trimmed="$(printf '%s' "$prompt" | sed 's/^[[:space:]]*//')"
 if [[ "$trimmed" == "!!allow "* ]]; then
+  prismor_emit_stash_context
   exit 0
 fi
 
@@ -75,7 +125,7 @@ fi
 # Loaded from the shared single-source-of-truth file (builtin_patterns.txt)
 # plus any org-specific patterns the user added via `prismor cloak pattern add`.
 prismor_load_patterns
-[[ "${#PATTERNS[@]}" -gt 0 ]] || exit 0
+[[ "${#PATTERNS[@]}" -gt 0 ]] || { prismor_emit_stash_context; exit 0; }
 
 # Strip already-cloaked placeholders before scanning so that @@SECRET:name@@
 # syntax in the prompt never triggers a false positive match.
@@ -88,7 +138,8 @@ matches="$(
   done | awk 'NF && !seen[$0]++'
 )"
 
-[[ -n "$matches" ]] || exit 0
+# Clean prompt: pass through, reloading any stashed sanitized prompt first.
+[[ -n "$matches" ]] || { prismor_emit_stash_context; exit 0; }
 
 # ── Cloak each match ─────────────────────────────────────────────────────
 sanitized="$prompt"
@@ -114,14 +165,27 @@ while IFS= read -r real_value; do
   reported_placeholders+="  • $placeholder"$'\n'
 done <<< "$matches"
 
+# ── Stash the sanitized prompt for auto-reload on the next message ───────
+mkdir -p "$STASH_DIR" 2>/dev/null || true
+chmod 700 "$STASH_DIR" 2>/dev/null || true
+stash_hint=""
+if printf '%s' "$sanitized" > "$stash_file" 2>/dev/null; then
+  chmod 600 "$stash_file" 2>/dev/null || true
+  stash_hint="Your original prompt was NOT sent to the model. The sanitized version
+below has been saved — just send any follow-up message (e.g. \"go\") and
+Prismor will load it automatically. Or paste it yourself:"
+else
+  stash_hint="Your original prompt was NOT sent to the model. Resubmit with the sanitized
+version below (the model will resolve each placeholder at tool-call time):"
+fi
+
 # ── Emit soft-block decision ──────────────────────────────────────────────
 reason="Prismor cloaking: detected secret(s) in your prompt.
 
 Stored under ${SECRETS_DIR} as:
 ${reported_placeholders%$'\n'}
 
-Your original prompt was NOT sent to the model. Resubmit with the sanitized
-version below (the model will resolve each placeholder at tool-call time):
+${stash_hint}
 
 ---
 ${sanitized}

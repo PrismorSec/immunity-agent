@@ -144,9 +144,10 @@ Secrets live under `$PRISMOR_HOME/secrets/` (default `~/.prismor/secrets/`) with
 
 1. Detects the secret via conservative, known-prefix regex.
 2. Auto-registers it under a deterministic hashed name (`auto_<8-hex>`) in `$PRISMOR_SECRETS_DIR`.
-3. Blocks the submission with a message that shows the **sanitized** prompt, ready for you to copy and resubmit.
+3. Blocks the submission with a message that shows the **sanitized** prompt, and stashes that sanitized prompt under `$PRISMOR_HOME/prompt_stash/<session_id>` (mode 0600).
+4. On your **next clean message in the same session** (anything — `go`, a clarification, `!!allow …`) it reloads the stash as `additionalContext` and deletes it, so the model receives the sanitized request without you re-pasting anything. If you paste the sanitized text yourself, the stash is simply dropped. Stashes older than 30 minutes (`PRISMOR_PROMPT_STASH_TTL`) are discarded rather than injected into an unrelated conversation.
 
-The UX cost is one re-paste per leaked prompt. The original prompt was *not* transmitted to the upstream API.
+The original prompt was *not* transmitted to the upstream API. Image attachments on the blocked prompt are not carried over — re-attach them on the follow-up.
 
 **Bypass:** prefix any prompt with `!!allow ` to skip detection for a single message (useful when you are deliberately discussing a secret format in prose).
 

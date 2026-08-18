@@ -35,7 +35,8 @@ an agent from simply opening the vault files directly — so you want both.
 You mostly do nothing. The flow is automatic:
 
 - **Paste a secret into chat** → it's detected, vaulted, and your prompt is
-  blocked once so you resubmit the sanitized version. The model then sees only
+  blocked once. The sanitized version is stashed; send any follow-up (e.g.
+  `go`) and it is loaded automatically. The model then sees only
   `@@SECRET:auto_xxxx@@`.
 - **The model emits a raw secret in a command, file, or MCP call** → the call is
   denied, the value is vaulted, and the model is told to use the placeholder.
