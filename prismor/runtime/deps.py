@@ -545,6 +545,11 @@ def _reachable_lockfile_names(declared: set, packages: Dict[str, Any]) -> Option
     the manifest's declared dependency names, returning every package
     name reachable through the real dependency graph.
 
+    Both flat and nested `node_modules/.../node_modules/<name>` records
+    contribute edges. A nested record is often the *only* thing requiring
+    a hoisted package, so ignoring those edges makes ordinary transitives
+    look unreachable and reports them as injection.
+
     npm hoists resolvable transitive dependencies to flat top-level
     `node_modules/<name>` entries whenever there's no version conflict —
     so a package that is NOT a direct dependency commonly still has a
@@ -561,15 +566,20 @@ def _reachable_lockfile_names(declared: set, packages: Dict[str, Any]) -> Option
     """
     if not declared:
         return None
-    own_deps: Dict[str, List[str]] = {}
+    own_deps: Dict[str, set] = {}
     for path, meta in packages.items():
         if not path.startswith("node_modules/") or not isinstance(meta, dict):
             continue
-        if "/node_modules/" in path[len("node_modules/"):]:
-            continue  # nested entry — BFS only needs the flat frontier
         deps = meta.get("dependencies")
-        if isinstance(deps, dict):
-            own_deps[path[len("node_modules/"):]] = list(deps.keys())
+        if not isinstance(deps, dict):
+            continue
+        # A nested record node_modules/a/node_modules/b describes package b,
+        # and its edges are the only route to anything b alone requires. The
+        # name is the segment after the last node_modules/; a name appearing
+        # at several depths contributes the union of its edges, since any one
+        # of them is a real way to reach a package.
+        name = path.rsplit("node_modules/", 1)[1]
+        own_deps.setdefault(name, set()).update(deps.keys())
     if not own_deps:
         return None
 

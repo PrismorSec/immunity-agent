@@ -152,3 +152,60 @@ def test_audit_pass_message_does_not_imply_cve_freedom(tmp_path: Path) -> None:
     assert len(passes) == 1
     assert "does not mean" in passes[0].message
     assert "checked live" in passes[0].message
+
+
+def test_reachable_names_follows_nested_node_modules_edges() -> None:
+    """Regression for #289.
+
+    Reproduces the reported shape: jackspeak is required only by a nested
+    copy of glob, which is itself required only by a nested copy under
+    rimraf. Ignoring nested edges leaves jackspeak unreachable, and an
+    ordinary hoisted transitive gets reported as lockfile injection.
+    """
+    packages = {
+        "node_modules/rimraf": {"dependencies": {"glob": "^10.0.0"}},
+        "node_modules/rimraf/node_modules/glob": {"dependencies": {"jackspeak": "^2.0.0"}},
+        "node_modules/jackspeak": {"dependencies": {}},
+    }
+    reachable = _reachable_lockfile_names({"rimraf"}, packages)
+    assert reachable is not None
+    assert "jackspeak" in reachable, "hoisted transitive reached only via a nested edge"
+    assert reachable == {"rimraf", "glob", "jackspeak"}
+
+
+def test_reachable_names_unions_edges_across_nesting_depths() -> None:
+    """The same package at two depths may pin different dependency sets;
+    either is a real route, so the union is what reachability means."""
+    packages = {
+        "node_modules/glob": {"dependencies": {"minimatch": "1"}},
+        "node_modules/rimraf": {"dependencies": {"glob": "1"}},
+        "node_modules/rimraf/node_modules/glob": {"dependencies": {"jackspeak": "1"}},
+        "node_modules/minimatch": {"dependencies": {}},
+        "node_modules/jackspeak": {"dependencies": {}},
+    }
+    reachable = _reachable_lockfile_names({"rimraf"}, packages)
+    assert reachable == {"rimraf", "glob", "minimatch", "jackspeak"}
+
+
+def test_reachable_names_still_excludes_a_genuine_orphan() -> None:
+    """The nested fix must not make everything reachable — a package no
+    edge points at is still injection."""
+    packages = {
+        "node_modules/a": {"dependencies": {"b": "1"}},
+        "node_modules/a/node_modules/b": {"dependencies": {}},
+        "node_modules/injected": {"dependencies": {}},
+    }
+    reachable = _reachable_lockfile_names({"a"}, packages)
+    assert reachable == {"a", "b"}
+    assert "injected" not in reachable
+
+
+def test_reachable_names_handles_scoped_packages_when_nested() -> None:
+    packages = {
+        "node_modules/pkg": {"dependencies": {"@scope/child": "1"}},
+        "node_modules/pkg/node_modules/@scope/child": {"dependencies": {"leaf": "1"}},
+        "node_modules/leaf": {"dependencies": {}},
+    }
+    reachable = _reachable_lockfile_names({"pkg"}, packages)
+    assert "@scope/child" in reachable
+    assert "leaf" in reachable
