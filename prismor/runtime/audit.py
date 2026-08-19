@@ -326,6 +326,31 @@ def _check_secret_permissions() -> List[AuditFinding]:
     return findings
 
 
+def _openssl_label() -> str:
+    """The openssl flavour and version, for a cannot-verify message."""
+    try:
+        out = subprocess.run(
+            ["openssl", "version"], capture_output=True, timeout=5, text=True
+        )
+        return (out.stdout or out.stderr).strip().splitlines()[0] or "openssl"
+    except Exception:
+        return "openssl"
+
+
+def _is_signature_mismatch(result: "subprocess.CompletedProcess") -> bool:
+    """Whether openssl actually rejected the signature.
+
+    A non-zero exit is not enough. macOS ships LibreSSL, which cannot load an
+    Ed25519 key and has no -rawin, so it exits non-zero for a feed that is
+    perfectly intact. Only OpenSSL's explicit rejection line means tampering;
+    anything else is a toolchain that could not answer the question.
+    """
+    output = b"".join(
+        part for part in (result.stdout, result.stderr) if isinstance(part, bytes)
+    ).decode("utf-8", "replace")
+    return "signature verification failure" in output.lower()
+
+
 def _check_feed_signature(repo_root: Path) -> List[AuditFinding]:
     """Verify the advisory feed Ed25519 signature."""
     findings: List[AuditFinding] = []
@@ -407,11 +432,21 @@ def _check_feed_signature(repo_root: Path) -> List[AuditFinding]:
                     category="feed",
                     message="Feed signature valid",
                 ))
-        else:
+        elif _is_signature_mismatch(result):
             findings.append(AuditFinding(
                 severity="CRITICAL",
                 category="feed",
                 message="Feed signature verification FAILED — feed may be tampered with",
+            ))
+        else:
+            findings.append(AuditFinding(
+                severity="MEDIUM",
+                category="feed",
+                message=(
+                    "Cannot verify feed signature — "
+                    f"{_openssl_label()} could not run the check "
+                    "(needs OpenSSL 3.x for Ed25519 with -rawin)"
+                ),
             ))
     except Exception as exc:
         findings.append(AuditFinding(
