@@ -153,6 +153,14 @@ backslash) and no substitution touches it, so the escaped text is emitted
 verbatim and the guard does not fire. Fail-closed stays the default: a real,
 unresolved placeholder is still denied.
 
+**The backslash is part of what you write.** Nothing rewrites it on the way
+out, so the commit message above lands as `docs: explain the @@SECRET\:name@@
+placeholder form` — backslash included. The escape lets you write *about* the
+syntax through Bash; it does not produce the unescaped literal. When a file
+must contain the exact unescaped text (a fixture asserting on the real
+placeholder, say), build it in-process rather than through a Bash command
+string — in Python, `"@@" + "SECRET:" + name + "@@"` never reaches the hook.
+
 ---
 
 ## The user-prompt boundary
