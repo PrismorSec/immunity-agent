@@ -54,8 +54,11 @@ if [[ -n "$placeholders" ]]; then
     secret_file="$SECRETS_DIR/$name"
     if [[ ! -f "$secret_file" ]]; then
       # Fail closed: deny rather than leaving a dangling placeholder that would
-      # confuse the downstream command.
-      jq -n --arg reason "Prismor cloaking: secret '$name' not registered. Run: prismor cloak add $name" \
+      # confuse the downstream command. The escaped form (backslash before the
+      # colon) is deliberately NOT matched by the grep above, so it reaches the
+      # shell verbatim and is how you write the literal syntax (docs, commit
+      # messages, tests) without triggering resolution.
+      jq -n --arg reason "Prismor cloaking: secret '$name' not registered. Run: prismor cloak add $name (list registered names: prismor cloak list). To write the literal placeholder syntax instead of resolving it, escape the colon: @@SECRET\:$name@@" \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
       exit 0
     fi

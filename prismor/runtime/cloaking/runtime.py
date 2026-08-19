@@ -17,6 +17,10 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from prismor.runtime.cloaking.secrets_store import secrets_dir
 
+# Escape form: a backslash before the colon (``@@SECRET\:name@@``) is not a
+# valid placeholder — names may not contain a backslash — so the regex skips it
+# and no substitution touches it. This is how docs, commit messages, and test
+# fixtures write the literal placeholder syntax without tripping the guard.
 _PLACEHOLDER_RE = re.compile(r"@@SECRET:([a-zA-Z0-9_-]{1,64})@@")
 _ENV_ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
@@ -239,7 +243,9 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
         name = str(exc).strip("'")
         raise ValueError(
             f"Prismor cloaking: secret '{name}' is not registered. "
-            f"Run: prismor cloak add {name}"
+            f"Run: prismor cloak add {name} (list registered names: prismor cloak list). "
+            f"To write the literal placeholder syntax instead of resolving it, "
+            f"escape the colon: @@SECRET\\:{name}@@"
         ) from exc
 
     env = os.environ.copy()

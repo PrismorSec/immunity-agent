@@ -193,6 +193,30 @@ def test_unregistered_placeholder_denied():
     check("unknown placeholder is denied (fail closed)", dec == "deny", str(res))
 
 
+def test_escaped_placeholder_not_substituted():
+    # The escaped form @@SECRET\:CANARY@@ must be skipped by the placeholder
+    # regex and pass through verbatim — never substituted with the real value,
+    # even though CANARY is registered. This is how docs/commit messages write
+    # the literal syntax without tripping the guard.
+    res = run_hook(_DECLOAK, bash_payload('echo "@@SECRET\\:CANARY@@"'))
+    dec = (res or {}).get("hookSpecificOutput", {}).get("permissionDecision")
+    wrapped = (res or {}).get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+    check("escaped placeholder is not substituted",
+          dec != "deny" and "@@SECRET\\:CANARY@@" in wrapped and _CANARY not in wrapped,
+          str(res))
+
+
+def test_escaped_unregistered_placeholder_not_denied():
+    # An escaped name that is not registered must NOT be denied: the escape
+    # signals "literal text", not "resolve this secret".
+    res = run_hook(_DECLOAK, bash_payload('echo "@@SECRET\\:NOPE@@"'))
+    dec = (res or {}).get("hookSpecificOutput", {}).get("permissionDecision")
+    wrapped = (res or {}).get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+    check("escaped unregistered placeholder is not denied",
+          dec != "deny" and "@@SECRET\\:NOPE@@" in wrapped,
+          str(res))
+
+
 # ── C. read-guard.sh ──────────────────────────────────────────────────────
 def read_payload(fp: str) -> dict:
     return {"hook_event_name": "PreToolUse", "tool_name": "Read",
@@ -224,6 +248,8 @@ def main() -> int:
         test_placeholder_substituted_and_output_scrubbed,
         test_leading_env_assignment_decloaked_and_scrubbed,
         test_unregistered_placeholder_denied,
+        test_escaped_placeholder_not_substituted,
+        test_escaped_unregistered_placeholder_not_denied,
         test_read_of_secret_file_denied, test_read_of_clean_file_allowed,
     ]:
         fn()

@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime.cloaking.runtime import codex_cloak_finding, run_decloaked_command
+from prismor.runtime.cloaking.runtime import decloak_text, placeholder_names
 from prismor.runtime.cloaking.secrets_store import add_secret
 from prismor.runtime.store import get_events_page
 
@@ -73,6 +74,28 @@ class TestCodexCloakRuntime(unittest.TestCase):
         combined = stdout.getvalue() + stderr.getvalue()
         self.assertIn("@@SECRET:OPENAI_API_KEY@@", combined)
         self.assertNotIn("sk-test-1234567890", combined)
+
+    def test_escaped_placeholder_skipped_by_regex_and_decloak(self):
+        # The escaped form @@SECRET\:NAME@@ is not a placeholder: the regex skips
+        # it and decloak_text leaves it verbatim, even when the name IS registered.
+        self.assertEqual(placeholder_names("doc: @@SECRET\\:OPENAI_API_KEY@@ literal"), [])
+        self.assertEqual(
+            decloak_text("@@SECRET\\:OPENAI_API_KEY@@"),
+            "@@SECRET\\:OPENAI_API_KEY@@",
+        )
+
+    def test_codex_escaped_placeholder_not_blocked(self):
+        # Codex's block-only cloak path must not deny a command that merely
+        # writes the literal placeholder syntax (escaped form).
+        finding = codex_cloak_finding(
+            {
+                "type": "shell",
+                "agent_event": "PreToolUse",
+                "command": "git commit -m 'docs: explain @@SECRET\\:OPENAI_API_KEY@@'",
+            },
+            "s1",
+        )
+        self.assertIsNone(finding)
 
     def test_cloak_run_decloaks_leading_env_assignments(self):
         stdout = StringIO()
