@@ -275,6 +275,18 @@ SURFACES: Tuple[Surface, ...] = (
               "wants Prismor's verdict for traffic it is already carrying.",
     ),
     Surface(
+        id="ext-authz",
+        title="External authorization",
+        kind="service",
+        module="prismor.runtime.ext_authz",
+        normalizer="prismor.runtime.mcp_shape:shape_request_event",
+        can_refuse=True, can_rewrite=False, can_redact=False,
+        notes="A proxy delegates its per-request decision here (200 allow / "
+              "non-200 deny). Refusal only: no authorization callout can "
+              "rewrite a request body, so `modify` and `defer` verdicts deny "
+              "rather than be faked.",
+    ),
+    Surface(
         id="inference-hook",
         title="Inference hook channel",
         kind="service",

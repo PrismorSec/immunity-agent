@@ -14,14 +14,16 @@ where they can intercept and what they can do there:
 | **MCP gateway** | every MCP server behind one connector | yes | yes | yes |
 | **Mirror** | the agent's own built-ins, served over MCP | yes | yes | yes |
 | **SDK adapters** | in-process framework agents | yes | no | no |
-| **eval-server** | non-Python callers and external proxies | yes | yes | yes |
+| **eval-server** | non-Python callers | yes | yes | yes |
+| **authz-server** | MCP traffic through a proxy you already run | yes | no | no |
 | **Inference hook** | a hosted transcript-turn channel | yes | no | no |
 
 The rest of this page is about the two that govern a coding agent on a
 developer's machine, where the choice is a real decision. For the others:
 adapters ship with each framework (see `docs/frameworks-overview.md`), the
-eval-server is documented in the [decision contract](decision-contract.md), and
-the inference-hook channel in `docs/inference-hook.md`.
+eval-server is documented in the [decision contract](decision-contract.md),
+`authz-server` in [external authorization](external-authorization.md), and the
+inference-hook channel in `docs/inference-hook.md`.
 
 ## Hooks vs the MCP mirror
 

@@ -334,6 +334,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         return
 
+    # ── authz-server: external-authorization callout for a proxy ─────────
+    if args.command == "authz-server":
+        from prismor.runtime.ext_authz import run_authz_server
+        from pathlib import Path as _Path
+        run_authz_server(
+            host=args.host,
+            port=args.port,
+            workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+            api_key=getattr(args, "api_key", None),
+            mode=getattr(args, "mode", "enforce"),
+        )
+        return
+
     # ── inference-hook: Claude Inference Hooks AI-security server + tools ──
     # `inference-hook-server` is the pre-1.40 spelling, kept as an alias.
     if args.command in ("inference-hook", "inference-hook-server"):
@@ -2867,6 +2880,17 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
+
+    # ── authz-server: external-authorization callout for a proxy ────────
+    _ap = subparsers.add_parser(
+        "authz-server",
+        help="Answer a proxy's external-authorization callout with a Prismor verdict (200 allow / 403 deny)",
+    )
+    _ap.add_argument("--port", type=int, default=7073, help="Port to listen on (default: 7073)")
+    _ap.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    _ap.add_argument("--workspace", default=None, help="Workspace whose policy is enforced (default: cwd)")
+    _ap.add_argument("--mode", choices=("enforce", "observe"), default="enforce", help="observe: evaluate and log, always allow (default: enforce)")
+    _ap.add_argument("--api-key", default=None, help="Require X-Prismor-Authz-Key (default: $PRISMOR_AUTHZ_KEY); needed when exposing beyond localhost")
 
     # ── inference-hook: Claude Inference Hooks AI-security server ──────
     def _add_ih_serve_args(p: argparse.ArgumentParser) -> None:
