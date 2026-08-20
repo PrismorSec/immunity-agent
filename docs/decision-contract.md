@@ -134,6 +134,7 @@ surface sits, not preferences:
 | `mirror` — mirrored built-ins | yes | yes | yes |
 | `sdk-adapter` — framework SDKs | yes | no | no |
 | `eval-server` — HTTP PDP | yes | yes | yes |
+| `ext-authz` — proxy callout | yes | no | no |
 | `inference-hook` — hosted channel | yes | no | no |
 
 ¹ Claude/Qwen PreToolUse only. ² A pre-action hook sees the request, never the
@@ -142,6 +143,12 @@ response; Claude's PostToolUse stream is scrubbed by a separate shell path.
 That "redact output" column is the whole argument for the mirror: a hook can
 only refuse a file read, while a surface that carries the response can hand back
 the file with the credential masked.
+
+It also decides what a surface may honor. `ext-authz` cannot rewrite, so a
+`modify` verdict there must deny — see
+[external authorization](external-authorization.md). A capability column is a
+fact about where the surface sits, not a preference, and a surface that claims
+one it does not have will fail open exactly when it matters.
 
 ## Result redaction
 

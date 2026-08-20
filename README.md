@@ -243,7 +243,8 @@ it arrives.
 | MCP gateway | every MCP server behind one connector | yes | yes | yes |
 | Mirrored built-ins | the agent's own Bash/Read/Write, over MCP | yes | yes | yes |
 | Framework SDK adapters | in-process agents (13 frameworks) | yes | no | no |
-| `prismor eval-server` | non-Python callers, external proxies | yes | yes | yes |
+| `prismor eval-server` | non-Python callers | yes | yes | yes |
+| `prismor authz-server` | MCP traffic through a proxy you already run | yes | no | no |
 | Inference-hook channel | hosted transcript-turn webhook | yes | no | no |
 
 "Redact output" is why the mirror exists: a pre-action hook can only *refuse* a
@@ -253,6 +254,11 @@ credential masked.
 This is checked rather than asserted — `tests/test_surface_conformance.py`
 replays one action through each surface's own normalizer and fails if they
 disagree on the verdict or the rule.
+
+The capability columns also decide what a surface may honor: `authz-server`
+cannot rewrite a request body, so a policy verdict of "redact this first" denies
+there rather than being faked — see
+[external authorization](docs/external-authorization.md).
 
 See [the decision contract](docs/decision-contract.md) for the event shape and
 verdict vocabulary, and [governance surfaces](docs/governance-surfaces.md) for
