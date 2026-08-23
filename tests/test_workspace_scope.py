@@ -157,3 +157,18 @@ def test_org_can_disable_personal_workspaces(tmp_path, monkeypatch):
     monkeypatch.setattr(ws, "_org_settings", lambda: {"managed_repo_patterns": ["github.com/acme/*"]})
     monkeypatch.delenv("PRISMOR_WORKSPACE_SCOPE")
     assert ws.resolve_scope(repo)["reason"] == "opt_out"
+
+
+def test_repull_sig_tracks_allow_personal_workspaces(monkeypatch):
+    """Flipping allow_personal_workspaces must change managedReposSig (else the
+    device never re-pulls); the default must leave the sig untouched."""
+    from prismor.runtime.enterprise import remote_policy as rp
+    pols = iter([
+        {"settings": {"managed_repo_patterns": ["github.com/acme/*"]}},
+        {"settings": {"managed_repo_patterns": ["github.com/acme/*"], "allow_personal_workspaces": True}},
+        {"settings": {"managed_repo_patterns": ["github.com/acme/*"], "allow_personal_workspaces": False}},
+        {"settings": {"allow_personal_workspaces": False}},
+    ])
+    monkeypatch.setattr(rp, "verify_and_load", lambda: next(pols))
+    base, explicit_true, off, off_no_patterns = (rp._current_managed_repos_sig() for _ in range(4))
+    assert base == explicit_true and base != off and off_no_patterns and off_no_patterns != off

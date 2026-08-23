@@ -300,10 +300,13 @@ def _current_managed_repos_sig() -> str:
             f"{ex.get('id')}:{ex.get('expires') or ''}:{ex.get('overlay_sig') or ''}"
             for ex in exemptions if isinstance(ex, dict) and ex.get("id")
         )
-        if not pats and not ex_parts:
+        # allow_personal_workspaces=false is folded in only when set, mirroring
+        # the server, so default orgs keep their existing signature.
+        no_personal = settings.get("allow_personal_workspaces") is False
+        if not pats and not ex_parts and not no_personal:
             return ""
         import hashlib
-        sig_input = "\n".join([*pats, "|", *ex_parts])
+        sig_input = "\n".join([*pats, "|", *ex_parts, *(["|", "no_personal"] if no_personal else [])])
         return hashlib.sha256(sig_input.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
