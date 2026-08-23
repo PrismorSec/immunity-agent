@@ -304,7 +304,7 @@ Deep dive: [Learning](learning.md).
 |---|---|---|
 | `prismor enroll <token>` | `--label`, `--api-base` | Exchange a single-use org token (minted in the dashboard) for this machine's device identity; pulls the signed org policy. |
 | `prismor enroll-status` | — | Show enrollment state, device label, and the applied policy version. |
-| `prismor workspace [managed\|personal\|auto]` | — | With no argument, shows whether this workspace is org-managed (org policy + telemetry) or personal (local-only). Pass `managed`/`personal`/`auto` to set it. Org-claimed repos can't be downgraded. |
+| `prismor workspace [managed\|personal\|auto]` | — | With no argument, shows whether this workspace is org-managed (org policy + telemetry) or personal (local-only). Pass `managed`/`personal`/`auto` to set it. Org-claimed repos can't be downgraded, and `personal` is ignored entirely when the org policy sets `allow_personal_workspaces: false`. |
 | `prismor exempt request` | `--reason` | Ask an org admin to relax specific non-floor rules for this repo; served back in the signed policy. |
 | `prismor logout` | — | Un-enroll: removes the device identity and cached remote policy. Local protection stays on. |
 

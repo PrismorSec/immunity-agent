@@ -733,6 +733,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         if scope == "managed":
             why = {"org_claimed": "matches an org-claimed repo pattern (cannot be downgraded)",
                    "opt_in": "you opted this repo in",
+                   "org_no_personal": "your org has disabled personal workspaces on enrolled devices (cannot be downgraded)",
                    "default_all": "your org governs all enrolled machines (no per-repo scoping set)"}.get(reason, reason)
             print(f"  scope:      ORG-MANAGED — {why}")
             print(f"  org:        {ident.get('org_name') or ident.get('org_id')}")

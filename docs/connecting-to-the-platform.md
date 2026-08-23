@@ -121,7 +121,18 @@ On the hot path, `remote_policy.check_and_refresh()` (debounced, clamped to
 ## 3. Redacted telemetry (what leaves the box)
 
 Telemetry flows only for **org-managed** workspaces (`workspace_scope.py`).
-Personal repos emit nothing. The `prismor` sink (`prismor/runtime/sinks.py`) builds
+Personal repos emit nothing — but the local security floor still applies to them;
+"personal" removes org visibility and the org overlay, never protection.
+
+Scope is decided by the git remote matching an org-claimed pattern
+(`settings.managed_repo_patterns`). That is a developer-privacy convenience,
+not a security boundary: a developer can rewrite or drop `origin` so a repo no
+longer matches, then mark it personal. Orgs that need every workspace on an
+enrolled device governed set `settings.allow_personal_workspaces: false` in the
+signed policy — `prismor workspace personal`, `PRISMOR_WORKSPACE_SCOPE=personal`
+and the non-claimed-repo default are then all ignored.
+
+The `prismor` sink (`prismor/runtime/sinks.py`) builds
 records via `telemetry.build_record()` and runs `assert_redacted()` before upload
 — a fail-closed guard.
 
