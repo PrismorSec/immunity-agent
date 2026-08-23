@@ -873,7 +873,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         cli_path = getattr(args, "cli_path", None)
         if mode == "hybrid":
             from prismor.runtime.semantic_guard_v2 import SemanticGuardV2
-            guard = SemanticGuardV2(cli_path=cli_path)
+            guard = SemanticGuardV2(cli_path=cli_path, model=args.model)
             result = guard.analyze(text)
             payload = {
                 "mode": guard.mode,
@@ -884,7 +884,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             }
         else:
             from prismor.runtime.semantic_guard import SemanticGuard
-            guard = SemanticGuard(force_heuristic=(mode == "heuristic"))
+            guard = SemanticGuard(model=args.model, force_heuristic=(mode == "heuristic"))
             payload = {"mode": guard.mode, "final": guard.analyze(text).to_dict()}
 
         if args.json:
@@ -2955,6 +2955,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analysis mode: hybrid (heuristic + local LLM), heuristic-only, or API",
     )
     sem_parser.add_argument("--cli-path", help="Override the path to the Claude CLI subagent")
+    sem_parser.add_argument(
+        "--model",
+        default="",
+        help="litellm model id for the LLM layer (any provider); default $PRISMOR_SEMANTIC_MODEL",
+    )
     sem_parser.add_argument("--json", action="store_true", help="Emit raw JSON output")
 
     # ── scan ──────────────────────────────────────────────────────────

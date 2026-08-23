@@ -1953,10 +1953,11 @@ class PolicyEngine:
             if mode == "hybrid":
                 from prismor.runtime.semantic_guard_v2 import SemanticGuardV2
                 cli = cfg.get("cli_path") or None
-                self._semantic_guard = SemanticGuardV2(cli_path=cli)
+                self._semantic_guard = SemanticGuardV2(cli_path=cli, model=str(cfg.get("model") or ""))
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard
                 self._semantic_guard = SemanticGuard(
+                    model=str(cfg.get("model") or ""),
                     force_heuristic=(mode == "heuristic"),
                 )
         except Exception as exc:

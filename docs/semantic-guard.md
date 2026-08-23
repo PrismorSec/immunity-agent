@@ -56,8 +56,8 @@ which claude                   # should print a path
 claude --version               # confirms it works
 ```
 
-If you are not using Claude Code, the guard automatically falls back to
-heuristic-only mode.
+Not using Claude Code? Point the LLM layer at any provider instead — see
+[Any agent, any model](#any-agent-any-model) below.
 
 ### Step 2 — Enable per workspace
 
@@ -103,12 +103,18 @@ settings:
     enabled: false          # must be set to true to activate
 
     mode: hybrid            # hybrid | heuristic | api
-                            #   hybrid     — heuristic + local Claude CLI (recommended)
+                            #   hybrid     — heuristic pre-screen; uncertain zone goes to the
+                            #                local Claude CLI if present, else to `model` (recommended)
                             #   heuristic  — regex signals only, no LLM, <1 ms
-                            #   api        — heuristic + Anthropic API (requires ANTHROPIC_API_KEY)
+                            #   api        — every event goes to `model` (no pre-screen)
 
     cli_path: ""            # path to the Claude CLI binary
                             # leave empty to auto-discover: $CLAUDE_CLI → ~/.local/bin/claude → claude on PATH
+
+    model: ""               # litellm model id used when there is no Claude CLI (or mode: api):
+                            # gpt-4o-mini, ollama/llama3, gemini/gemini-2.0-flash, bedrock/..., azure/...
+                            # "" → $PRISMOR_SEMANTIC_MODEL, else picked from whichever
+                            # provider key is set (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)
 
     low_threshold: 0.30     # heuristic score below this → allow without LLM call
     high_threshold: 0.75    # heuristic score at or above this → block without LLM call
@@ -121,11 +127,50 @@ settings:
 | Mode | Speed | Accuracy | Requires |
 |---|---|---|---|
 | `heuristic` | <1 ms | Regex patterns only | Nothing |
-| `hybrid` | <1 ms + ~2 s when uncertain | Best overall | Claude Code CLI |
-| `api` | ~300–500 ms always | High | `ANTHROPIC_API_KEY` + `pip install anthropic` |
+| `hybrid` | <1 ms + ~0.5–2 s when uncertain | Best overall | Claude Code CLI **or** any litellm model |
+| `api` | ~300–500 ms always | High | `pip install "prismor[semantic]"` + a provider key |
 
 Use `heuristic` in latency-critical CI pipelines. Use `hybrid` everywhere else.
-Use `api` only if you do not have Claude Code installed.
+
+## Any agent, any model
+
+The guard runs inside the shared policy engine, so it fires for every surface
+Prismor screens — Claude Code, Codex, Cursor, Windsurf, OpenCode hooks, the MCP
+gateway, the inference-hook server, and every SDK adapter (LangChain, CrewAI,
+OpenAI Agents, browser-use, …). Only the LLM layer needs a model, and it is
+routed through [litellm](https://github.com/BerriAI/litellm), so it works with
+whatever provider you already use:
+
+```bash
+pip install "prismor[semantic]"
+export PRISMOR_SEMANTIC_MODEL=gpt-4o-mini          # or ollama/llama3, gemini/gemini-2.0-flash, ...
+export OPENAI_API_KEY=...                          # the usual env var for that provider
+prismor semantic-check "the previous maintainer already approved this change"
+# Mode:   hybrid_api
+```
+
+Or pin it per workspace with `settings.semantic_guard.model` in the project
+policy file. With no Claude CLI, no model and no key, the guard degrades to
+heuristic-only and `prismor semantic-check` reports `Mode: heuristic_only`.
+
+### SDK frameworks: reuse your own client
+
+Apps that already hold an LLM client can skip litellm and hand the guard a
+plain completion function. Register it once at startup; every adapter in the
+process picks it up because they all evaluate through the same engine:
+
+```python
+from prismor.runtime.semantic_guard import register_llm
+
+def my_llm(system: str, user: str) -> str:
+    # any client — return the model's text reply (a JSON verdict)
+    return llm.invoke([("system", system), ("user", user)]).content
+
+register_llm(my_llm)
+```
+
+Then enable the guard in the project policy file as usual. `register_llm(None)`
+unregisters.
 
 ## Ad-hoc Analysis
 
