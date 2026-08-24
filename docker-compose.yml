@@ -1,0 +1,109 @@
+services:
+  # Prismor Web Dashboard & API Server
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/prismorsec/prismor:latest
+    container_name: prismor-dashboard
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    user: "10001:10001"
+    environment:
+      - PRISMOR_HOME=/home/prismor/.prismor
+      - PRISMOR_WORKSPACE=/workspace
+      - PRISMOR_NO_UPDATE_CHECK=1
+      # Override with PRISMOR_MODE=enforce if desired
+      - PRISMOR_MODE=${PRISMOR_MODE:-observe}
+    ports:
+      - "${PRISMOR_PORT:-7070}:7070"
+    volumes:
+      - prismor_data:/home/prismor/.prismor
+      - ./:/workspace:ro
+    healthcheck:
+      test: ["CMD", "prismor", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "7070", "--no-open"]
+
+  # HTTP Evaluation Server (for Vercel AI SDK / TypeScript adapters)
+  eval-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/prismorsec/prismor:latest
+    container_name: prismor-eval-server
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    user: "10001:10001"
+    environment:
+      - PRISMOR_HOME=/home/prismor/.prismor
+      - PRISMOR_WORKSPACE=/workspace
+      - PRISMOR_EVAL_KEY=${PRISMOR_EVAL_KEY:-}
+      - PRISMOR_NO_UPDATE_CHECK=1
+    ports:
+      - "${PRISMOR_EVAL_PORT:-7071}:7071"
+    volumes:
+      - prismor_data:/home/prismor/.prismor
+      - ./:/workspace:ro
+    healthcheck:
+      test: ["CMD", "prismor", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    command: ["eval-server", "--host", "0.0.0.0", "--port", "7071"]
+    profiles:
+      - eval-server
+
+  # Periodic Security Audit / Sweep Cron Job
+  cron:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/prismorsec/prismor:latest
+    container_name: prismor-cron
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    user: "10001:10001"
+    environment:
+      - PRISMOR_HOME=/home/prismor/.prismor
+      - PRISMOR_WORKSPACE=/workspace
+      - PRISMOR_NO_UPDATE_CHECK=1
+    volumes:
+      - prismor_data:/home/prismor/.prismor
+      - ./:/workspace:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "[prismor-cron] Starting periodic audit daemon..."
+        while true; do
+          prismor audit --workspace /workspace || true
+          sleep 3600
+        done
+    profiles:
+      - cron
+
+volumes:
+  prismor_data:
+    driver: local

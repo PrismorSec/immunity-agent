@@ -6,6 +6,10 @@ shadowed by an unrelated installed ``prismor`` distribution earlier on the
 import path.
 """
 
+import pkgutil
+
 from prismor.runtime import __version__
+
+__path__ = pkgutil.extend_path(__path__, __name__)
 
 __all__ = ["__version__"]
