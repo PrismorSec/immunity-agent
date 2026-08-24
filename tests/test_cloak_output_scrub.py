@@ -238,6 +238,19 @@ def test_read_of_clean_file_allowed():
     check("Read of a clean file is allowed (no-op)", res is None, str(res))
 
 
+def test_no_secret_in_wrapped_command_when_placeholder_used():
+    # Regression (transcript leak): when a command references a placeholder,
+    # decloak.sh used to substitute the REAL value into the command string it
+    # handed back — and Claude Code records that string verbatim in
+    # ~/.claude/projects/*.jsonl. The value never reached the model but did
+    # reach disk. The wrapped command must now carry the placeholder, with
+    # resolution deferred to the child (decloak-exec.sh).
+    res = run_hook(_DECLOAK, bash_payload(f"echo using {_PLACEHOLDER}"))
+    wrapped = res["hookSpecificOutput"]["updatedInput"]["command"]
+    check("placeholder command: wrapped string holds no raw secret",
+          _CANARY not in wrapped and _PLACEHOLDER in wrapped, wrapped)
+
+
 def main() -> int:
     for fn in [
         test_scrub_masks_secret, test_scrub_passthrough_no_secret,
@@ -246,6 +259,7 @@ def main() -> int:
         test_grep_output_scrubbed, test_source_echo_scrubbed,
         test_no_secret_in_wrapped_command, test_exit_code_preserved,
         test_placeholder_substituted_and_output_scrubbed,
+        test_no_secret_in_wrapped_command_when_placeholder_used,
         test_leading_env_assignment_decloaked_and_scrubbed,
         test_unregistered_placeholder_denied,
         test_escaped_placeholder_not_substituted,

@@ -2256,9 +2256,18 @@ def main(argv: Optional[List[str]] = None) -> None:
             print()
             print(f"  {_color('CLOAKING', _BOLD)}")
             print(f"  {_color('─' * 50, _DIM)}")
-            # Claude Code cloaking status
-            result = cloak_status(workspace=workspace, scope=args.scope)
+            # Claude Code cloaking status. With no explicit --scope, report the
+            # scope the hooks actually live in: `prismor setup` with global scope
+            # writes them to ~/.claude, and a project-only lookup called that
+            # "not installed" while `prismor status` said the opposite.
+            scopes = [args.scope] if args.scope else ["project", "user"]
+            for _sc in scopes:
+                result = cloak_status(workspace=workspace, scope=_sc)
+                if result["installed"]:
+                    break
             state = "installed" if result["installed"] else "not installed"
+            if result["installed"] and not args.scope:
+                state += " (project)" if _sc == "project" else " (global)"
             installed_color = _GREEN if result["installed"] else _YELLOW
             print(f"  {_color('Claude Code:', _GREEN)} {_color(state, installed_color)}")
             if result.get("configPath"):
@@ -2266,7 +2275,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             if result.get("events"):
                 print(f"  {_color('Events:', _GREEN)}    {', '.join(result['events'])}")
             # Hermes Agent cloaking status
-            h_result = hermes_status(workspace=workspace, scope=args.scope)
+            h_result = hermes_status(workspace=workspace, scope=args.scope or "project")
             h_state = "installed" if h_result["installed"] else "not installed"
             h_color = _GREEN if h_result["installed"] else _YELLOW
             print(f"  {_color('Hermes Agent:', _GREEN)} {_color(h_state, h_color)}")
@@ -3563,8 +3572,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     t_status = cloak_sub.add_parser("status", help="Show whether cloaking hooks are installed")
     t_status.add_argument("--workspace", help="Workspace path")
-    t_status.add_argument("--scope", choices=["project", "user", "global"], default="project",
-                          help="Hook scope (default: project)")
+    t_status.add_argument("--scope", choices=["project", "user", "global"], default=None,
+                          help="Hook scope (default: whichever scope the hooks are installed in)")
 
     t_run = cloak_sub.add_parser(
         "run",

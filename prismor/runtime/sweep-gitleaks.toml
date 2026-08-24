@@ -46,14 +46,14 @@ tags        = ["cohere", "llm", "ai"]
 [[rules]]
 id          = "mistral-api-key"
 description = "Mistral AI API key"
-regex       = '''[A-Za-z0-9]{32}'''
+regex       = '''(?i)mistral[_\-]?(?:ai)?[_\-]?(?:api[_\-]?)?key["'\s:=]{1,10}([A-Za-z0-9]{32})'''
 keywords    = ["mistral"]
 tags        = ["mistral", "llm", "ai"]
 
 [[rules]]
 id          = "together-api-key"
 description = "Together AI API key"
-regex       = '''[A-Za-z0-9]{40}'''
+regex       = '''(?i)together[_\-]?(?:ai)?[_\-]?(?:api[_\-]?)?key["'\s:=]{1,10}([A-Za-z0-9]{40})'''
 keywords    = ["together_ai", "TOGETHER_API_KEY"]
 tags        = ["together", "llm", "ai"]
 

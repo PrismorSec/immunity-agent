@@ -132,6 +132,22 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
     return results
 
 
+# Agents whose hook is registered as a plugin path rather than an inline
+# command. _strip_openclaw / _strip_hermes / _strip_opencode use the same
+# "is this one of ours" test when uninstalling.
+_PLUGIN_REGISTERED_AGENTS = ("openclaw", "hermes", "opencode")
+
+
+def _prismor_plugin_registered(config_text: str) -> bool:
+    try:
+        plugins = json.loads(config_text).get("plugins", [])
+    except (json.JSONDecodeError, AttributeError):
+        return False
+    if not isinstance(plugins, list):
+        return False
+    return any(m in str(entry).lower() for entry in plugins for m in ("prismor", "warden"))
+
+
 def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
     """True if a Prismor PreToolUse hook is present in this agent's config at
     ``scope`` ("project" | "global"). Text-based — the dispatcher command embeds
@@ -146,7 +162,20 @@ def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
         return False
     try:
         path = _config_path(agent, scope, workspace)
-        return path.exists() and "hook-dispatch" in path.read_text(encoding="utf-8")
+        if not path.exists():
+            return False
+        text = path.read_text(encoding="utf-8")
+        if "hook-dispatch" in text:
+            return True
+        # openclaw / hermes / opencode do not take an inline command: install
+        # registers a *plugin path* in config["plugins"] and writes the
+        # dispatcher into the scaffolded plugin. The marker is therefore never
+        # in the config file, so the text search above reported these agents as
+        # unhooked forever — which made coverage() under-report them and sent
+        # ensure_global_coverage re-installing them on every run.
+        if agent in _PLUGIN_REGISTERED_AGENTS:
+            return _prismor_plugin_registered(text)
+        return False
     except Exception:
         return False
 
