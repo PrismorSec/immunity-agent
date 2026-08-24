@@ -1192,7 +1192,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             args.input = args.file
         # If no input specified, use most recent session
         if args.input:
-            events = parse_jsonl(read_text(args.input))
+            events = normalize_transcript_events(
+                parse_jsonl(read_text(args.input)), workspace=workspace
+            )
         else:
             # Find most recent session in current workspace
             sessions = list_sessions(workspace, limit=1)
@@ -1222,7 +1224,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "ingest requires --input <file>, or --discover to sweep this "
                 "machine's agent transcripts"
             )
-        events = parse_jsonl(read_text(args.input))
+        events = normalize_transcript_events(
+            parse_jsonl(read_text(args.input)), workspace=workspace
+        )
         result = analyze_events(events, repo_root=repo_root, workspace=workspace)
         session_id = args.session_id or derive_session_id(events)
         db_path = save_session_snapshot(
@@ -5634,6 +5638,67 @@ def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:
             f"{len(result.silent_sessions)} transcript(s) produced no events; "
             f"the adapter may not match the on-disk format"
         )
+
+
+def _looks_normalized(events: List[Dict[str, Any]]) -> bool:
+    """True when events are already Prismor engine events (live hook payloads
+    or hand-authored policy events) rather than a raw on-disk agent transcript."""
+    _ENGINE_TYPES = {
+        "shell", "file_read", "file_write", "network", "prompt", "tool_result",
+        "memory", "skill_manifest", "subagent_spawn", "text",
+    }
+    for ev in events:
+        if not isinstance(ev, dict):
+            return True  # can't adapt a non-dict record; leave the list as-is
+        if ev.get("hook_event_name") or ev.get("type") in _ENGINE_TYPES:
+            return True
+    return False
+
+
+def normalize_transcript_events(
+    events: List[Dict[str, Any]], *, workspace: Optional[Path]
+) -> List[Dict[str, Any]]:
+    """Convert a raw agent transcript (Claude/Codex/Hermes on-disk records) into
+    Prismor engine events, mirroring the discover/sweep chain exactly:
+    ``adapter.record_to_payloads -> normalize_payload -> engine event``.
+
+    Already-normalized input passes through unchanged. Without this,
+    ``analyze --input`` / ``ingest --input`` fed a real session file evaluated
+    raw records the engine does not understand and silently reported 0 findings.
+    """
+    if not events or _looks_normalized(events):
+        return events
+    from prismor.runtime.transcripts.adapters import ADAPTERS
+    from prismor.runtime.transcripts.base import DiscoveredSession
+    from prismor.runtime.hooks import normalize_payload
+
+    for cls in ADAPTERS.values():
+        adapter = cls()
+        session = DiscoveredSession(
+            agent=adapter.agent, path=Path("<input>"), session_id="input", mtime=0.0
+        )
+        payloads: List[Dict[str, Any]] = []
+        try:
+            for record in events:
+                payloads.extend(adapter.record_to_payloads(record, session))
+        except Exception:
+            payloads = []
+        if not payloads:
+            continue
+        out: List[Dict[str, Any]] = []
+        for payload in payloads:
+            try:
+                normalized = normalize_payload(
+                    agent=adapter.agent, payload=payload, workspace=workspace
+                )
+            except Exception:
+                continue
+            event = normalized.get("event") if isinstance(normalized, dict) else None
+            if isinstance(event, dict):
+                out.append(event)
+        if out:
+            return out
+    return events
 
 
 def parse_jsonl(text: str) -> List[Dict[str, Any]]:
