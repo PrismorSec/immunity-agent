@@ -864,9 +864,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "semantic-check":
         text = args.text
         if not text:
+            # Only fall back to stdin when something is actually piped in.
+            # On an interactive terminal `sys.stdin.read()` blocks forever, so
+            # a bare `prismor semantic-check` (or an empty-string argument)
+            # would hang with no prompt and no hint. Fail fast with usage.
+            if sys.stdin.isatty():
+                sys.stderr.write(
+                    "error: no text provided\n"
+                    "  pass it as an argument:  prismor semantic-check \"<text>\"\n"
+                    "  or pipe it via stdin:     echo \"<text>\" | prismor semantic-check\n"
+                )
+                raise SystemExit(1)
             text = sys.stdin.read()
         if not text or not text.strip():
-            sys.stderr.write("error: no text provided (pass as argument or pipe via stdin)\n")
+            sys.stderr.write("error: no text provided (pass as an argument or pipe via stdin)\n")
             raise SystemExit(1)
 
         mode = args.mode
