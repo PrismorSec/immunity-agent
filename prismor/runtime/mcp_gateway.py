@@ -860,9 +860,13 @@ class Gateway:
         if withhold is None and decision is not None and self.mode == "enforce":
             withhold = _result_withhold_finding(decision.findings)
         if withhold is not None:
+            # include_evidence=False: the evidence is the poisoned tool output
+            # itself — echoing it back would hand the model the very injection
+            # (or leaked secret) the withhold exists to keep out of its context.
             self._reply(req_id, _blocked_result(
                 "[Prismor] response withheld", withhold,
-                unblock=self._unblock_text(withhold, route)))
+                unblock=self._unblock_text(withhold, route),
+                include_evidence=False))
             return
 
         self._reply(req_id, result)
@@ -1129,32 +1133,48 @@ _WITHHOLD_CATEGORIES = frozenset({"prompt_injection", "prompt_injection_semantic
 
 
 def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Strongest enforce-mode finding that justifies withholding a tool result.
+    """Strongest finding that justifies withholding a tool RESULT.
 
     ``should_block`` deliberately returns nothing on a post-action event — a
     hook cannot recall a tool that already ran. The gateway can: it still holds
     the response. So it makes its own post-call decision here, restricted to the
     finding categories where withholding the *output* is the actual mitigation
-    (injection, leaked secrets), and only for findings the policy already put in
-    enforce mode. Returns None when nothing qualifies (observe-only findings,
-    inert-context matches, unrelated categories).
+    (injection, leaked secrets).
+
+    A tool RESULT is untrusted content from an external server — a distinct
+    trust boundary from the user's own prompts and commands. Withholding a
+    poisoned or secret-leaking result is the exact mitigation and, unlike
+    blocking a call, cannot produce a false positive on anything the user
+    themselves wrote. So this does NOT require the finding's global rule mode to
+    be ``enforce``: the gateway's own enforce mode (the caller gates on
+    ``self.mode == "enforce"``) is enough. Otherwise the gateway's headline
+    result-injection scanning was inert whenever ``prompt-injection`` sat at its
+    observe default — a poisoned MCP result reached the model, only logged.
+
+    Still skips ``contextInert`` matches (an injection quoted inside a commit
+    message or grep pattern describes rather than performs) and any category
+    outside the curated withhold set. Returns None when nothing qualifies.
     """
     from prismor.runtime.contract import strongest
     return strongest([
         f for f in (findings or [])
-        if str(f.get("mode", "observe")).lower() == "enforce"
-        and not f.get("contextInert")
+        if not f.get("contextInert")
         and f.get("category") in _WITHHOLD_CATEGORIES
     ])
 
 
 def _blocked_result(prefix: str, blocking: Dict[str, Any],
-                    unblock: str = "") -> Dict[str, Any]:
+                    unblock: str = "", include_evidence: bool = True) -> Dict[str, Any]:
     parts = [f"{prefix}: [{blocking.get('severity', 'high')}] "
              f"{blocking.get('title', 'policy violation')}"]
     if blocking.get("ruleId"):
         parts[0] += f" (rule: {blocking['ruleId']})"
-    if blocking.get("evidence"):
+    # When withholding a tool RESULT the evidence IS the poisoned output (the
+    # injection string, a leaked secret). Echoing it back into the error the
+    # model reads would re-introduce exactly what we withheld, so the caller
+    # passes include_evidence=False there. Pre-call denials keep it: their
+    # evidence is the agent's own command, which is safe and useful to show.
+    if include_evidence and blocking.get("evidence"):
         parts.append(str(blocking["evidence"]))
     if blocking.get("remediation"):
         parts.append(f"Recommended fix: {blocking['remediation']}")
