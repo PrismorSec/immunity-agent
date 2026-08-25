@@ -383,6 +383,10 @@ def test_install_and_uninstall_roundtrip(tmp_path, monkeypatch):
     rewritten = json.loads((ws / ".mcp.json").read_text())["mcpServers"]
     assert list(rewritten) == ["prismor"]
     assert rewritten["prismor"]["args"][0] == "mcp-gateway"
+    # The installed gateway must run in enforce by default, or it forwards
+    # injections it detected — the feature would be off out of the box.
+    assert "--mode" in rewritten["prismor"]["args"]
+    assert rewritten["prismor"]["args"][rewritten["prismor"]["args"].index("--mode") + 1] == "enforce"
     assert (ws / ".mcp.json.bak").exists()
 
     msg = uninstall_gateway(ws)
@@ -654,3 +658,13 @@ def test_call_step_up_denied_blocks(tmp_path, monkeypatch):
     gateway._handle_tools_call_safe("C11", {"name": "crm__echo", "arguments": {"x": 1}})
     assert sent[-1]["result"]["isError"] is True
     assert not any(m == "tools/call" for m, _ in a.requests)
+
+
+def test_install_mode_observe_is_honoured(tmp_path, monkeypatch):
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", tmp_path / "gw.json")
+    ws = tmp_path / "ws"; ws.mkdir()
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {
+        "notes": {"command": "python3", "args": ["notes.py"]}}}))
+    install_gateway(ws, mode="observe")
+    args = json.loads((ws / ".mcp.json").read_text())["mcpServers"]["prismor"]["args"]
+    assert args[args.index("--mode") + 1] == "observe"

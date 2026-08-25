@@ -3244,7 +3244,7 @@ def build_parser() -> argparse.ArgumentParser:
                            "(e.g. --upstream 'npx -y @modelcontextprotocol/server-github')")
     gw_parser.add_argument("--server", action="append",
                            help="Inline upstream as name=<url|command> (repeatable)")
-    gw_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe",
+    gw_parser.add_argument("--mode", choices=["observe", "enforce"], default=None,
                            help="observe=log only (default), enforce=block policy violations")
     gw_parser.add_argument("--workspace", help="Workspace path for policy + session store")
     gw_parser.add_argument("--session-id", dest="session_id", default="",

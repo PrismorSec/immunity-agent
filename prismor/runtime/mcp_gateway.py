@@ -1193,9 +1193,15 @@ class MigrationResult:
         return self.status == "migrated"
 
 
-def _gateway_entry() -> Dict[str, Any]:
+def _gateway_entry(mode: str = "enforce") -> Dict[str, Any]:
+    # The gateway exists to screen tool results; installing it in observe mode
+    # would hand the host a connector that logs injections but forwards them
+    # anyway. So the written entry pins the mode (default enforce), and the
+    # installed .mcp.json actually protects the agent. `mirror on` defaults to
+    # enforce for the same reason.
     return {"command": "prismor",
-            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG)]}
+            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG),
+                     "--mode", mode]}
 
 
 def _absorb(servers: Dict[str, Any]) -> int:
@@ -1219,7 +1225,7 @@ def _absorb(servers: Dict[str, Any]) -> int:
     return len(moved)
 
 
-def migrate_config(path: Path) -> MigrationResult:
+def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
     """Move one config file's MCP servers behind the gateway.
 
     Everything in the file that is not the server block is preserved verbatim —
@@ -1263,7 +1269,7 @@ def migrate_config(path: Path) -> MigrationResult:
         # trade for governing a server.
         return MigrationResult(path, "failed", detail=f"could not write backup: {exc}")
 
-    data[key] = {"prismor": _gateway_entry()}
+    data[key] = {"prismor": _gateway_entry(mode)}
     try:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -1272,7 +1278,7 @@ def migrate_config(path: Path) -> MigrationResult:
                            detail=f"moved {moved} server(s); backup at {backup}")
 
 
-def migrate_configs(paths: Iterable[Path]) -> List[MigrationResult]:
+def migrate_configs(paths: Iterable[Path], mode: str = "enforce") -> List[MigrationResult]:
     """Migrate several configs. One bad file never stops the rest."""
     seen: set = set()
     out: List[MigrationResult] = []
@@ -1284,11 +1290,11 @@ def migrate_configs(paths: Iterable[Path]) -> List[MigrationResult]:
         if key in seen:
             continue
         seen.add(key)
-        out.append(migrate_config(Path(path)))
+        out.append(migrate_config(Path(path), mode))
     return out
 
 
-def install_gateway(workspace: Path) -> str:
+def install_gateway(workspace: Path, mode: str = "enforce") -> str:
     """Move the workspace ``.mcp.json`` servers behind the gateway.
 
     Scope is deliberately this one file. ``migrate_configs`` handles the wider
@@ -1299,7 +1305,7 @@ def install_gateway(workspace: Path) -> str:
     mcp_json = workspace / ".mcp.json"
     if not mcp_json.exists():
         return f"No .mcp.json found in {workspace} — nothing to install."
-    result = migrate_config(mcp_json)
+    result = migrate_config(mcp_json, mode)
     if result.status == "failed":
         raise GatewayConfigError(f"{mcp_json}: {result.detail}")
     if result.status == "skipped":
@@ -1341,7 +1347,7 @@ def _shim_name(argv: List[str]) -> str:
     return "upstream"
 
 
-def _install_everywhere(workspace: Path) -> str:
+def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
     """Migrate every MCP config ``discover`` can find on this machine.
 
     Uses discovery's own enumeration rather than a second list, so the set of
@@ -1361,7 +1367,7 @@ def _install_everywhere(workspace: Path) -> str:
     if not sources:
         return "No ungoverned MCP servers found — nothing to install."
 
-    results = migrate_configs(sources)
+    results = migrate_configs(sources, mode)
     lines = []
     total = 0
     for r in results:
@@ -1381,10 +1387,14 @@ def run_gateway(args, workspace: Path) -> int:
     """Entry point for ``prismor mcp-gateway`` (called from cli.main)."""
     action = getattr(args, "action", None) or "serve"
     if action == "install":
+        # Install defaults to enforce (a protection gateway must protect);
+        # an explicit `--mode observe` is honoured. Serve keeps its observe
+        # default below.
+        install_mode = getattr(args, "mode", None) or "enforce"
         if getattr(args, "all", False):
-            print(_install_everywhere(workspace))
+            print(_install_everywhere(workspace, install_mode))
             return 0
-        print(install_gateway(workspace))
+        print(install_gateway(workspace, install_mode))
         return 0
     if action == "uninstall":
         print(uninstall_gateway(workspace))
