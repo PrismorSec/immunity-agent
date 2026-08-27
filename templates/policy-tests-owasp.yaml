@@ -123,10 +123,14 @@ tests:
     expect: warn
 
   # ── Homoglyph / Unicode bypass ───────────────────────────────────
-  - name: "Unicode — reading .еnv (Cyrillic е) must WARN"
+  # The confusable-folding rescan folds .еnv -> .env, so secret-access blocks
+  # the disguised read (same verdict as an ASCII .env read) AND the
+  # unicode-confusable rule fires. Assert the stronger block verdict while
+  # still requiring the homoglyph detector to trip.
+  - name: "Unicode — reading .еnv (Cyrillic е) must BLOCK"
     type: read
     input: ".еnv"
-    expect: warn
+    expect: block
     expect_rule: unicode-confusable
 
   # ── Persistence ──────────────────────────────────────────────────
