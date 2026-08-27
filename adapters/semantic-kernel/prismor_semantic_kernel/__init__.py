@@ -119,7 +119,8 @@ def make_filter(
         # redact it before Semantic Kernel folds it into the chat history.
         result = getattr(context, "function_result", None)
         if result is not None:
-            redacted = redact_tool_result(result, workspace=ws)
+            redacted = redact_tool_result(result, workspace=ws,
+                                          engine=decision.engine)
             if redacted is not result:
                 context.function_result = redacted
 

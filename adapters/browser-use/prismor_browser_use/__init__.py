@@ -206,7 +206,7 @@ def guard_controller(
                             params = _approvals.redact_approved_payload(params, workspace=ws)
                         return redact_tool_result(
                             await original_execute(action_name, params, **kwargs),
-                            workspace=ws)
+                            workspace=ws, engine=decision.engine)
                 except Exception:
                     pass
             reason = decision.reason or "policy violation"
@@ -218,7 +218,8 @@ def guard_controller(
         # An allowed action still returns a page's content — redact it before
         # browser-use hands the ActionResult back to the model.
         return redact_tool_result(
-            await original_execute(action_name, params, **kwargs), workspace=ws)
+            await original_execute(action_name, params, **kwargs), workspace=ws,
+            engine=decision.engine)
 
     registry.execute_action = _guarded_execute
     registry.__prismor_guarded__ = True

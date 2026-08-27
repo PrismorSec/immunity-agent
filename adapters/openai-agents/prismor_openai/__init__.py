@@ -204,7 +204,8 @@ def prismor_guard(
             return decision
         # Allowed: the tool ran, and its OUTPUT is the half a pre-call check
         # never sees. Redact before the SDK folds it into the model's context.
-        return redact_tool_result(tool(*args, **kwargs), workspace=ws)
+        return redact_tool_result(tool(*args, **kwargs), workspace=ws,
+                                  engine=decision.engine)
 
     wrapper.__prismor_guarded__ = True  # type: ignore[attr-defined]
     return wrapper
@@ -312,14 +313,16 @@ def _guard_function_tool(
                             # "Approve redacted": strip flagged values on-device first.
                             input_str = _approvals.redact_approved_payload(input_str, workspace=ws)
                         return redact_tool_result(
-                            await original(ctx, input_str), workspace=ws)
+                            await original(ctx, input_str), workspace=ws,
+                            engine=decision.engine)
                 except Exception:
                     pass  # any approval-path error fails closed
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
             return f"⛔ Prismor blocked this tool call: {reason}"
-        return redact_tool_result(await original(ctx, input_str), workspace=ws)
+        return redact_tool_result(await original(ctx, input_str), workspace=ws,
+                                  engine=decision.engine)
 
     tool.on_invoke_tool = guarded
     tool.__prismor_guarded__ = True

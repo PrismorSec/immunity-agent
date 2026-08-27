@@ -121,6 +121,7 @@ class PrismorToolset(WrapperToolset):
         return redact_tool_result(
             await super().call_tool(name, tool_args, ctx, tool),
             workspace=self._prismor_ws,  # type: ignore[attr-defined]
+            engine=decision.engine,
         )
 
 

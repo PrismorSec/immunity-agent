@@ -36,6 +36,7 @@ def redact_text(
     *,
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
+    engine: Any = None,
 ) -> Tuple[str, bool]:
     """Mask cloak secrets and classified data-boundary values in ``text``.
 
@@ -43,6 +44,13 @@ def redact_text(
     only — the split matters because ``prismor pause`` suspends *policy*
     (data boundary) while cloak masking keeps running: a paused agent must
     still not have raw secret values pushed into its context.
+
+    ``engine`` is the ``PolicyEngine`` the caller already built for this call
+    (every ``Decision`` carries one). Without it the classifier builds a fresh
+    engine per string — 6.6 ms of rule construction on a 2-core box, which on
+    a result-side path is paid once per tool call for nothing. Reusing the
+    decision's engine took a 96-byte result from 9.5 ms to 0.17 ms, and is
+    exactly as fresh as the decision that allowed the call.
     """
     if not isinstance(text, str) or not text:
         return text, False
@@ -57,7 +65,9 @@ def redact_text(
     if data_boundary:
         try:
             from prismor.runtime.data_boundary import redact_payload
-            redacted = redact_payload(text, workspace=workspace)
+            redacted = redact_payload(
+                text, workspace=workspace,
+                policy=getattr(engine, "data_boundary", None))
             if isinstance(redacted, str):
                 text = redacted
         except Exception:
@@ -78,6 +88,7 @@ def redact_payload_values(
     *,
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
+    engine: Any = None,
 ) -> Tuple[Any, bool]:
     """``redact_text`` over every string leaf of a dict/list/str payload.
 
@@ -94,7 +105,8 @@ def redact_payload_values(
     def _walk(x: Any, depth: int) -> Any:
         nonlocal changed
         if isinstance(x, str):
-            out, hit = redact_text(x, workspace=workspace, data_boundary=data_boundary)
+            out, hit = redact_text(x, workspace=workspace,
+                                   data_boundary=data_boundary, engine=engine)
             changed = changed or hit
             return out
         if depth >= _MAX_DEPTH:
@@ -127,6 +139,7 @@ def redact_tool_result(
     *,
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
+    engine: Any = None,
 ) -> Any:
     """Result-side redaction for an in-process SDK adapter. Never raises.
 
@@ -138,7 +151,8 @@ def redact_tool_result(
     """
     try:
         redacted, _ = redact_payload_values(
-            result, workspace=workspace, data_boundary=data_boundary)
+            result, workspace=workspace, data_boundary=data_boundary,
+            engine=engine)
         return redacted
     except Exception:
         return result

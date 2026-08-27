@@ -151,6 +151,7 @@ def prismor_guard_tool(
             agent=agent, agent_name=_agent_name, mode=mode, sid=sid, event_type=event_type,
         )
         log_observe_findings(decision, mode=mode, tool_name=tool_name)
+        _engine[0] = decision.engine
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode
             # Headless STEP_UP → post an approval request and block until an admin
             # decides. Approve → proceed; deny/timeout/not-enrolled → fail closed.
@@ -177,6 +178,12 @@ def prismor_guard_tool(
             return f"⛔ Prismor blocked this tool call: {reason}"
         return None  # allowed
 
+    # The Decision's own PolicyEngine, parked by _decide for _redact to reuse
+    # rather than rebuild. A list because the guarded callables are re-entrant
+    # (and async, in LangChain's case): index 0 is only ever a fresher engine
+    # for the same workspace, so a racing overwrite costs nothing.
+    _engine: List[Any] = [None]
+
     def _redact(result: Any) -> Any:
         """Mask the tool's OUTPUT before LangChain feeds it back to the model.
 
@@ -185,7 +192,7 @@ def prismor_guard_tool(
         return value. This wrapper holds that value, so it is the one place
         that leak can still be repaired.
         """
-        return redact_tool_result(result, workspace=ws)
+        return redact_tool_result(result, workspace=ws, engine=_engine[0])
 
     original_func = getattr(tool, "func", None)
     if callable(original_func):

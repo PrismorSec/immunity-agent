@@ -101,7 +101,8 @@ def make_tool_hook(
             raise RuntimeError(f"⛔ Prismor blocked this tool call: {reason}")
         # The hook chain hands back the tool's own return value: redact it
         # here, the last point before Agno folds it into the model's context.
-        return redact_tool_result(function_call(**arguments), workspace=ws)
+        return redact_tool_result(function_call(**arguments), workspace=ws,
+                                  engine=decision.engine)
 
     return hook
 
