@@ -5853,10 +5853,6 @@ def format_tokens(payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    main()
-
-
 def _print_surfaces(workspace: Path) -> None:
     """Which enforcement surfaces are governing this machine, and which could be.
 
@@ -5913,3 +5909,12 @@ def _print_surfaces(workspace: Path) -> None:
     print(_color("  prismor mcp-gateway --help    front your MCP servers", _DIM))
     print(_color("  docs/governance-surfaces.md   which surface to use per agent", _DIM))
     print()
+
+
+# Must stay the LAST statement in this module. `python -m prismor.runtime.cli`
+# executes the file top to bottom, so anything defined below this line does not
+# exist yet when main() dispatches to it — which is how `prismor surfaces`
+# came to work through the console script and die with a NameError under
+# `python -m`. test_cli_main_guard_is_last keeps it here.
+if __name__ == "__main__":
+    main()
