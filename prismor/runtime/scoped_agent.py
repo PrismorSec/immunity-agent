@@ -130,6 +130,58 @@ def _mcp_server_names_in(obj: Any) -> List[str]:
     return [str(k) for k in servers.keys() if isinstance(k, str) and k]
 
 
+def _gateway_upstreams(entry, home):
+    """If an MCP server entry is the Prismor mcp-gateway, return its upstream
+    server names (read from the gateway config); else None. The gateway
+    aggregates every upstream under ONE server name, so scoping must see
+    through it to the upstreams -- otherwise the only family is
+    ``mcp__<gateway>__*`` and no task prompt ever names it, so every gatewayed
+    MCP tool is denied by omission."""
+    if not isinstance(entry, dict):
+        return None
+    args = entry.get("args") or []
+    argv = " ".join(str(a) for a in args)
+    if "mcp-gateway" not in argv:
+        return None
+    cfg = None
+    for i, a in enumerate(args):
+        if str(a) == "--config" and i + 1 < len(args):
+            cfg = Path(str(args[i + 1])); break
+    if cfg is None:
+        cfg = home / ".prismor" / "mcp-gateway.json"
+    return _mcp_server_names_in(_read_json(cfg)) or []
+
+
+def _gateway_expansion(workspace, agent, home):
+    """Map each gateway family ``mcp__<gw>__*`` to its per-upstream families
+    ``mcp__<gw>__<upstream>__*``, so per-server token matching still works."""
+    out = {}
+    def scan(mcp):
+        if not isinstance(mcp, dict):
+            return
+        for name, entry in mcp.items():
+            ups = _gateway_upstreams(entry, home)
+            if ups:
+                out[mcp_family_for_server(name)] = [
+                    mcp_family_for_server(f"{name}__{u}") for u in ups
+                ]
+    try:
+        scan((_read_json(workspace / ".mcp.json") or {}).get("mcpServers"))
+        if agent in ("claude", "claude-code", "claude_code"):
+            cfg = _read_json(home / ".claude.json")
+            if isinstance(cfg, dict):
+                scan(cfg.get("mcpServers"))
+                projects = cfg.get("projects")
+                if isinstance(projects, dict):
+                    ws = str(workspace.resolve())
+                    for pth, proj in projects.items():
+                        if isinstance(proj, dict) and (pth == ws or ws.startswith(pth.rstrip("/") + "/")):
+                            scan(proj.get("mcpServers"))
+    except Exception:
+        pass
+    return out
+
+
 def discover_mcp_families(workspace: Path, agent: str = "claude") -> List[str]:
     """Best-effort inventory of the MCP servers this agent can reach, as
     ``mcp__<server>__*`` families. Cheap on purpose (a handful of JSON reads —
@@ -180,6 +232,13 @@ def discover_mcp_families(workspace: Path, agent: str = "claude") -> List[str]:
                             _add(f"plugin:{plugin}:{name}")
     except Exception:
         pass
+    expansion = _gateway_expansion(workspace, agent, Path.home())
+    if expansion:
+        expanded = []
+        for fam in families:
+            expanded.extend(expansion.get(fam, [fam]))
+        # de-dupe, preserve order
+        seen2 = set(); families = [f for f in expanded if not (f in seen2 or seen2.add(f))]
     return families
 
 
@@ -447,7 +506,7 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     # MCP tool families: allow a family when the prompt names its server
     # ("query posthog for ..." → mcp__plugin_posthog_posthog__*).
     for fam in available_tools:
-        if is_mcp_family(fam) and any(tok in goal_lower for tok in _mcp_family_tokens(fam)):
+        if is_mcp_tool(fam) and any(tok in goal_lower for tok in _mcp_family_tokens(fam)):
             allowed.add(fam)
             deny_network = False
 
