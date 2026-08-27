@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -66,7 +68,47 @@ def _is_structural_suspect(text: str) -> bool:
             return True
     return False
 
-CLAUDE_CLI = os.environ.get("CLAUDE_CLI", os.path.expanduser("~/.local/bin/claude"))
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    """Kill the subagent and anything it spawned, then reap it.
+
+    Killing only the direct child leaves MCP grandchildren holding the stdout
+    pipe, which is what turns a 30s timeout into an indefinite hang.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _default_claude_cli() -> str:
+    """Where the Claude Code CLI actually is.
+
+    ``~/.local/bin/claude`` is only the native installer's path. An npm install
+    puts it on PATH instead (``/usr/bin/claude``), and the guard's whole LLM
+    layer is skipped when the path does not exist — so hardcoding one location
+    silently downgraded every npm-installed host to heuristics-only, which is
+    the mode that cannot explain a paraphrased attack. Checked in order:
+    explicit env override, the native path, then PATH.
+    """
+    override = os.environ.get("CLAUDE_CLI")
+    if override:
+        return override
+    native = os.path.expanduser("~/.local/bin/claude")
+    if os.path.exists(native):
+        return native
+    import shutil
+    return shutil.which("claude") or native
+
+
+CLAUDE_CLI = _default_claude_cli()
 
 _PRISMOR_CONTEXT = """\
 You are the Semantic Security Evaluator for Prismor, an AI agent runtime security monitor.
@@ -160,12 +202,33 @@ def _llm_analyze(
         return _api_analyze(text, model, system=_PRISMOR_CONTEXT, user=prompt)
 
     try:
-        result = subprocess.run(
-            [cli, "-p", prompt, "--output-format", "text", "--system-prompt", _PRISMOR_CONTEXT],
-            capture_output=True, text=True, timeout=30,
+        # Run the subagent ISOLATED from the workspace being protected.
+        #
+        # `claude -p` inherits its cwd's project config, so without this the
+        # evaluator boots that workspace's MCP servers and hooks on every
+        # escalation — including Prismor's own gateway and mirror. That is slow,
+        # circular, and it hangs: subprocess.run's timeout kills the CLI but
+        # then blocks in communicate() on stdout pipes the MCP grandchildren
+        # inherited and still hold open. Measured on a workspace with two MCP
+        # servers: 5s from a neutral directory, >120s and counting from the
+        # workspace itself.
+        #
+        # --strict-mcp-config with no --mcp-config means no servers at all, a
+        # temp cwd means no project settings, and start_new_session lets us
+        # kill the whole process group rather than just the direct child.
+        proc = subprocess.Popen(
+            [cli, "-p", prompt, "--output-format", "text",
+             "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=tempfile.gettempdir(), start_new_session=True,
             env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1"},
         )
-        raw = result.stdout.strip()
+        try:
+            stdout, _ = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            raise
+        raw = (stdout or "").strip()
         # Strip markdown fences
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
