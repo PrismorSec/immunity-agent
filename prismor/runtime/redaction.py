@@ -100,15 +100,24 @@ def redact_mcp_result(
 ) -> Tuple[Any, bool]:
     """Redact the text blocks of an MCP ``tools/call`` result.
 
-    Only ``content[].text`` is touched: other block kinds (images, resource
-    links) are returned untouched rather than guessed at, and a result that is
-    not shaped like an MCP result passes through unchanged.
+    Only ``content[].text`` and ``structuredContent`` are touched: other block
+    kinds (images, resource links) are returned untouched rather than guessed
+    at, and a result that is not shaped like an MCP result passes through
+    unchanged.
+
+    ``structuredContent`` matters as much as ``content``. Servers built on the
+    MCP SDK's output schemas return the same payload twice, and a client that
+    prefers the structured copy would be handed the very credential the text
+    copy just had masked out.
     """
     if not isinstance(result, dict):
         return result, False
     content = result.get("content")
+    structured = result.get("structuredContent")
     if not isinstance(content, list):
-        return result, False
+        if structured is None:
+            return result, False
+        content = []
 
     changed = False
     out: List[Any] = []
@@ -123,6 +132,48 @@ def redact_mcp_result(
             block = {**block, "text": text}
         out.append(block)
 
+    structured_out = structured
+    if structured is not None:
+        structured_out, hit = _redact_tree(
+            structured, workspace=workspace, data_boundary=data_boundary)
+        changed = changed or hit
+
     if not changed:
         return result, False
-    return {**result, "content": out}, True
+    new = {**result}
+    if result.get("content") is not None:
+        new["content"] = out
+    if structured is not None:
+        new["structuredContent"] = structured_out
+    return new, True
+
+
+def _redact_tree(
+    node: Any,
+    *,
+    workspace: Optional[Path] = None,
+    data_boundary: bool = True,
+) -> Tuple[Any, bool]:
+    """Redact every string in a JSON tree. Keys are left alone — a credential
+    lives in a value, and rewriting keys would break the schema the client is
+    parsing against."""
+    if isinstance(node, str):
+        return redact_text(node, workspace=workspace, data_boundary=data_boundary)
+    if isinstance(node, dict):
+        out: Dict[str, Any] = {}
+        changed = False
+        for key, value in node.items():
+            out[key], hit = _redact_tree(
+                value, workspace=workspace, data_boundary=data_boundary)
+            changed = changed or hit
+        return (out, True) if changed else (node, False)
+    if isinstance(node, list):
+        items = []
+        changed = False
+        for value in node:
+            item, hit = _redact_tree(
+                value, workspace=workspace, data_boundary=data_boundary)
+            items.append(item)
+            changed = changed or hit
+        return (items, True) if changed else (node, False)
+    return node, False

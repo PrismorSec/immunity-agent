@@ -824,19 +824,26 @@ class Gateway:
             "tools/call", {"name": route.tool, "arguments": arguments},
             timeout=CALL_TIMEOUT)
 
-        # Mirrored built-ins execute inside Prismor, so their output can be
-        # *repaired* rather than only refused: strip credential material before
-        # the model sees it. This is the capability a PreToolUse hook cannot
-        # have — a hook sees the request, never the file contents — and it is
-        # why a secret hardcoded in ordinary source (not just .env) stops
-        # leaking. Redact before scanning so the scan sees what the model will.
-        if route.upstream.spec.local:
-            # Cloak masking runs even while paused: `prismor pause` suspends
-            # ENFORCEMENT, and the hook-layer scrubber does not consult pause
-            # either, so a paused mirror must not start pushing raw secret
-            # values into the model's context. Data-boundary redaction IS
-            # policy, so it goes with the rest of enforcement.
-            result = self._redact_result(result, data_boundary=not passthrough)
+        # The gateway holds the response, so its output can be *repaired*
+        # rather than only refused: strip credential material before the model
+        # sees it. This is the capability a PreToolUse hook cannot have — a hook
+        # sees the request, never the file contents — and it is why a secret
+        # hardcoded in ordinary source (not just .env) stops leaking. Redact
+        # before scanning so the scan sees what the model will.
+        #
+        # This applies to EVERY upstream, not only the mirrored built-ins. A
+        # filesystem MCP server reading .env is the same leak through a
+        # different door, and gating on `spec.local` meant putting a server
+        # behind the gateway left it leaking while the mirror's own Read of the
+        # same file came back masked. Redaction is best-effort by contract
+        # (see runtime/redaction.py) and never fails a call closed.
+        #
+        # Cloak masking runs even while paused: `prismor pause` suspends
+        # ENFORCEMENT, and the hook-layer scrubber does not consult pause
+        # either, so a paused gateway must not start pushing raw secret values
+        # into the model's context. Data-boundary redaction IS policy, so it
+        # goes with the rest of enforcement.
+        result = self._redact_result(result, data_boundary=not passthrough)
 
         # Post-call: the response is untrusted content — scan before the model
         # ever sees it (prompt injection, poisoned tool output, secrets).
@@ -941,7 +948,7 @@ class Gateway:
             result, workspace=self.workspace, data_boundary=data_boundary)
         if changed:
             sys.stderr.write(
-                "[prismor-gateway] redacted sensitive values from mirrored tool output\n")
+                "[prismor-gateway] redacted sensitive values from tool output\n")
         return out
 
     def _egress_guard(self, spec: UpstreamSpec) -> None:
@@ -1224,6 +1231,14 @@ def _gateway_entry(mode: str = "enforce") -> Dict[str, Any]:
                      "--mode", mode]}
 
 
+def _is_prismor_entry(name: str, spec: Any) -> bool:
+    """Is this .mcp.json entry Prismor itself (the gateway or the mirror)?"""
+    if name == "prismor":
+        return True
+    args = (spec.get("args") if isinstance(spec, dict) else None) or []
+    return "mcp-gateway" in [str(a) for a in args if isinstance(a, (str, int))]
+
+
 def _absorb(servers: Dict[str, Any]) -> int:
     """Merge servers into the gateway config. Returns how many moved."""
     DEFAULT_GATEWAY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
@@ -1274,8 +1289,18 @@ def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
             detail="no recognised MCP server block (mcpServers/servers)")
 
     servers = data[key]
-    if list(servers.keys()) == ["prismor"]:
-        return MigrationResult(path, "skipped", detail="already behind the gateway")
+    # Prismor's own entries are not upstreams. The mirror (`prismor mirror on`)
+    # is a sibling surface, not a third-party server: absorbing it would nest a
+    # gateway inside a gateway and rename its tools to
+    # ``mcp__prismor__prismor-tools__Bash``, orphaning every permission and
+    # `enabledMcpjsonServers` entry `mirror on` just wrote. Whichever command
+    # runs second must leave the other alone.
+    keep = {name: spec for name, spec in servers.items() if _is_prismor_entry(name, spec)}
+    servers = {name: spec for name, spec in servers.items() if name not in keep}
+    if not servers:
+        return MigrationResult(path, "skipped",
+                               detail="already behind the gateway"
+                               if keep else "nothing to move")
 
     moved = _absorb(servers)
     if not moved:
@@ -1289,7 +1314,7 @@ def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
         # trade for governing a server.
         return MigrationResult(path, "failed", detail=f"could not write backup: {exc}")
 
-    data[key] = {"prismor": _gateway_entry(mode)}
+    data[key] = {"prismor": _gateway_entry(mode), **keep}
     try:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -1332,9 +1357,23 @@ def install_gateway(workspace: Path, mode: str = "enforce") -> str:
         if "already behind the gateway" in result.detail:
             return "Gateway already installed (only the prismor entry remains)."
         return f"{mcp_json} has no mcpServers — nothing to install."
+    # A server declared in a project .mcp.json does not load until a human
+    # approves it, and the servers we just moved WERE approved under their own
+    # names — which no longer exist. Without carrying that approval over to the
+    # gateway, install silently downgrades a working set of MCP servers to none
+    # until the developer clicks through a dialog they were never told about.
+    # Same reasoning, same mechanism, as `prismor mirror on`.
+    note = ""
+    try:
+        from prismor.runtime.mirror_cli import _approve_project_server
+        ok, detail = _approve_project_server(workspace, "prismor")
+        if not ok:
+            note = f"\nApprove it in your agent to activate: {detail}"
+    except Exception:
+        note = "\nApprove the `prismor` server in your agent to activate it."
     return (f"Moved {result.moved} server(s) into {DEFAULT_GATEWAY_CONFIG}.\n"
             f"{mcp_json} now routes through the Prismor gateway "
-            f"(backup: {mcp_json.with_suffix('.json.bak')}).")
+            f"(backup: {mcp_json.with_suffix('.json.bak')}).{note}")
 
 
 def uninstall_gateway(workspace: Path) -> str:

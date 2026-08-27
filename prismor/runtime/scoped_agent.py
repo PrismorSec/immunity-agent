@@ -130,6 +130,31 @@ def _mcp_server_names_in(obj: Any) -> List[str]:
     return [str(k) for k in servers.keys() if isinstance(k, str) and k]
 
 
+def _gateway_inner_servers(spec: Any) -> List[str]:
+    """Servers a ``prismor mcp-gateway`` entry fronts, or [].
+
+    Once `prismor mcp-gateway install` runs, ``.mcp.json`` lists one server —
+    ``prismor`` — and the real ones move into the gateway config. The gateway
+    namespaces their tools as ``<server>__<tool>``, so the family a scope needs
+    is ``mcp__prismor__filesystem__*``, not ``mcp__prismor__*``. Without this
+    the only word a scope could match on is "prismor", so no ordinary prompt
+    ("read it with the filesystem tool") ever widens the scope to reach them.
+    """
+    if not isinstance(spec, dict):
+        return []
+    args = [str(a) for a in spec.get("args", []) if isinstance(a, (str, int))]
+    if "mcp-gateway" not in args or "--mirror" in args:
+        return []
+    cfg = None
+    if "--config" in args:
+        idx = args.index("--config")
+        if idx + 1 < len(args):
+            cfg = Path(args[idx + 1])
+    if cfg is None:
+        cfg = Path.home() / ".prismor" / "mcp-gateway.json"
+    return _mcp_server_names_in(_read_json(cfg))
+
+
 def discover_mcp_families(workspace: Path, agent: str = "claude") -> List[str]:
     """Best-effort inventory of the MCP servers this agent can reach, as
     ``mcp__<server>__*`` families. Cheap on purpose (a handful of JSON reads —
@@ -147,8 +172,18 @@ def discover_mcp_families(workspace: Path, agent: str = "claude") -> List[str]:
     try:
         home = Path.home()
         # Workspace-level .mcp.json (Claude Code, Codex, Cursor share the shape).
-        for name in _mcp_server_names_in(_read_json(workspace / ".mcp.json")):
-            _add(name)
+        ws_cfg = _read_json(workspace / ".mcp.json")
+        ws_servers = ws_cfg.get("mcpServers", ws_cfg) if isinstance(ws_cfg, dict) else {}
+        for name in _mcp_server_names_in(ws_cfg):
+            inner = _gateway_inner_servers(
+                ws_servers.get(name) if isinstance(ws_servers, dict) else None)
+            # The gateway serves no tools of its own. Registering the bare
+            # family alongside the expanded ones would deny every fronted tool
+            # by glob even when the specific family is allowed.
+            for sub in inner:
+                _add(f"{name}__{sub}")
+            if not inner:
+                _add(name)
         if agent in ("claude", "claude-code", "claude_code"):
             cfg = _read_json(home / ".claude.json")
             if isinstance(cfg, dict):
@@ -594,6 +629,15 @@ def check_scoped_rules(
         # it (e.g. allowed_tools:[Read,Edit] + deny_tools:[Write] blocks Write).
         # Entries may be globs — ``mcp__posthog__*`` covers every tool of that
         # MCP server.
+        # ...except by a blanket family glob. A scope is synthesised from the
+        # user's goal, which never names the mirror's server, so both the LLM
+        # and the static fallback (which denies everything not allowed) put
+        # ``mcp__prismor-tools__*`` in deny_tools — denying the very built-ins
+        # the same scope allows by native name, leaving the agent with no tools
+        # at all. A mirrored built-in is therefore judged by its native tag
+        # unless the operator denied that exact MCP tag.
+        if alias and _tool_matches(alias, allowed):
+            denied = [e for e in denied if "*" not in str(e)]
         if any(_tool_matches(t, denied) for t in tags):
             return _scoped_finding(
                 session_id,

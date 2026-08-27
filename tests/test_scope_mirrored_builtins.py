@@ -88,3 +88,66 @@ def test_static_fallback_allows_read_only_discovery():
     for tool in ("Read", "Bash", "Glob", "Grep"):
         assert tool in rules["allowed_tools"], tool
     assert "Write" in rules["deny_tools"]
+
+
+# ── the family-glob regression ───────────────────────────────────────────────
+
+def test_family_glob_does_not_swallow_an_allowed_mirrored_builtin():
+    """The synthesiser never names the mirror's server, so every scope denies
+    ``mcp__prismor-tools__*`` — the static fallback denies everything it did
+    not allow, and the LLM lists the unknown family too. That blanket entry
+    must not cancel the built-ins the same scope allows by native name, or the
+    agent is left with no tools at all (verified live: Claude Code with
+    `prismor mirror on` could not read a file)."""
+    rules = {"allowed_tools": ["Bash", "Read", "Glob", "Grep"],
+             "deny_tools": ["Write", "Edit", "mcp__prismor-tools__*",
+                            "mcp__prismor__*"],
+             "allowed_paths": ["**"]}
+    assert check_scoped_rules(rules, _ev("mcp__prismor-tools__Bash")) is None
+    assert check_scoped_rules(rules, _ev("mcp__prismor-tools__Read", "file_read",
+                                         path="/x/y.py")) is None
+    # A built-in the scope did NOT allow stays denied.
+    assert check_scoped_rules(rules, _ev("mcp__prismor-tools__Write",
+                                         "file_write", path="/x/y.py")) is not None
+    # An ordinary MCP tool behind a denied family stays denied.
+    assert check_scoped_rules(rules, _ev("mcp__prismor__filesystem__read_text_file",
+                                         "file_read", path="/x/y.py")) is not None
+
+
+def test_exact_mcp_deny_still_beats_the_native_allow():
+    """Narrowing the fix must not disarm a deliberate per-server deny."""
+    rules = {"allowed_tools": ["Bash"],
+             "deny_tools": ["mcp__prismor-tools__Bash", "mcp__prismor-tools__*"],
+             "allowed_paths": ["**"]}
+    assert check_scoped_rules(rules, _ev("mcp__prismor-tools__Bash")) is not None
+
+
+# ── gateway-fronted servers stay reachable ───────────────────────────────────
+
+def test_gateway_fronted_servers_get_their_own_families(tmp_path):
+    """After `prismor mcp-gateway install` the workspace lists one server named
+    `prismor`, so the only token a scope could match was "prismor" — no natural
+    prompt widens to the servers behind it. Expand the gateway config instead."""
+    import json as _json
+    from prismor.runtime.scoped_agent import discover_mcp_families
+
+    gw = tmp_path / "gw.json"
+    gw.write_text(_json.dumps({"mcpServers": {"filesystem": {}, "memory": {}}}))
+    (tmp_path / ".mcp.json").write_text(_json.dumps({"mcpServers": {
+        "prismor": {"command": "prismor",
+                    "args": ["mcp-gateway", "--config", str(gw), "--mode", "enforce"]},
+        "prismor-tools": {"command": "python3",
+                          "args": ["-m", "x", "mcp-gateway", "--mirror"]},
+    }}))
+    fams = discover_mcp_families(tmp_path)
+    assert "mcp__prismor__filesystem__*" in fams
+    assert "mcp__prismor__memory__*" in fams
+    # The bare gateway family must not ride along: it would glob-deny the ones above.
+    assert "mcp__prismor__*" not in fams
+    # The mirror is not a fan-out point; it keeps its own family.
+    assert "mcp__prismor-tools__*" in fams
+
+
+def test_gateway_family_token_matches_the_fronted_server_name(tmp_path):
+    from prismor.runtime.scoped_agent import _mcp_family_tokens
+    assert "filesystem" in _mcp_family_tokens("mcp__prismor__filesystem__*")
