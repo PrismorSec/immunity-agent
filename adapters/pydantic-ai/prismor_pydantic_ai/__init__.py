@@ -31,6 +31,7 @@ from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.toolsets import WrapperToolset
 
 from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
 
 __all__ = ["guard_toolsets", "PrismorToolset", "PrismorBlocked"]
@@ -115,7 +116,12 @@ class PrismorToolset(WrapperToolset):
             # without the retry-budget consumption ModelRetry implies (this
             # is a policy denial, not a transient/correctable error).
             raise ToolFailed(f"⛔ Prismor blocked this tool call: {reason}")
-        return await super().call_tool(name, tool_args, ctx, tool)
+        # call_tool is also the single choke point the RESULT comes back
+        # through, so the same wrapper that refuses a call can repair one.
+        return redact_tool_result(
+            await super().call_tool(name, tool_args, ctx, tool),
+            workspace=self._prismor_ws,  # type: ignore[attr-defined]
+        )
 
 
 def guard_toolsets(toolsets: Sequence[Any], **kwargs: Any) -> List[PrismorToolset]:

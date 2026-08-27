@@ -1,5 +1,22 @@
 ## [Unreleased]
 
+### Fixed
+- **SDK adapters screen the call but never redacted the result.** A framework
+  agent whose tool returned a file with a hardcoded credential in it handed
+  that credential straight to the model. Every in-process adapter that holds
+  the tool's return value (LangChain/LangGraph, CrewAI, OpenAI Agents, Agno,
+  browser-use, Pydantic AI, Semantic Kernel, AutoGen Core's return leg) now
+  passes it through the shared `prismor.runtime.redaction` helper first, and
+  the Google ADK adapter gains `make_after_tool_callback()` for the same job.
+  Best-effort by contract: masking never raises and never fails a call closed.
+  BeeAI and the Claude Agent SDK hook only a pre-action event, so they see no
+  output to repair; each now says so where the others document the capability.
+  `contract.SURFACES` records `sdk-adapter` as `can_redact=True`.
+- The four adapter test modules errored at collection (`No module named
+  'prismor.langchain'`) from a source checkout, so none of the adapter tests
+  ran in CI. A `tests/conftest.py` extends `prismor.__path__` with each
+  bundled adapter shim, which is what the installed layout does anyway.
+
 ## [1.43.0] — 2026-08-20
 
 ### Added

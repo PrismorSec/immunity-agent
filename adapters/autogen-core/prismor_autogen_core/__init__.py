@@ -32,9 +32,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from autogen_core import DefaultInterventionHandler, DropMessage, FunctionCall
+from autogen_core.models import FunctionExecutionResult
 from autogen_core.tool_agent import ToolException
 
 from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
 
 __all__ = ["PrismorInterventionHandler", "PrismorBlocked"]
@@ -130,4 +132,17 @@ class PrismorInterventionHandler(DefaultInterventionHandler):
                 content=f"⛔ Prismor blocked this tool call: {reason}",
                 name=message.name,
             )
+        return message
+
+    async def on_response(self, message: Any, *, sender: Any, recipient: Any) -> Any:
+        """Redact a tool's OUTPUT on the return leg.
+
+        ``on_send`` sees the request and can refuse it; the ToolAgent's reply
+        comes back through here as a ``FunctionExecutionResult`` whose
+        ``content`` is the raw tool output, on its way into the caller loop's
+        message list. That is where a credential in an allowed tool's result
+        would otherwise reach the model.
+        """
+        if isinstance(message, FunctionExecutionResult):
+            redact_tool_result(message, workspace=self._ws)
         return message

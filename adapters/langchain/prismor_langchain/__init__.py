@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Union
 
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
@@ -176,14 +177,26 @@ def prismor_guard_tool(
             return f"⛔ Prismor blocked this tool call: {reason}"
         return None  # allowed
 
+    def _redact(result: Any) -> Any:
+        """Mask the tool's OUTPUT before LangChain feeds it back to the model.
+
+        The pre-call check can only refuse; a tool that reads a file with a
+        hardcoded credential in it is allowed, and the credential is in the
+        return value. This wrapper holds that value, so it is the one place
+        that leak can still be repaired.
+        """
+        return redact_tool_result(result, workspace=ws)
+
     original_func = getattr(tool, "func", None)
     if callable(original_func):
         @functools.wraps(original_func)
         def guarded_func(*args: Any, **kwargs: Any) -> Any:
             denial = _decide(args, kwargs)
             if isinstance(denial, _RunWith):
-                return original_func(*denial.args, **denial.kwargs)
-            return denial if denial is not None else original_func(*args, **kwargs)
+                return _redact(original_func(*denial.args, **denial.kwargs))
+            if denial is not None:
+                return denial
+            return _redact(original_func(*args, **kwargs))
         tool.func = guarded_func
 
     original_coro = getattr(tool, "coroutine", None)
@@ -197,8 +210,10 @@ def prismor_guard_tool(
 
             denial = await asyncio.to_thread(_decide, args, kwargs)
             if isinstance(denial, _RunWith):
-                return await original_coro(*denial.args, **denial.kwargs)
-            return denial if denial is not None else await original_coro(*args, **kwargs)
+                return _redact(await original_coro(*denial.args, **denial.kwargs))
+            if denial is not None:
+                return denial
+            return _redact(await original_coro(*args, **kwargs))
         tool.coroutine = guarded_coro
 
     tool.__prismor_guarded__ = True

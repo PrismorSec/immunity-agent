@@ -66,30 +66,82 @@ def redact_text(
     return text, text != original
 
 
+#: How far ``redact_payload_values`` descends. Framework result objects nest a
+#: few levels (a result wrapper holding a list of models holding strings); past
+#: that a payload is more likely a graph than a document, and a bounded walk is
+#: what keeps a self-referencing result object from hanging the tool call.
+_MAX_DEPTH = 8
+
+
 def redact_payload_values(
     payload: Any,
     *,
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
 ) -> Tuple[Any, bool]:
-    """``redact_text`` over every string leaf of a dict/list/str payload."""
+    """``redact_text`` over every string leaf of a dict/list/str payload.
+
+    Objects carrying a ``__dict__`` (pydantic models, framework result
+    wrappers) are redacted **in place** on their string attributes: once a
+    framework has wrapped a tool result it is rarely a bare string any more,
+    and rebuilding an arbitrary class from its fields is a guess this cannot
+    afford to get wrong. An attribute that refuses assignment (frozen model,
+    ``__slots__``, computed property) is left as it was rather than failing
+    the call.
+    """
     changed = False
 
-    def _walk(x: Any) -> Any:
+    def _walk(x: Any, depth: int) -> Any:
         nonlocal changed
         if isinstance(x, str):
             out, hit = redact_text(x, workspace=workspace, data_boundary=data_boundary)
             changed = changed or hit
             return out
+        if depth >= _MAX_DEPTH:
+            return x
         if isinstance(x, dict):
-            return {k: _walk(v) for k, v in x.items()}
+            return {k: _walk(v, depth + 1) for k, v in x.items()}
         if isinstance(x, list):
-            return [_walk(v) for v in x]
+            return [_walk(v, depth + 1) for v in x]
         if isinstance(x, tuple):
-            return tuple(_walk(v) for v in x)
+            return tuple(_walk(v, depth + 1) for v in x)
+        attrs = getattr(x, "__dict__", None)
+        if isinstance(attrs, dict) and not isinstance(x, type):
+            for key, value in list(attrs.items()):
+                if key.startswith("__"):
+                    continue
+                walked = _walk(value, depth + 1)
+                if walked is value:
+                    continue
+                try:
+                    setattr(x, key, walked)
+                except Exception:
+                    pass
         return x
 
-    return _walk(payload), changed
+    return _walk(payload, 0), changed
+
+
+def redact_tool_result(
+    result: Any,
+    *,
+    workspace: Optional[Path] = None,
+    data_boundary: bool = True,
+) -> Any:
+    """Result-side redaction for an in-process SDK adapter. Never raises.
+
+    An adapter holds the tool's return value before the framework hands it to
+    the model — the one point in a framework agent where a credential sitting
+    in ordinary source can still be masked. Adapters call this rather than
+    :func:`redact_payload_values` directly so "best effort, never fail the call
+    closed" is written once instead of once per adapter.
+    """
+    try:
+        redacted, _ = redact_payload_values(
+            result, workspace=workspace, data_boundary=data_boundary)
+        return redacted
+    except Exception:
+        return result
 
 
 def redact_mcp_result(

@@ -259,9 +259,13 @@ SURFACES: Tuple[Surface, ...] = (
         kind="adapter",
         module="adapters/*",
         normalizer="per-adapter (in-process tool wrapper)",
-        can_refuse=True, can_rewrite=False, can_redact=False,
+        can_refuse=True, can_rewrite=False, can_redact=True,
         notes="In-process interception for LangChain, CrewAI, OpenAI Agents and "
-              "the rest. Refuses by raising; no host surface to rewrite through.",
+              "the rest. Refuses by raising; no host surface to rewrite through. "
+              "Holds the tool's return value before the framework hands it to "
+              "the model, so it redacts the result too — except where the "
+              "framework's only hook is pre-action (the Claude Agent SDK "
+              "PreToolUse hook, BeeAI's tool 'start' event).",
     ),
     Surface(
         id="eval-server",

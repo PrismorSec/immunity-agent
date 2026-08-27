@@ -33,6 +33,11 @@ once installed. That test also caught a real bug: an earlier default
 anything but Claude's own built-in tools — ``matcher`` now defaults to
 ``None`` (every tool call) for exactly this reason.
 
+RESULT REDACTION: not available here, and not for want of trying — this is
+a PreToolUse hook, which is handed the request and answers with a permission
+decision. It never carries the tool's output, so unlike the wrapper-style
+adapters it cannot repair one (see contract.SURFACES["sdk-adapter"]).
+
 Use::
 
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient

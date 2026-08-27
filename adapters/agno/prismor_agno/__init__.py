@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
 
 __all__ = ["make_tool_hook", "prismor_tool_hook", "PrismorBlocked"]
@@ -98,7 +99,9 @@ def make_tool_hook(
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
             raise RuntimeError(f"⛔ Prismor blocked this tool call: {reason}")
-        return function_call(**arguments)
+        # The hook chain hands back the tool's own return value: redact it
+        # here, the last point before Agno folds it into the model's context.
+        return redact_tool_result(function_call(**arguments), workspace=ws)
 
     return hook
 
