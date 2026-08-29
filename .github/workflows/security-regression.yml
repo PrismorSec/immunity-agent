@@ -72,4 +72,6 @@ jobs:
           prismor setup --non-interactive --mode enforce --recommended --agents claude --scope global --no-backfill
           if ($LASTEXITCODE -ne 0) { throw "prismor setup failed with $LASTEXITCODE" }
           prismor check ((-join @('chm','od ','7','77 /tmp/build')))
-          if ($LASTEXITCODE -ne 2) { throw "expected the destructive-command block (exit 2), got $LASTEXITCODE" }
+          $code = $LASTEXITCODE
+          Write-Host "check exit: $code"
+          if ($code -ne 2) { throw "expected the destructive-command block (exit 2), got $code" }
