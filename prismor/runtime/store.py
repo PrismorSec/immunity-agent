@@ -43,6 +43,28 @@ def _locked(handle) -> Iterator[None]:
 
 
 @contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    """Exclusive advisory lock for ``path``, keyed on a sibling ``.lock`` file.
+
+    Same best-effort contract as :func:`_locked`: where the lock cannot be
+    taken — Windows, which has no ``fcntl``, or a network mount that refuses
+    it — the body still runs, just unserialized. Losing serialization on a
+    telemetry write is survivable; failing the tool call that triggered it is
+    not.
+
+    The telemetry chain, audit trail and heartbeat all serialize through this.
+    They each used to ``import fcntl`` directly inside the lock helper, so on
+    Windows every single tool call surfaced ``audit trail error: No module
+    named 'fcntl'`` and the record was dropped.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_suffix(path.suffix + ".lock")
+    with open(lock, "a+", encoding="utf-8") as handle:
+        with _locked(handle):
+            yield
+
+
+@contextmanager
 def locked_json_update(path: Path) -> Iterator[Dict[str, Any]]:
     """Read-modify-write a small JSON state file atomically, under a lock.
 
@@ -179,13 +201,13 @@ def register_workspace(workspace: Path) -> None:
     paths: List[str] = []
     if reg.exists():
         try:
-            paths = json.loads(reg.read_text())
+            paths = json.loads(reg.read_text(encoding="utf-8"))
         except Exception:
             paths = []
     if ws not in paths:
         paths.append(ws)
         reg.parent.mkdir(parents=True, exist_ok=True)
-        reg.write_text(json.dumps(paths, indent=2))
+        reg.write_text(json.dumps(paths, indent=2), encoding="utf-8")
 
 
 def list_registered_workspaces() -> List[Path]:
@@ -200,7 +222,7 @@ def list_registered_workspaces() -> List[Path]:
     if not reg.exists():
         return []
     try:
-        paths = json.loads(reg.read_text())
+        paths = json.loads(reg.read_text(encoding="utf-8"))
     except Exception:
         return []
     result = []

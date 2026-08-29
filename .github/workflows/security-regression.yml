@@ -33,3 +33,38 @@ jobs:
           bash scripts/verify_registry.sh
       - name: Run security regression suite
         run: bash scripts/run_security_tests.sh
+
+  # Prismor's hooks are stored as shell strings and run by the agent's own
+  # shell — cmd.exe on Windows, where a `PYTHONPATH=... python ...` prefix is
+  # not a variable assignment. That failure is silent (hook failure is
+  # non-blocking), so it can only be caught by actually installing a hook on
+  # Windows and dispatching through it. Everything else here runs on Linux.
+  windows-hooks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python -m pip install --quiet pytest pyyaml
+      - name: Hook install + dispatch under cmd.exe
+        run: python -m pytest tests/test_hooks_windows.py -q -p no:randomly
+      - name: Run the generated hook command through cmd.exe verbatim
+        shell: cmd
+        run: python scripts/windows_hook_smoke.py
+      - name: Install prismor from a built wheel
+        # A source checkout cannot resolve the prismor.<framework> shims, and
+        # `prismor setup` is what exercised the cp1252 and fcntl breakage.
+        run: |
+          python -m pip install --quiet build cryptography
+          python -m build --wheel --outdir dist
+          python -m pip install --quiet (Get-ChildItem dist/*.whl).FullName
+      - name: prismor setup end to end
+        run: |
+          New-Item -ItemType Directory -Force -Path ws | Out-Null
+          Set-Location ws
+          prismor setup --non-interactive --mode enforce --recommended --agents claude --scope global --no-backfill
+          if ($LASTEXITCODE -ne 0) { throw "prismor setup failed with $LASTEXITCODE" }
+          prismor check ((-join @('chm','od ','7','77 /tmp/build')))
+          if ($LASTEXITCODE -ne 2) { throw "expected the destructive-command block (exit 2), got $LASTEXITCODE" }

@@ -213,7 +213,7 @@ def _load_rules() -> List[dict]:
     if policy.exists():
         try:
             import yaml
-            with policy.open() as f:
+            with policy.open(encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             rules = [
                 {
@@ -237,7 +237,7 @@ def _parse_policy_manual(policy: Path) -> List[dict]:
     rules: List[dict] = []
     cur: dict = {}
     inside = False
-    with policy.open() as f:
+    with policy.open(encoding="utf-8") as f:
         for line in f:
             s = line.strip()
             if s == "rules:":
@@ -1066,7 +1066,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         def _write_policy():
             d = target / ".prismor"
             d.mkdir(exist_ok=True)
-            (d / "policy.yaml").write_text(_render_selection_policy(selected))
+            (d / "policy.yaml").write_text(_render_selection_policy(selected), encoding="utf-8")
             return True, f"{len(selected)} rule(s) enforcing"
         _spinner_run("Writing policy selection", _write_policy)
     elif disabled:
@@ -1076,7 +1076,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             txt = 'version: "1.0"\nrules:\n'
             for rid in disabled:
                 txt += f"  - id: {rid}\n    enabled: false\n"
-            (d / "policy.yaml").write_text(txt)
+            (d / "policy.yaml").write_text(txt, encoding="utf-8")
             return True, f"{len(disabled)} disabled"
         _spinner_run("Writing policy overrides", _write_policy)
 
@@ -1141,12 +1141,12 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             "For more info: https://github.com/PrismorSec/prismor\n"
         )
         if md.exists():
-            content = md.read_text()
+            content = md.read_text(encoding="utf-8")
             if "Prismor" in content:
                 return True, "already present"
-            md.write_text(content + block)
+            md.write_text(content + block, encoding="utf-8")
             return True, "appended"
-        md.write_text(block.lstrip())
+        md.write_text(block.lstrip(), encoding="utf-8")
         return True, "created"
     _spinner_run("Updating CLAUDE.md", _update_claude)
 
@@ -1173,13 +1173,30 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             return True, "skipped (paths unavailable)"
         if not all(p.exists() for p in (fp, sig, pub)):
             return True, "skipped (feed not bundled)"
+        # .sig file is base64-encoded; decode to raw binary first
+        import base64
+        sig_bytes = base64.b64decode(sig.read_bytes())
+
+        # Prefer the `cryptography` extra — it is already how receipts are
+        # verified, and it needs no external binary. Windows ships no openssl,
+        # so shelling out there raised FileNotFoundError and painted a red
+        # "signature mismatch"-looking failure on a perfectly good feed.
+        try:
+            from cryptography.exceptions import InvalidSignature
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
+            key = load_pem_public_key(pub.read_bytes())
+            try:
+                key.verify(sig_bytes, fp.read_bytes())
+                return True, "verified"
+            except InvalidSignature:
+                return False, "signature mismatch"
+        except ImportError:
+            pass
+
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".sig.raw") as tf:
             sig_raw = tf.name
         try:
-            # .sig file is base64-encoded; decode to raw binary first
-            import base64
-            sig_bytes = base64.b64decode(sig.read_bytes())
             Path(sig_raw).write_bytes(sig_bytes)
             r = subprocess.run(
                 ["openssl", "pkeyutl", "-verify", "-pubin", "-rawin",
@@ -1187,6 +1204,11 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
                 capture_output=True, timeout=15,
             )
             return r.returncode == 0, "verified" if r.returncode == 0 else "signature mismatch"
+        except (FileNotFoundError, OSError):
+            # No openssl and no `cryptography`: say so plainly. An unverifiable
+            # feed is not a failed verification, and reporting it as one trains
+            # people to ignore the line that matters.
+            return True, "skipped (install prismor[signing] to verify)"
         finally:
             try:
                 Path(sig_raw).unlink()

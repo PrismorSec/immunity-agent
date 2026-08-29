@@ -92,15 +92,11 @@ def state_path() -> Path:
 
 @contextmanager
 def _locked(path: Path) -> Iterator[Any]:
-    import fcntl
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = path.with_suffix(path.suffix + ".lock")
-    with open(lock, "a+") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+    # Delegates to the one guarded implementation. A bare `import fcntl`
+    # here raised ImportError on every tool call on Windows.
+    from prismor.runtime.store import file_lock
+    with file_lock(path):
+        yield
 
 
 def _read_state(path: Path) -> Dict[str, Any]:

@@ -15,7 +15,7 @@ Privacy: the heartbeat carries *only* a number plus the same metadata enums as
 any redacted record (agent id, agent name, session id). No commands, paths, or
 content — it is volume, not activity detail.
 
-Cost: one fcntl-locked JSON read/write per tool call (sub-millisecond) and one
+Cost: one lock-guarded JSON read/write per tool call (sub-millisecond) and one
 HTTP POST per minute at most, with the same short-timeout + offline-spool
 semantics as finding telemetry (prismor/runtime/sinks.upload_telemetry). Failures never
 raise into the hook path.
@@ -82,31 +82,27 @@ def record_call(
         return
     path = _counter_path()
     try:
-        import fcntl
+        from prismor.runtime.store import file_lock
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path.with_suffix(".lock"), "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
-            try:
-                data = _load(path)
-                counters: Dict[str, Any] = data.setdefault("counters", {})
-                key = _counter_key(agent, agent_name)
-                # Cap: an instance past the limit folds into the framework key so
-                # its volume still counts, bounding file size and flush fan-out.
-                if key not in counters and len(counters) >= MAX_COUNTER_KEYS:
-                    key = _counter_key(agent, "")
-                slot = counters.setdefault(key, {"count": 0, "session_id": None})
-                slot["count"] = int(slot.get("count", 0)) + 1
-                if session_id:
-                    slot["session_id"] = session_id
-                data.setdefault("last_flush", time.time())
-                data["v"] = 2
-                path.write_text(json.dumps(data), encoding="utf-8")
-                try:  # audit #18: keep session metadata 0600, not world-readable
-                    path.chmod(0o600)
-                except OSError:
-                    pass
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+        with file_lock(path):
+            data = _load(path)
+            counters: Dict[str, Any] = data.setdefault("counters", {})
+            key = _counter_key(agent, agent_name)
+            # Cap: an instance past the limit folds into the framework key so
+            # its volume still counts, bounding file size and flush fan-out.
+            if key not in counters and len(counters) >= MAX_COUNTER_KEYS:
+                key = _counter_key(agent, "")
+            slot = counters.setdefault(key, {"count": 0, "session_id": None})
+            slot["count"] = int(slot.get("count", 0)) + 1
+            if session_id:
+                slot["session_id"] = session_id
+            data.setdefault("last_flush", time.time())
+            data["v"] = 2
+            path.write_text(json.dumps(data), encoding="utf-8")
+            try:  # audit #18: keep session metadata 0600, not world-readable
+                path.chmod(0o600)
+            except OSError:
+                pass
     except OSError:
         pass
 
@@ -127,50 +123,46 @@ def maybe_flush(now: Optional[float] = None) -> bool:
     path = _counter_path()
     records: list = []
     try:
-        import fcntl
+        from prismor.runtime.store import file_lock
         if not path.exists():
             return False
-        with open(path.with_suffix(".lock"), "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
-            try:
-                data = _load(path)
-                counters: Dict[str, Any] = data.get("counters", {}) or {}
-                last = float(data.get("last_flush", 0))
-                t = time.time() if now is None else now
-                total = sum(int(v.get("count", 0)) for v in counters.values())
-                if total <= 0 or (t - last) < FLUSH_INTERVAL:
-                    return False
-                import uuid
-                for key, slot in counters.items():
-                    count = int(slot.get("count", 0))
-                    if count <= 0:
-                        continue
-                    agent, _, agent_name = key.partition("|")
-                    rec = {
-                        "schema": "prismor.runtime.telemetry.v1",
-                        "event_id": "evt_" + uuid.uuid4().hex,
-                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        "type": "agent_activity",
-                        "verdict": "observed",
-                        "title": "Agent activity heartbeat",
-                        "agent": agent or None,
-                        "session_id": slot.get("session_id"),
-                        "count": count,
-                        "redacted": True,
-                    }
-                    if agent_name:
-                        rec["agent_name"] = agent_name
-                    records.append(rec)
-                # Reset all counters, keep the flush timestamp.
-                path.write_text(
-                    json.dumps({"v": 2, "last_flush": t, "counters": {}}), encoding="utf-8"
-                )
-                try:  # audit #18
-                    path.chmod(0o600)
-                except OSError:
-                    pass
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+        with file_lock(path):
+            data = _load(path)
+            counters: Dict[str, Any] = data.get("counters", {}) or {}
+            last = float(data.get("last_flush", 0))
+            t = time.time() if now is None else now
+            total = sum(int(v.get("count", 0)) for v in counters.values())
+            if total <= 0 or (t - last) < FLUSH_INTERVAL:
+                return False
+            import uuid
+            for key, slot in counters.items():
+                count = int(slot.get("count", 0))
+                if count <= 0:
+                    continue
+                agent, _, agent_name = key.partition("|")
+                rec = {
+                    "schema": "prismor.runtime.telemetry.v1",
+                    "event_id": "evt_" + uuid.uuid4().hex,
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "type": "agent_activity",
+                    "verdict": "observed",
+                    "title": "Agent activity heartbeat",
+                    "agent": agent or None,
+                    "session_id": slot.get("session_id"),
+                    "count": count,
+                    "redacted": True,
+                }
+                if agent_name:
+                    rec["agent_name"] = agent_name
+                records.append(rec)
+            # Reset all counters, keep the flush timestamp.
+            path.write_text(
+                json.dumps({"v": 2, "last_flush": t, "counters": {}}), encoding="utf-8"
+            )
+            try:  # audit #18
+                path.chmod(0o600)
+            except OSError:
+                pass
     except (OSError, ValueError):
         return False
 

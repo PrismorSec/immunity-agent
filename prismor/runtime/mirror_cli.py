@@ -37,6 +37,7 @@ rather than guess on an unrecognised shape.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sys
@@ -312,6 +313,28 @@ def _preflight(entry: Dict[str, Any], timeout: float = 25.0) -> Tuple[bool, str]
     return False, tail or "server exited without answering tools/list"
 
 
+def _shim_pythonpath(cmd: str) -> str:
+    """The sys.path entry a hook-dispatch shim inserts, or "" if unreadable."""
+    import re
+    # Quoted form first: the installer always quotes the shim, and the path
+    # routinely contains a space (%USERPROFILE% often does).
+    m = re.search(r'"([^"]*hook-dispatch\.py)"', cmd) or re.search(r'(\S*hook-dispatch\.py)', cmd)
+    if not m:
+        return ""
+    try:
+        text = Path(m.group(1)).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    ins = re.search(r"sys\.path\.insert\(0,\s*(.+?)\)\s*$", text, re.M)
+    if not ins:
+        return ""
+    try:
+        # The shim writes a repr, so Windows paths arrive backslash-escaped.
+        return str(ast.literal_eval(ins.group(1)))
+    except (ValueError, SyntaxError):
+        return ""
+
+
 def _hook_installs(workspace: Path) -> List[Tuple[Path, str, str]]:
     """(settings file, PYTHONPATH, PRISMOR_HOME) for every Prismor hook wired
     into Claude Code that could screen this workspace's calls."""
@@ -337,7 +360,11 @@ def _hook_installs(workspace: Path) -> List[Tuple[Path, str, str]]:
                         continue
                     pp = re.search(r'PYTHONPATH="?([^"\s]+)"?', cmd)
                     ph = re.search(r'PRISMOR_HOME="?([^"\s]+)"?', cmd)
-                    rec = (path, pp.group(1) if pp else "", ph.group(1) if ph else "")
+                    # Current installs point at a generated shim instead of
+                    # carrying a PYTHONPATH= prefix (the prefix is not valid on
+                    # cmd.exe). The path it inserts lives inside that file.
+                    pythonpath = pp.group(1) if pp else _shim_pythonpath(cmd)
+                    rec = (path, pythonpath, ph.group(1) if ph else "")
                     if rec not in out:
                         out.append(rec)
     return out

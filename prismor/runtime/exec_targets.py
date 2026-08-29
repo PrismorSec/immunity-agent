@@ -178,7 +178,7 @@ def _read(path: Path) -> Optional[str]:
             return None
         if path.stat().st_size > _MAX_BYTES:
             return None
-        return path.read_text(errors="replace")
+        return path.read_text(errors="replace", encoding="utf-8")
     except (OSError, ValueError):
         return None
 

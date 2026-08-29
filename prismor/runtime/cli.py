@@ -453,7 +453,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             hook_path = _find_hook_config(agent_name, workspace)
             if hook_path and hook_path.exists():
                 try:
-                    content = hook_path.read_text()
+                    content = hook_path.read_text(encoding="utf-8")
                     if "prismor" in content.lower():
                         agents_with_hooks.append(agent_name)
                         if mode is None:
@@ -2712,7 +2712,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             policy_path = workspace / ".prismor" / "policy.yaml"
             policy: Dict[str, Any] = {}
             if policy_path.exists():
-                policy = yaml.safe_load(policy_path.read_text()) or {}
+                policy = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
             # A freshly-created file needs the same required `version` field
             # `prismor policy init` stamps — otherwise the very next step the
             # docs recommend (`prismor policy validate`) fails immediately.
@@ -2721,7 +2721,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             rules_list = policy.setdefault("rules", [])
             rules_list.append(rule)
             policy_path.parent.mkdir(parents=True, exist_ok=True)
-            policy_path.write_text(yaml.dump(policy, default_flow_style=False, sort_keys=False))
+            policy_path.write_text(yaml.dump(policy, default_flow_style=False, sort_keys=False), encoding="utf-8")
             print(_color("Accepted", _GREEN) + f" candidate rule '{rule['id']}' → .prismor/policy.yaml")
             return
 
@@ -3935,7 +3935,7 @@ def _hooks_by_scope(workspace: Path) -> Dict[str, Dict[str, Optional[str]]]:
                 hook_path = _hook_cfg_path(agent_name, scope_name, workspace)
                 if not hook_path.exists():
                     continue
-                content = hook_path.read_text()
+                content = hook_path.read_text(encoding="utf-8")
             except Exception:
                 continue
             if "hook-dispatch" not in content:
@@ -4618,7 +4618,7 @@ def _print_status_overview(workspace: Path) -> None:
                 hook_path = _hook_cfg_path(agent_name, scope_name, workspace)
                 if not hook_path.exists():
                     continue
-                content = hook_path.read_text()
+                content = hook_path.read_text(encoding="utf-8")
             except Exception:
                 continue
             if "hook-dispatch" not in content:
@@ -5324,14 +5324,14 @@ def _policy_edit(workspace: Path) -> None:
         for rid in disabled:
             lines.append(f"  - id: {rid}\n    enabled: false\n")
         lines.append("\nallowlists: []\n")
-        policy_file.write_text("".join(lines))
+        policy_file.write_text("".join(lines), encoding="utf-8")
         n_on = sum(1 for r in all_rules if r["on"])
         print(f"  {_color('✓', _GREEN)} Saved to {policy_file}")
         print(f"  {n_on}/{len(all_rules)} rules enabled, {len(disabled)} disabled")
     else:
         # All enabled — remove override file if it exists (use defaults)
         if policy_file.exists():
-            policy_file.write_text('version: "1.0"\n\nrules: []\n\nallowlists: []\n')
+            policy_file.write_text('version: "1.0"\n\nrules: []\n\nallowlists: []\n', encoding="utf-8")
         print(f"  {_color('✓', _GREEN)} All rules enabled (using defaults)")
 
     print(f"\n  Run {_color('prismor policy show', _CYAN)} to verify.")

@@ -272,7 +272,7 @@ def _scan_directory(gitleaks: str, directory: Path) -> list[dict]:
         subprocess.run(cmd, capture_output=True)
         report = Path(report_path)
         if report.exists() and report.stat().st_size > 0:
-            return json.loads(report.read_text())
+            return json.loads(report.read_text(encoding="utf-8"))
         return []
     finally:
         Path(report_path).unlink(missing_ok=True)
@@ -298,7 +298,7 @@ def _fallback_scan(directory: Path) -> list[dict]:
                 continue
             filepath = os.path.join(root, filename)
             try:
-                with open(filepath, 'r', errors='replace') as fh:
+                with open(filepath, 'r', encoding='utf-8', errors='replace') as fh:
                     for lineno, line in enumerate(fh, 1):
                         for rule_id, pattern in _FALLBACK_PATTERNS:
                             m = pattern.search(line)
@@ -441,7 +441,7 @@ def redact(findings: list[dict], passphrase: str, purge: bool = False) -> int:
             continue
 
         try:
-            content = Path(filepath).read_text(errors="replace")
+            content = Path(filepath).read_text(errors="replace", encoding="utf-8")
         except (OSError, PermissionError) as e:
             warn(f"Cannot read {filepath}: {e}")
             continue
@@ -477,7 +477,7 @@ def redact(findings: list[dict], passphrase: str, purge: bool = False) -> int:
         # Write back
         if modified != content:
             try:
-                Path(filepath).write_text(modified)
+                Path(filepath).write_text(modified, encoding="utf-8")
                 short = filepath.replace(str(Path.home()), "~")
                 count = len(file_findings)
                 print(f"  {_c('✓', _GREEN)} Redacted {count} secret(s) in {_c(short, _DIM)}")
@@ -535,7 +535,7 @@ def restore(passphrase: str, target_file: Optional[str] = None, all_entries: boo
             continue
 
         try:
-            content = Path(filepath).read_text(errors="replace")
+            content = Path(filepath).read_text(errors="replace", encoding="utf-8")
         except (OSError, PermissionError):
             continue
 
@@ -544,7 +544,7 @@ def restore(passphrase: str, target_file: Optional[str] = None, all_entries: boo
 
         if mask in content:
             content = content.replace(mask, secret, 1)
-            Path(filepath).write_text(content)
+            Path(filepath).write_text(content, encoding="utf-8")
             short = filepath.replace(str(Path.home()), "~")
             print(f"  {_c('✓', _GREEN)} Restored {entry['rule']} in {_c(short, _DIM)}:{entry['line']}")
             restored += 1

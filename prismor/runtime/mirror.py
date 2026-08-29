@@ -306,7 +306,7 @@ def set_mirror_config(workspace: Path, *, override: Optional[bool] = None,
         cfg["disabled_tools"] = [t for t in mirror_tool_names() if t in disabled]
     path = _mirror_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json.dumps({**extra, **cfg}, indent=2))
+    path.write_text(_json.dumps({**extra, **cfg}, indent=2), encoding="utf-8")
     return cfg
 
 
@@ -471,7 +471,7 @@ def _run_read(args: Dict[str, Any], workspace: Path) -> str:
     if path.is_dir():
         raise MirrorError(f"path is a directory, not a file: {path}")
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(errors="replace", encoding="utf-8")
     except OSError as exc:
         raise MirrorError(f"could not read {path}: {exc}")
     lines = text.splitlines()
@@ -494,7 +494,7 @@ def _run_write(args: Dict[str, Any], workspace: Path) -> str:
     content = str(args.get("content") or "")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
     except OSError as exc:
         raise MirrorError(f"could not write {path}: {exc}")
     return f"Wrote {len(content)} bytes to {path}"
@@ -509,7 +509,7 @@ def _run_edit(args: Dict[str, Any], workspace: Path) -> str:
     if not old:
         raise MirrorError("old_string is required and must not be empty")
     try:
-        src = path.read_text(errors="replace")
+        src = path.read_text(errors="replace", encoding="utf-8")
     except OSError as exc:
         raise MirrorError(f"could not read {path}: {exc}")
     count = src.count(old)
@@ -521,7 +521,7 @@ def _run_edit(args: Dict[str, Any], workspace: Path) -> str:
             "context or set replace_all")
     updated = src.replace(old, new) if args.get("replace_all") else src.replace(old, new, 1)
     try:
-        path.write_text(updated)
+        path.write_text(updated, encoding="utf-8")
     except OSError as exc:
         raise MirrorError(f"could not write {path}: {exc}")
     return f"Edited {path} ({count if args.get('replace_all') else 1} replacement(s))"
@@ -572,7 +572,7 @@ def _run_grep(args: Dict[str, Any], workspace: Path) -> str:
         if file_glob and not fnmatch.fnmatch(path.name, file_glob):
             continue
         try:
-            text = path.read_text(errors="replace")
+            text = path.read_text(errors="replace", encoding="utf-8")
         except OSError:
             continue
         if "\x00" in text[:1024]:
@@ -627,7 +627,7 @@ def mark_active(workspace: Path, tools: Optional[List[str]] = None) -> None:
             "pid": os.getpid(),
             "workspace": str(Path(workspace).resolve()),
             "tools": list(tools or mirror_tool_names()),
-        }))
+        }), encoding="utf-8")
     except OSError:
         pass  # advisory only — never fail a gateway start over the marker
 
@@ -664,7 +664,7 @@ def _live_markers() -> List[Dict[str, Any]]:
         return out
     for path in entries:
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             try:
                 path.unlink()

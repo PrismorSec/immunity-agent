@@ -63,16 +63,14 @@ def spool_path() -> Path:
 
 @contextmanager
 def _locked(path: Path) -> Iterator[Any]:
-    """Hold an exclusive advisory lock on ``<spool>.lock`` for a read-modify-write."""
-    import fcntl
-    lock_path = path.with_suffix(".lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            yield lock_f
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+    """Hold an exclusive advisory lock on ``<spool>.lock`` for a read-modify-write.
+
+    Via the one guarded implementation: a bare ``import fcntl`` here raised
+    ImportError on Windows, where the module does not exist.
+    """
+    from prismor.runtime.store import file_lock
+    with file_lock(path):
+        yield None
 
 
 def _read_records(path: Path) -> List[Dict[str, Any]]:

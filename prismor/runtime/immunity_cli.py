@@ -124,7 +124,30 @@ def _is_newer(candidate: str, current: str) -> bool:
         return candidate != current
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr UTF-8 regardless of the console's codepage.
+
+    Windows consoles default to a legacy codepage (cp1252 on an en-US box), so
+    the first check mark, arrow or spinner frame Prismor prints raises
+    UnicodeEncodeError and takes the whole command down mid-write — `prismor
+    setup` died on the "Registering workspace" tick. `errors="replace"` is the
+    belt and braces: a console that genuinely cannot render a glyph shows a
+    placeholder instead of aborting the run.
+
+    This is the single entry point for both console scripts and for the
+    hook-dispatch shim, so fixing it here covers every path that prints.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Not a TextIOWrapper (pytest capture, a pipe wrapper, ...) —
+            # nothing to reconfigure, and nothing worth failing over.
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> None:
+    _force_utf8_streams()
     if argv is None:
         argv = sys.argv[1:]
 
