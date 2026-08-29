@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -66,7 +68,53 @@ def _is_structural_suspect(text: str) -> bool:
             return True
     return False
 
-CLAUDE_CLI = os.environ.get("CLAUDE_CLI", os.path.expanduser("~/.local/bin/claude"))
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    """Kill the subagent and anything it spawned, then reap it.
+
+    Killing only the direct child leaves MCP grandchildren holding the stdout
+    pipe, which is what turns a 30s timeout into an indefinite hang.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _default_claude_cli() -> str:
+    """Where the Claude Code CLI actually is.
+
+    ``~/.local/bin/claude`` is only the native installer's path. An npm install
+    puts it on PATH instead (``/usr/bin/claude``), and the guard's whole LLM
+    layer is skipped when the path does not exist — so hardcoding one location
+    silently downgraded every npm-installed host to heuristics-only, which is
+    the mode that cannot explain a paraphrased attack. Checked in order:
+    explicit env override, the native path, then PATH.
+    """
+    override = os.environ.get("CLAUDE_CLI")
+    if override:
+        return override
+    native = os.path.expanduser("~/.local/bin/claude")
+    if os.path.exists(native):
+        return native
+    import shutil
+    return shutil.which("claude") or native
+
+
+CLAUDE_CLI = _default_claude_cli()
+
+# The CLI subagent otherwise runs on whatever model the host defaults to, which
+# on a Max account is a frontier model doing a one-token classification. Pinned
+# to a small one; `settings.semantic_guard.model` overrides it when it names a
+# Claude id (a litellm id like `ollama/llama3` means nothing to `claude --model`).
+CLI_MODEL = "claude-haiku-4-5-20251001"
 
 _PRISMOR_CONTEXT = """\
 You are the Semantic Security Evaluator for Prismor, an AI agent runtime security monitor.
@@ -134,8 +182,20 @@ def _extract_json_object(raw: str) -> Optional[str]:
     return None
 
 
-def _llm_analyze(text: str, heuristic_score: float, heuristic_signals: List[str]) -> SemanticRisk:
-    """Call local Claude Code CLI as semantic subagent. Returns SemanticRisk."""
+def _llm_analyze(
+    text: str,
+    heuristic_score: float,
+    heuristic_signals: List[str],
+    cli: str = "",
+    model: str = "",
+    allow_cli: bool = True,
+) -> SemanticRisk:
+    """Semantic subagent for the uncertain zone.
+
+    Uses the local Claude Code CLI when present; otherwise any litellm model
+    (``model`` / $PRISMOR_SEMANTIC_MODEL) or a register_llm() callable, so
+    non-Claude-Code hosts and SDK frameworks get the same escalation.
+    """
     t0 = time.perf_counter_ns()
 
     prompt = (
@@ -143,14 +203,44 @@ def _llm_analyze(text: str, heuristic_score: float, heuristic_signals: List[str]
         f"Heuristic signals found: {', '.join(heuristic_signals) if heuristic_signals else 'none'}\n\n"
         f"Text to evaluate:\n\n{text[:3000]}"
     )
+    cli = cli or CLAUDE_CLI
+    if not allow_cli or not os.path.exists(cli):
+        from prismor.runtime.semantic_guard import _api_analyze
+        return _api_analyze(text, model, system=_PRISMOR_CONTEXT, user=prompt)
 
     try:
-        result = subprocess.run(
-            [CLAUDE_CLI, "-p", prompt, "--output-format", "text", "--system-prompt", _PRISMOR_CONTEXT],
-            capture_output=True, text=True, timeout=30,
-            env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1"},
+        # Run the subagent ISOLATED from the workspace being protected.
+        #
+        # `claude -p` inherits its cwd's project config, so without this the
+        # evaluator boots that workspace's MCP servers and hooks on every
+        # escalation — including Prismor's own gateway and mirror. That is slow,
+        # circular, and it hangs: subprocess.run's timeout kills the CLI but
+        # then blocks in communicate() on stdout pipes the MCP grandchildren
+        # inherited and still hold open. Measured on a workspace with two MCP
+        # servers: 5s from a neutral directory, >120s and counting from the
+        # workspace itself.
+        #
+        # --strict-mcp-config with no --mcp-config means no servers at all, a
+        # temp cwd means no project settings, and start_new_session lets us
+        # kill the whole process group rather than just the direct child.
+        proc = subprocess.Popen(
+            [cli, "-p", prompt, "--output-format", "text",
+             "--model", model if model.startswith("claude") else CLI_MODEL,
+             "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=tempfile.gettempdir(), start_new_session=True,
+            # The subagent's own prompt is the attack text, and its own
+            # Prismor hooks screen it: without this marker the evaluator
+            # escalates, and so does the evaluator's evaluator.
+            env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1",
+                 "PRISMOR_SEMANTIC_SUBAGENT": "1"},
         )
-        raw = result.stdout.strip()
+        try:
+            stdout, _ = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            raise
+        raw = (stdout or "").strip()
         # Strip markdown fences
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
@@ -206,13 +296,31 @@ class SemanticGuardV2:
       5. Merge: take higher risk_score of heuristic + LLM
     """
 
-    def __init__(self, cli_path: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        cli_path: Optional[str] = None,
+        model: str = "",
+        allow_cli: bool = True,
+    ) -> None:
+        from prismor.runtime.semantic_guard import _LLM_FN, default_model
         self._cli = cli_path or CLAUDE_CLI
-        self._cli_available = os.path.exists(self._cli)
+        # A CLI escalation spawns a whole Claude Code process. Measured on an
+        # idle Ubuntu host, pinned to Haiku, MCP already disabled: 22s, against
+        # 0.4s for the same verdict over the API. Callers on the hook path pass
+        # allow_cli=False so a host with no model configured degrades to
+        # heuristic-only instead of stalling the agent on every escalation.
+        self._allow_cli = allow_cli
+        self._cli_available = allow_cli and os.path.exists(self._cli)
+        self._model = model or default_model()
+        self._api_available = bool(self._model) or _LLM_FN is not None
 
     @property
     def mode(self) -> str:
-        return "hybrid_local_llm" if self._cli_available else "heuristic_only"
+        if self._cli_available:
+            return "hybrid_local_llm"
+        if self._api_available:
+            return "hybrid_api"
+        return "heuristic_only"
 
     def analyze(self, text: str) -> HybridRisk:
         """Analyze text through the full hybrid pipeline."""
@@ -232,11 +340,14 @@ class SemanticGuardV2:
         # Step 2/3: clear cases — no LLM call needed
         if effective_score < LOW_THRESH:
             return HybridRisk(h, None, h, False)
-        if effective_score >= HIGH_THRESH or not self._cli_available:
+        if effective_score >= HIGH_THRESH or not (self._cli_available or self._api_available):
             return HybridRisk(h, None, h, False)
 
         # Step 4: uncertain zone — escalate to local LLM
-        llm = _llm_analyze(text, effective_score, h.signals)
+        llm = _llm_analyze(
+            text, effective_score, h.signals,
+            cli=self._cli, model=self._model, allow_cli=self._allow_cli,
+        )
 
         # Step 5: merge — take higher risk_score, prefer LLM category/reason
         if llm.risk_score >= h.risk_score:

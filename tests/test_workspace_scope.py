@@ -135,3 +135,40 @@ def test_policy_engine_skips_remote_for_personal(tmp_path, monkeypatch):
     assert engine.workspace_managed is False
     # No prismor telemetry sink should be present for a personal workspace.
     assert not any(str(o.get("type", "")).lower() == "prismor" for o in (engine.outputs or []))
+
+
+def test_org_can_disable_personal_workspaces(tmp_path, monkeypatch):
+    """allow_personal_workspaces=false → every workspace is managed: the
+    personal override, the env opt-out, and the non-claimed default all lose.
+    (Scope is keyed on the git remote, which a dev can rewrite — this is the
+    org's only way to close that.)"""
+    from prismor.runtime.enterprise import workspace_scope as ws
+    _enroll()
+    monkeypatch.setattr(ws, "_org_settings", lambda: {
+        "managed_repo_patterns": ["github.com/acme/*"], "allow_personal_workspaces": False})
+    repo = _git_repo(tmp_path, "https://github.com/me/remote-rewritten-to-dodge-acme")
+    ws.set_override(repo, "personal")
+    monkeypatch.setenv("PRISMOR_WORKSPACE_SCOPE", "personal")
+    info = ws.resolve_scope(repo)
+    assert info["scope"] == "managed" and info["reason"] == "org_no_personal"
+    # An org-claimed repo still reports the more specific reason.
+    assert ws.resolve_scope(_git_repo(tmp_path, "https://github.com/acme/x"))["reason"] == "org_claimed"
+    # Default stays permissive when the key is absent.
+    monkeypatch.setattr(ws, "_org_settings", lambda: {"managed_repo_patterns": ["github.com/acme/*"]})
+    monkeypatch.delenv("PRISMOR_WORKSPACE_SCOPE")
+    assert ws.resolve_scope(repo)["reason"] == "opt_out"
+
+
+def test_repull_sig_tracks_allow_personal_workspaces(monkeypatch):
+    """Flipping allow_personal_workspaces must change managedReposSig (else the
+    device never re-pulls); the default must leave the sig untouched."""
+    from prismor.runtime.enterprise import remote_policy as rp
+    pols = iter([
+        {"settings": {"managed_repo_patterns": ["github.com/acme/*"]}},
+        {"settings": {"managed_repo_patterns": ["github.com/acme/*"], "allow_personal_workspaces": True}},
+        {"settings": {"managed_repo_patterns": ["github.com/acme/*"], "allow_personal_workspaces": False}},
+        {"settings": {"allow_personal_workspaces": False}},
+    ])
+    monkeypatch.setattr(rp, "verify_and_load", lambda: next(pols))
+    base, explicit_true, off, off_no_patterns = (rp._current_managed_repos_sig() for _ in range(4))
+    assert base == explicit_true and base != off and off_no_patterns and off_no_patterns != off

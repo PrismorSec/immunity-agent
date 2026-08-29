@@ -534,5 +534,39 @@ class TestPolicyExport(unittest.TestCase):
         self.assertIn("export", r.stderr)
 
 
+
+def test_semantic_check_empty_piped_stdin_errors_fast():
+    """Empty piped input is a fast, clean error — never a hang."""
+    r = run_cli("semantic-check", stdin=subprocess.DEVNULL)
+    assert r.returncode == 1
+    assert "no text provided" in r.stderr
+
+
+def test_semantic_check_on_a_tty_does_not_hang():
+    """Regression: a bare `prismor semantic-check` on an interactive terminal
+    used to fall through to sys.stdin.read() and block forever. With a real tty
+    on stdin and nothing typed, it must fail fast with usage, not hang."""
+    import os, pty
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, CLI, "semantic-check"],
+            stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        os.close(slave)
+        try:
+            _, err = proc.communicate(timeout=15)  # old code hangs -> TimeoutExpired
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise AssertionError("semantic-check hung on a tty with no input")
+        assert proc.returncode == 1
+        assert "no text provided" in err
+    finally:
+        try:
+            os.close(master)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     unittest.main()

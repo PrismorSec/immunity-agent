@@ -105,3 +105,38 @@ def test_parse_package_json_uses_lockfile_pin(tmp_path: Path) -> None:
         "range": "^4.17.0",
         "pinned_via_lock": True,
     }]
+
+
+# ── IOC database wiring (independent of the signed advisory feed) ────────────
+# Regression: the shipped feed carries 0 dependency_vulnerability advisories,
+# so `prismor deps` matched nothing. It now also consults supplychain.ioc, so a
+# known-malicious pinned package is flagged even with an empty feed.
+
+def test_deps_flags_known_ioc_with_empty_feed(tmp_path):
+    (tmp_path / "requirements.txt").write_text(
+        "requests==2.31.0\nmistralai==2.4.6\nguardrails-ai==0.10.1\n"
+    )
+    result = scan_workspace(tmp_path, feed={"advisories": []})
+    matched = {m["matched_deps"][0]["name"]: m for m in result["feed_matches"]}
+    assert "mistralai" in matched, result["feed_matches"]
+    assert "guardrails-ai" in matched
+    # exact pip pin -> CRITICAL exact-version match, not a name-only HIGH
+    assert matched["mistralai"]["severity"] == "critical"
+    assert "2.4.6" in matched["mistralai"]["affected"]
+
+
+def test_deps_ioc_no_false_positive_on_safe_version(tmp_path):
+    # 2.4.5 is the legitimate release; only 2.4.6 is compromised.
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\nmistralai==2.4.5\n")
+    result = scan_workspace(tmp_path, feed={"advisories": []})
+    assert result["feed_matches"] == [], result["feed_matches"]
+
+
+def test_deps_flags_ioc_npm_range(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "fixture", "version": "0.0.0",
+        "dependencies": {"@mistralai/mistralai": "2.2.4"},
+    }))
+    result = scan_workspace(tmp_path, feed={"advisories": []})
+    names = {m["matched_deps"][0]["name"] for m in result["feed_matches"]}
+    assert "@mistralai/mistralai" in names, result["feed_matches"]

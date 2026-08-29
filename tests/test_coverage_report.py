@@ -93,8 +93,13 @@ class TestLayerFlags(unittest.TestCase):
     def test_opt_in_layers_are_off_by_default(self):
         # If these ever flip to on-by-default the report stays correct, but the
         # change should be deliberate rather than silent.
-        self.assertFalse(self.engine.semantic_guard_config.get("enabled"))
         self.assertFalse(self.engine.tool_tags.get("enabled"))
+
+    def test_semantic_guard_is_on_by_default(self):
+        # Deliberate flip: the heuristic pre-screen runs on every event, and
+        # only the uncertain zone reaches a model.
+        self.assertTrue(self.engine.semantic_guard_config.get("enabled"))
+        self.assertEqual(self.engine.semantic_guard_config.get("mode"), "auto")
 
 
 if __name__ == "__main__":

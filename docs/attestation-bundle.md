@@ -71,7 +71,7 @@ actually applies to it:
 |---|---|
 | Coding agents | Prismor's hook dispatcher is wired into the agent's config |
 | MCP servers | the server is routed through `prismor mcp-gateway` |
-| Provider keys | the credential is registered with [Cloak](cloaking.md) |
+| Provider keys | the credential is registered with [Cloak](sweep-and-cloak.md) |
 
 ```
   PRISMOR  discover   ~/src/acme

@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
@@ -203,7 +204,9 @@ def guard_controller(
                         if getattr(outcome, "redacted", False):
                             # "Approve redacted": strip flagged values on-device first.
                             params = _approvals.redact_approved_payload(params, workspace=ws)
-                        return await original_execute(action_name, params, **kwargs)
+                        return redact_tool_result(
+                            await original_execute(action_name, params, **kwargs),
+                            workspace=ws, engine=decision.engine)
                 except Exception:
                     pass
             reason = decision.reason or "policy violation"
@@ -212,7 +215,11 @@ def guard_controller(
             # Return a string error — browser-use surfaces this back to the LLM
             return f"⛔ Prismor blocked action '{action_name}': {reason}"
 
-        return await original_execute(action_name, params, **kwargs)
+        # An allowed action still returns a page's content — redact it before
+        # browser-use hands the ActionResult back to the model.
+        return redact_tool_result(
+            await original_execute(action_name, params, **kwargs), workspace=ws,
+            engine=decision.engine)
 
     registry.execute_action = _guarded_execute
     registry.__prismor_guarded__ = True

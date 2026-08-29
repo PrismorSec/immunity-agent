@@ -383,6 +383,10 @@ def test_install_and_uninstall_roundtrip(tmp_path, monkeypatch):
     rewritten = json.loads((ws / ".mcp.json").read_text())["mcpServers"]
     assert list(rewritten) == ["prismor"]
     assert rewritten["prismor"]["args"][0] == "mcp-gateway"
+    # The installed gateway must run in enforce by default, or it forwards
+    # injections it detected — the feature would be off out of the box.
+    assert "--mode" in rewritten["prismor"]["args"]
+    assert rewritten["prismor"]["args"][rewritten["prismor"]["args"].index("--mode") + 1] == "enforce"
     assert (ws / ".mcp.json.bak").exists()
 
     msg = uninstall_gateway(ws)
@@ -654,3 +658,88 @@ def test_call_step_up_denied_blocks(tmp_path, monkeypatch):
     gateway._handle_tools_call_safe("C11", {"name": "crm__echo", "arguments": {"x": 1}})
     assert sent[-1]["result"]["isError"] is True
     assert not any(m == "tools/call" for m, _ in a.requests)
+
+
+def test_install_mode_observe_is_honoured(tmp_path, monkeypatch):
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", tmp_path / "gw.json")
+    ws = tmp_path / "ws"; ws.mkdir()
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {
+        "notes": {"command": "python3", "args": ["notes.py"]}}}))
+    install_gateway(ws, mode="observe")
+    args = json.loads((ws / ".mcp.json").read_text())["mcpServers"]["prismor"]["args"]
+    assert args[args.index("--mode") + 1] == "observe"
+
+
+def test_install_leaves_the_mirror_alone(tmp_path, monkeypatch):
+    """`mirror on` then `mcp-gateway install` must not absorb the mirror.
+
+    Nesting it renames its tools to ``mcp__prismor__prismor-tools__Bash``,
+    orphaning the permissions and `enabledMcpjsonServers` entry `mirror on`
+    wrote — the agent is left with no built-ins at all.
+    """
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", tmp_path / "gw.json")
+    ws = tmp_path / "ws"; ws.mkdir()
+    mirror_entry = {"command": "python3",
+                    "args": ["-m", "prismor.runtime.immunity_cli", "mcp-gateway",
+                             "--mirror", "--mode", "enforce"]}
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {
+        "notes": {"command": "python3", "args": ["notes.py"]},
+        "prismor-tools": mirror_entry,
+    }}))
+    install_gateway(ws)
+    servers = json.loads((ws / ".mcp.json").read_text())["mcpServers"]
+    assert servers["prismor-tools"] == mirror_entry      # untouched, still top-level
+    assert "prismor" in servers                           # gateway added alongside
+    downstream = json.loads((tmp_path / "gw.json").read_text())["mcpServers"]
+    assert set(downstream) == {"notes"}
+
+
+def test_install_is_idempotent_with_the_mirror_present(tmp_path, monkeypatch):
+    """A second run has only Prismor's own entries left and must not re-migrate."""
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", tmp_path / "gw.json")
+    ws = tmp_path / "ws"; ws.mkdir()
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {
+        "notes": {"command": "python3", "args": ["notes.py"]},
+        "prismor-tools": {"command": "python3", "args": ["mcp-gateway", "--mirror"]},
+    }}))
+    install_gateway(ws)
+    before = (ws / ".mcp.json").read_text()
+    install_gateway(ws)
+    assert (ws / ".mcp.json").read_text() == before
+
+
+def test_install_carries_the_mcp_approval_over_to_the_gateway(tmp_path, monkeypatch):
+    """The migrated servers were approved under names that no longer exist; the
+    gateway must inherit that approval or the agent loads no MCP servers at all."""
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", tmp_path / "gw.json")
+    ws = tmp_path / "ws"; ws.mkdir()
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {
+        "notes": {"command": "python3", "args": ["notes.py"]}}}))
+    install_gateway(ws)
+    local = json.loads((ws / ".claude" / "settings.local.json").read_text())
+    assert "prismor" in local["enabledMcpjsonServers"]
+
+
+def test_downstream_results_are_redacted_too(tmp_path, monkeypatch):
+    """A filesystem MCP server reading .env is the same leak as a mirrored Read.
+
+    Gating redaction on `spec.local` meant putting a server behind the gateway
+    left it leaking raw credentials while the mirror's own Read of the same
+    file came back masked — one file, two verdicts, and the "guarded" door was
+    the leaky one.
+    """
+    secret = "sk_live_" + "0123456789abcdefXYZ"
+    fs = FakeUpstream(
+        UpstreamSpec(name="filesystem", command=["true"], transport="stdio"),
+        tools=[{"name": "read_text_file", "inputSchema": {"type": "object"}}],
+        results={"read_text_file": {
+            "content": [{"type": "text", "text": f"STRIPE_SECRET_KEY={secret}\n"}]}})
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [fs])
+    allow_all(monkeypatch)
+    monkeypatch.setattr(gateway, "_redact_result",
+                        lambda result, **kw: {"content": [{"type": "text",
+                                                           "text": "[REDACTED:secret]"}]})
+    gateway._handle_tools_call_safe(
+        "R1", {"name": "filesystem__read_text_file", "arguments": {"path": ".env"}})
+    body = json.dumps(sent[-1])
+    assert secret not in body

@@ -1722,7 +1722,13 @@ class PolicyEngine:
         # Skipped for synthetic script lines: the guard is LLM-backed, so
         # running it once per line would multiply cost and latency by the
         # length of the script. Script bodies stay on the deterministic path.
-        if self.semantic_guard_config.get("enabled") and not event.get("_script_line"):
+        if (
+            self.semantic_guard_config.get("enabled")
+            and not event.get("_script_line")
+            # Set on the CLI subagent: it is a Claude Code session too, so
+            # its own hooks would screen the text it was asked to judge.
+            and not os.environ.get("PRISMOR_SEMANTIC_SUBAGENT")
+        ):
             try:
                 sem_finding = self._run_semantic_layer(event, field_values, index, session_id)
                 if sem_finding:
@@ -1950,13 +1956,20 @@ class PolicyEngine:
         cfg = self.semantic_guard_config or {}
         mode = str(cfg.get("mode", "hybrid")).lower()
         try:
-            if mode == "hybrid":
+            if mode in ("auto", "hybrid"):
                 from prismor.runtime.semantic_guard_v2 import SemanticGuardV2
                 cli = cfg.get("cli_path") or None
-                self._semantic_guard = SemanticGuardV2(cli_path=cli)
+                # `auto` is the default and screens every tool call, so it never
+                # spawns the CLI subagent; `hybrid` is the explicit opt-in to it.
+                self._semantic_guard = SemanticGuardV2(
+                    cli_path=cli,
+                    model=str(cfg.get("model") or ""),
+                    allow_cli=(mode == "hybrid"),
+                )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard
                 self._semantic_guard = SemanticGuard(
+                    model=str(cfg.get("model") or ""),
                     force_heuristic=(mode == "heuristic"),
                 )
         except Exception as exc:
@@ -2000,7 +2013,7 @@ class PolicyEngine:
         action = "block" if score >= block_t else "warn"
         severity = "CRITICAL" if action == "block" else "HIGH"
         category = "prompt_injection_semantic"
-        rule_id = "semantic-guard-hybrid" if str(cfg.get("mode", "hybrid")).lower() == "hybrid" else "semantic-guard"
+        rule_id = "semantic-guard-hybrid" if str(cfg.get("mode", "hybrid")).lower() in ("auto", "hybrid") else "semantic-guard"
         finding_id = f"{rule_id}-{index}"
         prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
 
@@ -2017,6 +2030,8 @@ class PolicyEngine:
             "eventIndex": index,
             "ruleId": rule_id,
             "action": action,
+            # Same provenance tag the rule findings carry (#155).
+            "source": _EVENT_SOURCE.get(str(event.get("type", "")), str(event.get("type", ""))),
         }
 
     def _score_package(

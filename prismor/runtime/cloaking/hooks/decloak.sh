@@ -29,6 +29,7 @@ set -uo pipefail
 _HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_DIR="${PRISMOR_SECRETS_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/secrets}"
 SCRUBBER="$_HOOK_DIR/scrub-stream.sh"
+RESOLVER="$_HOOK_DIR/decloak-exec.sh"
 
 # Require jq — hook scripts are shell-only for speed. Fail closed if missing.
 if ! command -v jq >/dev/null 2>&1; then
@@ -43,8 +44,10 @@ tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
 [[ -n "$cmd" ]] || exit 0
 
-# ── 1. Decloak: substitute any @@SECRET:name@@ placeholders ────────────────
-new_cmd="$cmd"
+# ── 1. Decloak: validate every placeholder in the command ────────────────
+# Resolution itself happens in decloak-exec.sh, in the child process. Doing it
+# here would put the real value into the command string that Claude Code
+# records verbatim in ~/.claude/projects/*.jsonl.
 placeholders="$(printf '%s' "$cmd" | grep -oE '@@SECRET:[a-zA-Z0-9_-]+@@' | sort -u || true)"
 if [[ -n "$placeholders" ]]; then
   while IFS= read -r placeholder; do
@@ -62,8 +65,6 @@ if [[ -n "$placeholders" ]]; then
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
       exit 0
     fi
-    real="$(cat "$secret_file")"
-    new_cmd="${new_cmd//"$placeholder"/$real}"
   done <<< "$placeholders"
 fi
 
@@ -78,15 +79,23 @@ for _f in "$SECRETS_DIR"/*; do
   [[ -f "$_f" ]] && { have_secrets=1; break; }
 done
 
-if [[ "$have_secrets" -eq 0 && "$new_cmd" == "$cmd" ]]; then
+if [[ "$have_secrets" -eq 0 && -z "$placeholders" ]]; then
   exit 0
 fi
 
 # Wrap: run the command in a brace group, merge stderr into stdout, pipe
 # through the scrubber, and re-raise the command's own exit status (not sed's)
 # so callers that branch on exit codes still behave correctly. Only the
-# scrubber path and the secrets-dir path are embedded — never a secret value.
-wrapped="{ $new_cmd ; } 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
+# scrubber path, the resolver path and the secrets-dir path are embedded —
+# never a secret value, in either branch.
+if [[ -n "$placeholders" ]]; then
+  # Placeholders present: hand the command over unresolved and let the child
+  # resolve it, so the recorded string holds placeholders and not secrets.
+  runner="PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_CMD=$(printf '%q' "$cmd") bash $(printf '%q' "$RESOLVER")"
+else
+  runner="{ $cmd ; }"
+fi
+wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
 
 new_input="$(printf '%s' "$input" | jq --arg c "$wrapped" '.tool_input | .command = $c')"
 jq -n --argjson ni "$new_input" \

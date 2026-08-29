@@ -296,6 +296,10 @@ def test_surface_registry_is_wellformed():
     # capability in the docs that does not exist.
     assert contract.surface("hook").can_redact is False
     assert contract.surface("mirror").can_redact is True
+    # An in-process adapter holds the tool's return value, so it can repair one
+    # (PrismorSec/prismor#309). The registry only gets to say so while the
+    # adapters actually do it — test_adapter_result_redaction is the check.
+    assert contract.surface("sdk-adapter").can_redact is True
 
 
 # ── shared redaction ─────────────────────────────────────────────────────────
@@ -310,3 +314,27 @@ def test_redaction_is_shared_and_best_effort():
     # Non-text blocks survive untouched rather than being guessed at.
     res = {"content": [{"type": "image", "data": "xyz"}]}
     assert redact_mcp_result(res)[0] == res
+
+
+def test_every_result_carrying_surface_masks_the_same_secret():
+    """The result side of the conformance claim.
+
+    A credential in a tool's OUTPUT must be masked whichever surface carried
+    it back, in the payload shape that surface actually deals in: an MCP
+    content block for the gateway and the mirror, a plain return value for an
+    in-process SDK adapter. They share one helper precisely so a fix to the
+    classifier lands on all of them at once — this asserts they still do.
+    """
+    from prismor.runtime.redaction import redact_mcp_result, redact_tool_result
+
+    secret = "ghp_" + "A" * 36
+    text = f"token: {secret}"
+
+    gateway, changed = redact_mcp_result({"content": [{"type": "text", "text": text}]})
+    assert changed and secret not in gateway["content"][0]["text"]
+
+    adapter = redact_tool_result(text)
+    assert secret not in adapter
+
+    for etype in contract.TEXT_TYPES:
+        assert etype in contract.TYPE_FIELD  # a result event has somewhere to go

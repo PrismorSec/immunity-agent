@@ -1,0 +1,6 @@
+# The advisory feed is signed over its exact bytes. Git's Windows checkout
+# would rewrite its newlines to CRLF and the signature would no longer verify,
+# which reads as a tampered feed. Same for the key and detached signature.
+advisories/immunity-feed.json -text
+advisories/immunity-feed.json.sig -text
+keys/public.pub -text

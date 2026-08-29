@@ -102,37 +102,29 @@ def apply_fixes(findings: List[AuditFinding]) -> List[str]:
 # ── Individual checks ───────────────────────────────────────────────────────
 
 def _check_hooks(workspace: Path, repo_root: Path) -> List[AuditFinding]:
-    """Check hook installation across agents."""
+    """Check hook installation across agents, in both project and global scope."""
+    from prismor.runtime.hooks import coverage, _config_path
+
     findings: List[AuditFinding] = []
-    agents_config = {
-        "claude": workspace / ".claude" / "settings.json",
-        "cursor": workspace / ".cursor" / "hooks.json",
-        "windsurf": workspace / ".windsurf" / "hooks.json",
-        "openclaw": workspace / ".openclaw" / "plugins.json",
-        "hermes": workspace / ".hermes" / "plugins.json",
-        "codex": workspace / ".codex" / "hooks.json",
-    }
 
-    installed_agents: List[str] = []
+    installed: List[str] = []
     mode_found: Optional[str] = None
-
-    for agent, config_path in agents_config.items():
-        if not config_path.exists():
+    for agent, scopes in coverage(workspace).items():
+        hit = [sc for sc, ok in scopes.items() if ok]
+        if not hit:
             continue
-        try:
-            content = config_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+        installed.append(agent if "project" in hit else f"{agent} (global)")
+        if mode_found is None:
+            try:
+                content = _config_path(agent, hit[0], workspace).read_text(encoding="utf-8")
+            except (OSError, ValueError):
+                continue
+            if "--mode enforce" in content:
+                mode_found = "enforce"
+            elif "--mode observe" in content:
+                mode_found = "observe"
 
-        if "prismor" in content.lower() or "prismor" in content.lower():
-            installed_agents.append(agent)
-            if mode_found is None:
-                if "--mode enforce" in content:
-                    mode_found = "enforce"
-                elif "--mode observe" in content:
-                    mode_found = "observe"
-
-    if not installed_agents:
+    if not installed:
         def _fix_install_hooks() -> str:
             from prismor.runtime.hooks import install_hooks
             from prismor.runtime.store import register_workspace
@@ -157,7 +149,7 @@ def _check_hooks(workspace: Path, repo_root: Path) -> List[AuditFinding]:
         findings.append(AuditFinding(
             severity="PASS",
             category="hooks",
-            message=f"Hooks installed: {', '.join(installed_agents)}",
+            message=f"Hooks installed: {', '.join(installed)}",
         ))
 
         if mode_found == "observe":
@@ -235,7 +227,10 @@ def _check_cloaking(workspace: Path) -> List[AuditFinding]:
         ))
         return findings
 
-    result = cloak_status(workspace=workspace, scope="project")
+    for _scope in ("project", "user"):
+        result = cloak_status(workspace=workspace, scope=_scope)
+        if result["installed"]:
+            break
 
     if not result["installed"]:
         def _fix_install_cloak() -> str:

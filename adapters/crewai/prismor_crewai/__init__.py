@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Union
 
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
@@ -114,6 +115,7 @@ def prismor_guard_tool(
             agent=agent, agent_name=_agent_name, mode=mode, sid=sid, event_type=event_type,
         )
         log_observe_findings(decision, mode=mode, tool_name=tool_name)
+        _engine[0] = decision.engine
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode
             # Headless STEP_UP → post an approval request and block until an admin
             # decides. Approve → proceed; deny/timeout/not-enrolled → fail closed.
@@ -138,6 +140,22 @@ def prismor_guard_tool(
             return f"⛔ Prismor blocked this tool call: {reason}"
         return None
 
+    # The Decision's own PolicyEngine, parked by _decide for _redact to reuse
+    # rather than rebuild. A list because the guarded callables are re-entrant
+    # (and async, in LangChain's case): index 0 is only ever a fresher engine
+    # for the same workspace, so a racing overwrite costs nothing.
+    _engine: List[Any] = [None]
+
+    def _redact(result: Any) -> Any:
+        """Mask the tool's OUTPUT before CrewAI feeds it back to the model.
+
+        The pre-call check can only refuse; a tool that reads a file with a
+        hardcoded credential in it is allowed, and the credential is in the
+        return value. This wrapper holds that value, so it is the one place
+        that leak can still be repaired.
+        """
+        return redact_tool_result(result, workspace=ws, engine=_engine[0])
+
     wrapped_any = False
     for attr in _IMPL_ATTRS:
         impl = getattr(tool, attr, None)
@@ -149,8 +167,10 @@ def prismor_guard_tool(
         def guarded(*args: Any, __impl=impl, **kwargs: Any) -> Any:
             denial = _decide(args, kwargs)
             if isinstance(denial, _RunWith):
-                return __impl(*denial.args, **denial.kwargs)
-            return denial if denial is not None else __impl(*args, **kwargs)
+                return _redact(__impl(*denial.args, **denial.kwargs))
+            if denial is not None:
+                return denial
+            return _redact(__impl(*args, **kwargs))
 
         try:
             setattr(tool, attr, guarded)

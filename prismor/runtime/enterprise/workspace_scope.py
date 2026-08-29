@@ -102,20 +102,35 @@ def set_override(workspace: Path, scope: Optional[str]) -> None:
         pass
 
 
-def org_managed_patterns() -> List[str]:
-    """The org's claimed-repo glob patterns, read from the *verified* signed
-    remote policy (settings.managed_repo_patterns). Empty if not enrolled / no
-    policy — which means nothing is auto-managed."""
+def _org_settings() -> Dict[str, Any]:
+    """``settings`` block of the *verified* signed remote policy, or {}."""
     try:
         from prismor.runtime.enterprise import remote_policy as _remote
         pol = _remote.verify_and_load()
         if pol:
-            pats = (pol.get("settings") or {}).get("managed_repo_patterns")
-            if isinstance(pats, list):
-                return [str(p) for p in pats if p]
+            return pol.get("settings") or {}
     except Exception:
         pass
+    return {}
+
+
+def org_managed_patterns() -> List[str]:
+    """The org's claimed-repo glob patterns (settings.managed_repo_patterns).
+    Empty if not enrolled / no policy — which means nothing is auto-managed."""
+    pats = _org_settings().get("managed_repo_patterns")
+    if isinstance(pats, list):
+        return [str(p) for p in pats if p]
     return []
+
+
+def org_allows_personal() -> bool:
+    """``settings.allow_personal_workspaces`` (default True). When the org sets
+    it False, every workspace on an enrolled device is managed: the personal
+    override, PRISMOR_WORKSPACE_SCOPE=personal, and the non-claimed-repo default
+    are all ignored. This is the only way to close the scope-is-the-git-remote
+    hole — a developer can always rewrite or drop ``origin`` to dodge a claimed
+    pattern, so orgs that need full coverage must disable personal space."""
+    return _org_settings().get("allow_personal_workspaces", True) is not False
 
 
 def _matches(remote: str, pattern: str) -> bool:
@@ -150,11 +165,14 @@ def resolve_scope(workspace: Path) -> Dict[str, Any]:
       1. not enrolled → local (nothing to report to).
       2. remote matches an org-claimed pattern → managed, FORCED (a developer
          cannot downgrade a company/client repo).
-      3. PRISMOR_WORKSPACE_SCOPE env override for a non-claimed workspace →
+      3. org set settings.allow_personal_workspaces=false → managed, FORCED
+         (no personal space on this device at all; closes the rewrite-the-
+         remote bypass for orgs that need it).
+      4. PRISMOR_WORKSPACE_SCOPE env override for a non-claimed workspace →
          honored (the deployed-workload path: no git remote, no writable home).
-      4. developer override (opt-in 'managed' / opt-out 'personal') for a
+      5. developer override (opt-in 'managed' / opt-out 'personal') for a
          non-claimed repo → honored.
-      5. default: if the org has claimed NO patterns, manage everything
+      6. default: if the org has claimed NO patterns, manage everything
          (backward-compatible "cover all dev machines"); if the org HAS claimed
          patterns, a non-matching repo is the developer's personal space.
     """
@@ -172,6 +190,9 @@ def resolve_scope(workspace: Path) -> Dict[str, Any]:
         for pat in patterns:
             if _matches(remote, pat):
                 return {"scope": "managed", "reason": "org_claimed", "remote": remote, "org_id": org_id, "pattern": pat}
+
+    if not org_allows_personal():
+        return {"scope": "managed", "reason": "org_no_personal", "remote": remote, "org_id": org_id}
 
     env_scope = _env_scope()
     if env_scope == "managed":

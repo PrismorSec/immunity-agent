@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Union
 
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
@@ -201,7 +202,10 @@ def prismor_guard(
             if raise_on_block:
                 raise PrismorBlocked(decision.reason or "blocked", decision)
             return decision
-        return tool(*args, **kwargs)
+        # Allowed: the tool ran, and its OUTPUT is the half a pre-call check
+        # never sees. Redact before the SDK folds it into the model's context.
+        return redact_tool_result(tool(*args, **kwargs), workspace=ws,
+                                  engine=decision.engine)
 
     wrapper.__prismor_guarded__ = True  # type: ignore[attr-defined]
     return wrapper
@@ -308,14 +312,17 @@ def _guard_function_tool(
                         if getattr(outcome, "redacted", False):
                             # "Approve redacted": strip flagged values on-device first.
                             input_str = _approvals.redact_approved_payload(input_str, workspace=ws)
-                        return await original(ctx, input_str)
+                        return redact_tool_result(
+                            await original(ctx, input_str), workspace=ws,
+                            engine=decision.engine)
                 except Exception:
                     pass  # any approval-path error fails closed
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
             return f"⛔ Prismor blocked this tool call: {reason}"
-        return await original(ctx, input_str)
+        return redact_tool_result(await original(ctx, input_str), workspace=ws,
+                                  engine=decision.engine)
 
     tool.on_invoke_tool = guarded
     tool.__prismor_guarded__ = True

@@ -62,6 +62,11 @@ jobs:
           python -m pip install --quiet (Get-ChildItem dist/*.whl).FullName
       - name: prismor setup end to end
         run: |
+          # pwsh 7.4 turns any non-zero native exit code into a terminating
+          # error under the runner's $ErrorActionPreference='Stop', so a
+          # correctly-blocking `prismor check` (exit 2) killed the step before
+          # the assertion could read $LASTEXITCODE.
+          $PSNativeCommandUseErrorActionPreference = $false
           New-Item -ItemType Directory -Force -Path ws | Out-Null
           Set-Location ws
           prismor setup --non-interactive --mode enforce --recommended --agents claude --scope global --no-backfill

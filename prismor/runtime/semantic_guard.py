@@ -15,7 +15,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -239,21 +239,74 @@ Scoring guide:
 """
 
 
-def _api_analyze(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001") -> SemanticRisk:
+# Provider-agnostic LLM backend. Any model litellm can route (OpenAI, Anthropic,
+# Gemini, Bedrock, Azure, Ollama, vLLM, ...) — provider keys come from the usual
+# env vars litellm reads. Frameworks that already hold an LLM client can bypass
+# litellm entirely with register_llm().
+DEFAULT_MODEL_ENV = "PRISMOR_SEMANTIC_MODEL"
+_LLM_FN: Optional[Callable[[str, str], str]] = None
+
+
+def register_llm(fn: Optional[Callable[[str, str], str]]) -> None:
+    """Plug in a custom completion function ``fn(system, user) -> str``.
+
+    Use this from SDK adapters / apps that already have an LLM client so the
+    semantic guard reuses it instead of litellm. Pass None to unregister.
+    """
+    global _LLM_FN
+    _LLM_FN = fn
+
+
+def default_model() -> str:
+    """Resolve the model: $PRISMOR_SEMANTIC_MODEL, else pick by available key."""
+    env = os.environ.get(DEFAULT_MODEL_ENV, "").strip()
+    if env:
+        return env
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude-haiku-4-5-20251001"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "gpt-4o-mini"
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini/gemini-2.0-flash"
+    return ""
+
+
+def _complete(system: str, user: str, model: str) -> str:
+    if _LLM_FN is not None:
+        return _LLM_FN(system, user)
+    import litellm  # optional dep: pip install "prismor[semantic]"
+    litellm.suppress_debug_info = True
+    resp = litellm.completion(
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        max_tokens=256,
+        timeout=30,
+    )
+    return resp.choices[0].message.content or ""
+
+
+def parse_verdict(raw: str) -> Dict:
+    """Extract the JSON verdict from a model reply (tolerates fences/prose)."""
+    raw = raw.strip()
+    raw = re.sub(r"^```[a-z]*\n?", "", raw)
+    raw = re.sub(r"\n?```$", "", raw)
+    m = re.search(r"\{.*\}", raw, re.S)
+    data = json.loads(m.group(0) if m else raw)
+    if isinstance(data, dict) and "risk_score" not in data:
+        nested = [v for v in data.values() if isinstance(v, dict)]
+        if len(nested) == 1 and "risk_score" in nested[0]:
+            data = nested[0]
+    return data
+
+
+def _api_analyze(text: str, model: str = "", system: str = "", user: str = "") -> SemanticRisk:
     t0 = time.perf_counter_ns()
+    model = model or default_model()
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=model,
-            max_tokens=256,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": f"Analyze this text:\n\n{text[:4000]}"}],
-        )
-        raw = msg.content[0].text.strip()
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-        data = json.loads(raw)
+        if not model and _LLM_FN is None:
+            raise RuntimeError(f"no model configured (set {DEFAULT_MODEL_ENV} or settings.semantic_guard.model)")
+        raw = _complete(system or _SYSTEM_PROMPT, user or f"Analyze this text:\n\n{text[:4000]}", model)
+        data = parse_verdict(raw)
         return SemanticRisk(
             risk_score=float(data.get("risk_score", 0.0)),
             category=str(data.get("category", "unknown")),
@@ -265,7 +318,7 @@ def _api_analyze(text: str, api_key: str, model: str = "claude-haiku-4-5-2025100
         )
     except Exception as e:
         result = _heuristic_analyze(text)
-        result.reason = f"[API fallback due to {type(e).__name__}] {result.reason}"
+        result.reason = f"[API fallback due to {type(e).__name__}: {e}] {result.reason}"
         result.latency_ms = (time.perf_counter_ns() - t0) / 1e6
         return result
 
@@ -284,20 +337,18 @@ class SemanticGuard:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: str = "claude-haiku-4-5-20251001",
+        model: str = "",
         force_heuristic: bool = False,
     ) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
+        self._model = model or default_model()
         self._force_heuristic = force_heuristic
-        self._use_api = bool(self._api_key) and not force_heuristic
+        self._use_api = (bool(self._model) or _LLM_FN is not None) and not force_heuristic
 
     def analyze(self, text: str) -> SemanticRisk:
         if not text or not text.strip():
             return SemanticRisk(0.0, "clean", "Empty input", "allow", mode="heuristic")
         if self._use_api:
-            return _api_analyze(text, self._api_key, self._model)
+            return _api_analyze(text, self._model)
         return _heuristic_analyze(text)
 
     def analyze_event(self, event: Dict) -> SemanticRisk:
@@ -323,7 +374,7 @@ if __name__ == "__main__":
     ap.add_argument("text", nargs="?", help="Text to analyze (or pipe via stdin)")
     ap.add_argument("--api", action="store_true", help="Force API mode")
     ap.add_argument("--heuristic", action="store_true", help="Force heuristic mode")
-    ap.add_argument("--model", default="claude-haiku-4-5-20251001")
+    ap.add_argument("--model", default="", help=f"litellm model id (default: ${DEFAULT_MODEL_ENV})")
     args = ap.parse_args()
 
     import sys

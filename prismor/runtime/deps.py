@@ -781,6 +781,58 @@ def check_lockfile_integrity(workspace: Path) -> List[Dict[str, Any]]:
     return findings
 
 
+def check_against_ioc(deps: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Match dependencies against the bundled supply-chain IOC database
+    (``supplychain.ioc``).
+
+    This is independent of the signed advisory feed. The feed currently ships
+    zero ``dependency_vulnerability`` advisories, so without this `prismor deps`
+    could never flag a known-malicious package (e.g. ``mistralai==2.4.6``,
+    ``@mistralai/mistralai`` in the mini-Shai-Hulud range) even though Prismor
+    curates exactly those IOCs. Results are shaped like ``check_against_feed``
+    matches so all existing rendering and exit-code logic applies unchanged.
+    """
+    try:
+        from supplychain.ioc import check_package
+    except Exception:
+        return []
+
+    def _exact_version(raw: str) -> Optional[str]:
+        # A concrete pinned version enables the CRITICAL exact-range check.
+        # pip keeps its operator ("==2.4.6"); npm stores a bare version.
+        # Anything floating/range (>=, ~=, ^, *, a git url) -> None -> the
+        # name-only (HIGH) IOC verdict rather than a bogus range comparison.
+        v = (raw or "").strip()
+        m = re.match(r"^==\s*([0-9][\w.\-+]*)$", v)
+        if m:
+            return m.group(1)
+        if re.match(r"^[0-9][\w.\-+]*$", v):
+            return v
+        return None
+
+    matches: List[Dict[str, Any]] = []
+    for dep in deps:
+        name = dep.get("name", "")
+        if not name:
+            continue
+        raw_version = str(dep.get("version", ""))
+        exact = _exact_version(raw_version)
+        hit = check_package(name, exact)
+        if not hit:
+            continue
+        shown = exact or raw_version
+        matches.append({
+            "advisory_id": hit.ioc_id,
+            "severity": str(hit.severity).lower(),
+            "title": hit.description,
+            "affected": f"{name}@{shown}" if shown else name,
+            "action": "Remove this package or pin to a known-safe version.",
+            "matched_deps": [dep],
+            "source": "ioc",
+        })
+    return matches
+
+
 def scan_workspace(
     workspace: Path,
     feed: Dict[str, Any],
@@ -799,6 +851,16 @@ def scan_workspace(
         all_deps.extend(deps)
 
     feed_matches = check_against_feed(all_deps, feed)
+    # The signed feed carries no dependency_vulnerability advisories today, so
+    # also consult the bundled IOC database directly. Dedup by (id, dep name)
+    # in case a future feed and the IOC list name the same compromise.
+    _seen = {(m.get("advisory_id"), d.get("name"))
+             for m in feed_matches for d in m.get("matched_deps", [])}
+    for m in check_against_ioc(all_deps):
+        key = (m.get("advisory_id"), m["matched_deps"][0].get("name"))
+        if key not in _seen:
+            feed_matches.append(m)
+            _seen.add(key)
     lockfile_issues = check_lockfile_presence(workspace)
     integrity_issues = check_lockfile_integrity(workspace)
     floating_ranges = check_floating_ranges(workspace, lockfile_map)

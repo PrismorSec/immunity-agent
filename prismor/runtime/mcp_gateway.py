@@ -824,19 +824,26 @@ class Gateway:
             "tools/call", {"name": route.tool, "arguments": arguments},
             timeout=CALL_TIMEOUT)
 
-        # Mirrored built-ins execute inside Prismor, so their output can be
-        # *repaired* rather than only refused: strip credential material before
-        # the model sees it. This is the capability a PreToolUse hook cannot
-        # have — a hook sees the request, never the file contents — and it is
-        # why a secret hardcoded in ordinary source (not just .env) stops
-        # leaking. Redact before scanning so the scan sees what the model will.
-        if route.upstream.spec.local:
-            # Cloak masking runs even while paused: `prismor pause` suspends
-            # ENFORCEMENT, and the hook-layer scrubber does not consult pause
-            # either, so a paused mirror must not start pushing raw secret
-            # values into the model's context. Data-boundary redaction IS
-            # policy, so it goes with the rest of enforcement.
-            result = self._redact_result(result, data_boundary=not passthrough)
+        # The gateway holds the response, so its output can be *repaired*
+        # rather than only refused: strip credential material before the model
+        # sees it. This is the capability a PreToolUse hook cannot have — a hook
+        # sees the request, never the file contents — and it is why a secret
+        # hardcoded in ordinary source (not just .env) stops leaking. Redact
+        # before scanning so the scan sees what the model will.
+        #
+        # This applies to EVERY upstream, not only the mirrored built-ins. A
+        # filesystem MCP server reading .env is the same leak through a
+        # different door, and gating on `spec.local` meant putting a server
+        # behind the gateway left it leaking while the mirror's own Read of the
+        # same file came back masked. Redaction is best-effort by contract
+        # (see runtime/redaction.py) and never fails a call closed.
+        #
+        # Cloak masking runs even while paused: `prismor pause` suspends
+        # ENFORCEMENT, and the hook-layer scrubber does not consult pause
+        # either, so a paused gateway must not start pushing raw secret values
+        # into the model's context. Data-boundary redaction IS policy, so it
+        # goes with the rest of enforcement.
+        result = self._redact_result(result, data_boundary=not passthrough)
 
         # Post-call: the response is untrusted content — scan before the model
         # ever sees it (prompt injection, poisoned tool output, secrets).
@@ -860,9 +867,13 @@ class Gateway:
         if withhold is None and decision is not None and self.mode == "enforce":
             withhold = _result_withhold_finding(decision.findings)
         if withhold is not None:
+            # include_evidence=False: the evidence is the poisoned tool output
+            # itself — echoing it back would hand the model the very injection
+            # (or leaked secret) the withhold exists to keep out of its context.
             self._reply(req_id, _blocked_result(
                 "[Prismor] response withheld", withhold,
-                unblock=self._unblock_text(withhold, route)))
+                unblock=self._unblock_text(withhold, route),
+                include_evidence=False))
             return
 
         self._reply(req_id, result)
@@ -937,7 +948,7 @@ class Gateway:
             result, workspace=self.workspace, data_boundary=data_boundary)
         if changed:
             sys.stderr.write(
-                "[prismor-gateway] redacted sensitive values from mirrored tool output\n")
+                "[prismor-gateway] redacted sensitive values from tool output\n")
         return out
 
     def _egress_guard(self, spec: UpstreamSpec) -> None:
@@ -1129,32 +1140,48 @@ _WITHHOLD_CATEGORIES = frozenset({"prompt_injection", "prompt_injection_semantic
 
 
 def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Strongest enforce-mode finding that justifies withholding a tool result.
+    """Strongest finding that justifies withholding a tool RESULT.
 
     ``should_block`` deliberately returns nothing on a post-action event — a
     hook cannot recall a tool that already ran. The gateway can: it still holds
     the response. So it makes its own post-call decision here, restricted to the
     finding categories where withholding the *output* is the actual mitigation
-    (injection, leaked secrets), and only for findings the policy already put in
-    enforce mode. Returns None when nothing qualifies (observe-only findings,
-    inert-context matches, unrelated categories).
+    (injection, leaked secrets).
+
+    A tool RESULT is untrusted content from an external server — a distinct
+    trust boundary from the user's own prompts and commands. Withholding a
+    poisoned or secret-leaking result is the exact mitigation and, unlike
+    blocking a call, cannot produce a false positive on anything the user
+    themselves wrote. So this does NOT require the finding's global rule mode to
+    be ``enforce``: the gateway's own enforce mode (the caller gates on
+    ``self.mode == "enforce"``) is enough. Otherwise the gateway's headline
+    result-injection scanning was inert whenever ``prompt-injection`` sat at its
+    observe default — a poisoned MCP result reached the model, only logged.
+
+    Still skips ``contextInert`` matches (an injection quoted inside a commit
+    message or grep pattern describes rather than performs) and any category
+    outside the curated withhold set. Returns None when nothing qualifies.
     """
     from prismor.runtime.contract import strongest
     return strongest([
         f for f in (findings or [])
-        if str(f.get("mode", "observe")).lower() == "enforce"
-        and not f.get("contextInert")
+        if not f.get("contextInert")
         and f.get("category") in _WITHHOLD_CATEGORIES
     ])
 
 
 def _blocked_result(prefix: str, blocking: Dict[str, Any],
-                    unblock: str = "") -> Dict[str, Any]:
+                    unblock: str = "", include_evidence: bool = True) -> Dict[str, Any]:
     parts = [f"{prefix}: [{blocking.get('severity', 'high')}] "
              f"{blocking.get('title', 'policy violation')}"]
     if blocking.get("ruleId"):
         parts[0] += f" (rule: {blocking['ruleId']})"
-    if blocking.get("evidence"):
+    # When withholding a tool RESULT the evidence IS the poisoned output (the
+    # injection string, a leaked secret). Echoing it back into the error the
+    # model reads would re-introduce exactly what we withheld, so the caller
+    # passes include_evidence=False there. Pre-call denials keep it: their
+    # evidence is the agent's own command, which is safe and useful to show.
+    if include_evidence and blocking.get("evidence"):
         parts.append(str(blocking["evidence"]))
     if blocking.get("remediation"):
         parts.append(f"Recommended fix: {blocking['remediation']}")
@@ -1193,9 +1220,23 @@ class MigrationResult:
         return self.status == "migrated"
 
 
-def _gateway_entry() -> Dict[str, Any]:
+def _gateway_entry(mode: str = "enforce") -> Dict[str, Any]:
+    # The gateway exists to screen tool results; installing it in observe mode
+    # would hand the host a connector that logs injections but forwards them
+    # anyway. So the written entry pins the mode (default enforce), and the
+    # installed .mcp.json actually protects the agent. `mirror on` defaults to
+    # enforce for the same reason.
     return {"command": "prismor",
-            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG)]}
+            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG),
+                     "--mode", mode]}
+
+
+def _is_prismor_entry(name: str, spec: Any) -> bool:
+    """Is this .mcp.json entry Prismor itself (the gateway or the mirror)?"""
+    if name == "prismor":
+        return True
+    args = (spec.get("args") if isinstance(spec, dict) else None) or []
+    return "mcp-gateway" in [str(a) for a in args if isinstance(a, (str, int))]
 
 
 def _absorb(servers: Dict[str, Any]) -> int:
@@ -1219,7 +1260,7 @@ def _absorb(servers: Dict[str, Any]) -> int:
     return len(moved)
 
 
-def migrate_config(path: Path) -> MigrationResult:
+def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
     """Move one config file's MCP servers behind the gateway.
 
     Everything in the file that is not the server block is preserved verbatim —
@@ -1248,8 +1289,18 @@ def migrate_config(path: Path) -> MigrationResult:
             detail="no recognised MCP server block (mcpServers/servers)")
 
     servers = data[key]
-    if list(servers.keys()) == ["prismor"]:
-        return MigrationResult(path, "skipped", detail="already behind the gateway")
+    # Prismor's own entries are not upstreams. The mirror (`prismor mirror on`)
+    # is a sibling surface, not a third-party server: absorbing it would nest a
+    # gateway inside a gateway and rename its tools to
+    # ``mcp__prismor__prismor-tools__Bash``, orphaning every permission and
+    # `enabledMcpjsonServers` entry `mirror on` just wrote. Whichever command
+    # runs second must leave the other alone.
+    keep = {name: spec for name, spec in servers.items() if _is_prismor_entry(name, spec)}
+    servers = {name: spec for name, spec in servers.items() if name not in keep}
+    if not servers:
+        return MigrationResult(path, "skipped",
+                               detail="already behind the gateway"
+                               if keep else "nothing to move")
 
     moved = _absorb(servers)
     if not moved:
@@ -1263,7 +1314,7 @@ def migrate_config(path: Path) -> MigrationResult:
         # trade for governing a server.
         return MigrationResult(path, "failed", detail=f"could not write backup: {exc}")
 
-    data[key] = {"prismor": _gateway_entry()}
+    data[key] = {"prismor": _gateway_entry(mode), **keep}
     try:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -1272,7 +1323,7 @@ def migrate_config(path: Path) -> MigrationResult:
                            detail=f"moved {moved} server(s); backup at {backup}")
 
 
-def migrate_configs(paths: Iterable[Path]) -> List[MigrationResult]:
+def migrate_configs(paths: Iterable[Path], mode: str = "enforce") -> List[MigrationResult]:
     """Migrate several configs. One bad file never stops the rest."""
     seen: set = set()
     out: List[MigrationResult] = []
@@ -1284,11 +1335,11 @@ def migrate_configs(paths: Iterable[Path]) -> List[MigrationResult]:
         if key in seen:
             continue
         seen.add(key)
-        out.append(migrate_config(Path(path)))
+        out.append(migrate_config(Path(path), mode))
     return out
 
 
-def install_gateway(workspace: Path) -> str:
+def install_gateway(workspace: Path, mode: str = "enforce") -> str:
     """Move the workspace ``.mcp.json`` servers behind the gateway.
 
     Scope is deliberately this one file. ``migrate_configs`` handles the wider
@@ -1299,16 +1350,30 @@ def install_gateway(workspace: Path) -> str:
     mcp_json = workspace / ".mcp.json"
     if not mcp_json.exists():
         return f"No .mcp.json found in {workspace} — nothing to install."
-    result = migrate_config(mcp_json)
+    result = migrate_config(mcp_json, mode)
     if result.status == "failed":
         raise GatewayConfigError(f"{mcp_json}: {result.detail}")
     if result.status == "skipped":
         if "already behind the gateway" in result.detail:
             return "Gateway already installed (only the prismor entry remains)."
         return f"{mcp_json} has no mcpServers — nothing to install."
+    # A server declared in a project .mcp.json does not load until a human
+    # approves it, and the servers we just moved WERE approved under their own
+    # names — which no longer exist. Without carrying that approval over to the
+    # gateway, install silently downgrades a working set of MCP servers to none
+    # until the developer clicks through a dialog they were never told about.
+    # Same reasoning, same mechanism, as `prismor mirror on`.
+    note = ""
+    try:
+        from prismor.runtime.mirror_cli import _approve_project_server
+        ok, detail = _approve_project_server(workspace, "prismor")
+        if not ok:
+            note = f"\nApprove it in your agent to activate: {detail}"
+    except Exception:
+        note = "\nApprove the `prismor` server in your agent to activate it."
     return (f"Moved {result.moved} server(s) into {DEFAULT_GATEWAY_CONFIG}.\n"
             f"{mcp_json} now routes through the Prismor gateway "
-            f"(backup: {mcp_json.with_suffix('.json.bak')}).")
+            f"(backup: {mcp_json.with_suffix('.json.bak')}).{note}")
 
 
 def uninstall_gateway(workspace: Path) -> str:
@@ -1341,7 +1406,7 @@ def _shim_name(argv: List[str]) -> str:
     return "upstream"
 
 
-def _install_everywhere(workspace: Path) -> str:
+def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
     """Migrate every MCP config ``discover`` can find on this machine.
 
     Uses discovery's own enumeration rather than a second list, so the set of
@@ -1361,7 +1426,7 @@ def _install_everywhere(workspace: Path) -> str:
     if not sources:
         return "No ungoverned MCP servers found — nothing to install."
 
-    results = migrate_configs(sources)
+    results = migrate_configs(sources, mode)
     lines = []
     total = 0
     for r in results:
@@ -1381,10 +1446,14 @@ def run_gateway(args, workspace: Path) -> int:
     """Entry point for ``prismor mcp-gateway`` (called from cli.main)."""
     action = getattr(args, "action", None) or "serve"
     if action == "install":
+        # Install defaults to enforce (a protection gateway must protect);
+        # an explicit `--mode observe` is honoured. Serve keeps its observe
+        # default below.
+        install_mode = getattr(args, "mode", None) or "enforce"
         if getattr(args, "all", False):
-            print(_install_everywhere(workspace))
+            print(_install_everywhere(workspace, install_mode))
             return 0
-        print(install_gateway(workspace))
+        print(install_gateway(workspace, install_mode))
         return 0
     if action == "uninstall":
         print(uninstall_gateway(workspace))

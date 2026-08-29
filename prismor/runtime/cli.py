@@ -733,6 +733,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         if scope == "managed":
             why = {"org_claimed": "matches an org-claimed repo pattern (cannot be downgraded)",
                    "opt_in": "you opted this repo in",
+                   "org_no_personal": "your org has disabled personal workspaces on enrolled devices (cannot be downgraded)",
                    "default_all": "your org governs all enrolled machines (no per-repo scoping set)"}.get(reason, reason)
             print(f"  scope:      ORG-MANAGED — {why}")
             print(f"  org:        {ident.get('org_name') or ident.get('org_id')}")
@@ -863,16 +864,27 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "semantic-check":
         text = args.text
         if not text:
+            # Only fall back to stdin when something is actually piped in.
+            # On an interactive terminal `sys.stdin.read()` blocks forever, so
+            # a bare `prismor semantic-check` (or an empty-string argument)
+            # would hang with no prompt and no hint. Fail fast with usage.
+            if sys.stdin.isatty():
+                sys.stderr.write(
+                    "error: no text provided\n"
+                    "  pass it as an argument:  prismor semantic-check \"<text>\"\n"
+                    "  or pipe it via stdin:     echo \"<text>\" | prismor semantic-check\n"
+                )
+                raise SystemExit(1)
             text = sys.stdin.read()
         if not text or not text.strip():
-            sys.stderr.write("error: no text provided (pass as argument or pipe via stdin)\n")
+            sys.stderr.write("error: no text provided (pass as an argument or pipe via stdin)\n")
             raise SystemExit(1)
 
         mode = args.mode
         cli_path = getattr(args, "cli_path", None)
         if mode == "hybrid":
             from prismor.runtime.semantic_guard_v2 import SemanticGuardV2
-            guard = SemanticGuardV2(cli_path=cli_path)
+            guard = SemanticGuardV2(cli_path=cli_path, model=args.model)
             result = guard.analyze(text)
             payload = {
                 "mode": guard.mode,
@@ -883,7 +895,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             }
         else:
             from prismor.runtime.semantic_guard import SemanticGuard
-            guard = SemanticGuard(force_heuristic=(mode == "heuristic"))
+            guard = SemanticGuard(model=args.model, force_heuristic=(mode == "heuristic"))
             payload = {"mode": guard.mode, "final": guard.analyze(text).to_dict()}
 
         if args.json:
@@ -2255,9 +2267,18 @@ def main(argv: Optional[List[str]] = None) -> None:
             print()
             print(f"  {_color('CLOAKING', _BOLD)}")
             print(f"  {_color('─' * 50, _DIM)}")
-            # Claude Code cloaking status
-            result = cloak_status(workspace=workspace, scope=args.scope)
+            # Claude Code cloaking status. With no explicit --scope, report the
+            # scope the hooks actually live in: `prismor setup` with global scope
+            # writes them to ~/.claude, and a project-only lookup called that
+            # "not installed" while `prismor status` said the opposite.
+            scopes = [args.scope] if args.scope else ["project", "user"]
+            for _sc in scopes:
+                result = cloak_status(workspace=workspace, scope=_sc)
+                if result["installed"]:
+                    break
             state = "installed" if result["installed"] else "not installed"
+            if result["installed"] and not args.scope:
+                state += " (project)" if _sc == "project" else " (global)"
             installed_color = _GREEN if result["installed"] else _YELLOW
             print(f"  {_color('Claude Code:', _GREEN)} {_color(state, installed_color)}")
             if result.get("configPath"):
@@ -2265,7 +2286,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             if result.get("events"):
                 print(f"  {_color('Events:', _GREEN)}    {', '.join(result['events'])}")
             # Hermes Agent cloaking status
-            h_result = hermes_status(workspace=workspace, scope=args.scope)
+            h_result = hermes_status(workspace=workspace, scope=args.scope or "project")
             h_state = "installed" if h_result["installed"] else "not installed"
             h_color = _GREEN if h_result["installed"] else _YELLOW
             print(f"  {_color('Hermes Agent:', _GREEN)} {_color(h_state, h_color)}")
@@ -2954,6 +2975,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analysis mode: hybrid (heuristic + local LLM), heuristic-only, or API",
     )
     sem_parser.add_argument("--cli-path", help="Override the path to the Claude CLI subagent")
+    sem_parser.add_argument(
+        "--model",
+        default="",
+        help="litellm model id for the LLM layer (any provider); default $PRISMOR_SEMANTIC_MODEL",
+    )
     sem_parser.add_argument("--json", action="store_true", help="Emit raw JSON output")
 
     # ── scan ──────────────────────────────────────────────────────────
@@ -3229,7 +3255,7 @@ def build_parser() -> argparse.ArgumentParser:
                            "(e.g. --upstream 'npx -y @modelcontextprotocol/server-github')")
     gw_parser.add_argument("--server", action="append",
                            help="Inline upstream as name=<url|command> (repeatable)")
-    gw_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe",
+    gw_parser.add_argument("--mode", choices=["observe", "enforce"], default=None,
                            help="observe=log only (default), enforce=block policy violations")
     gw_parser.add_argument("--workspace", help="Workspace path for policy + session store")
     gw_parser.add_argument("--session-id", dest="session_id", default="",
@@ -3557,8 +3583,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     t_status = cloak_sub.add_parser("status", help="Show whether cloaking hooks are installed")
     t_status.add_argument("--workspace", help="Workspace path")
-    t_status.add_argument("--scope", choices=["project", "user", "global"], default="project",
-                          help="Hook scope (default: project)")
+    t_status.add_argument("--scope", choices=["project", "user", "global"], default=None,
+                          help="Hook scope (default: whichever scope the hooks are installed in)")
 
     t_run = cloak_sub.add_parser(
         "run",
@@ -5827,10 +5853,6 @@ def format_tokens(payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    main()
-
-
 def _print_surfaces(workspace: Path) -> None:
     """Which enforcement surfaces are governing this machine, and which could be.
 
@@ -5887,3 +5909,12 @@ def _print_surfaces(workspace: Path) -> None:
     print(_color("  prismor mcp-gateway --help    front your MCP servers", _DIM))
     print(_color("  docs/governance-surfaces.md   which surface to use per agent", _DIM))
     print()
+
+
+# Must stay the LAST statement in this module. `python -m prismor.runtime.cli`
+# executes the file top to bottom, so anything defined below this line does not
+# exist yet when main() dispatches to it — which is how `prismor surfaces`
+# came to work through the console script and die with a NameError under
+# `python -m`. test_cli_main_guard_is_last keeps it here.
+if __name__ == "__main__":
+    main()

@@ -87,10 +87,10 @@ class TestHybridGuardThresholds(unittest.TestCase):
 class TestPolicyEngineIntegration(unittest.TestCase):
     """Semantic layer is off by default; enabling it produces findings."""
 
-    def test_disabled_by_default(self):
+    def test_enabled_by_default(self):
         engine = PolicyEngine()
         self.assertIn("enabled", engine.semantic_guard_config)
-        self.assertFalse(engine.semantic_guard_config.get("enabled"))
+        self.assertTrue(engine.semantic_guard_config.get("enabled"))
 
     def test_default_semantic_block_category_registered(self):
         engine = PolicyEngine()

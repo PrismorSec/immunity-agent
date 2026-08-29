@@ -17,6 +17,7 @@ import json
 import re
 import shlex
 import tomllib
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -221,7 +222,27 @@ def _claude_skill_files(workspace: Path) -> List[Path]:
     for root in (home / ".claude" / "skills", workspace / ".claude" / "skills"):
         if root.is_dir():
             found.extend(sorted(root.glob("*/SKILL.md")))
+    # `prismor setup` installs Prismor's own skill; scanning it made a fresh
+    # install report itself as a CRITICAL "skill injects shell commands"
+    # finding, because the skill documents the very commands and credential
+    # paths the rules look for. Skip it while it is byte-identical to the
+    # bundled copy — an edited one is a third-party skill again and is scanned.
+    ours = _bundled_skill_digest()
+    if ours:
+        found = [p for p in found if _digest(p) != ours]
     return found
+
+
+def _digest(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _bundled_skill_digest() -> Optional[str]:
+    return _digest(Path(__file__).parent / "data" / "SKILL.md")
 
 
 def _cursor_configs(workspace: Path) -> List[Path]:

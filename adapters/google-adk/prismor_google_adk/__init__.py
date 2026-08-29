@@ -18,7 +18,12 @@ Easy path::
     agent = LlmAgent(
         model="gemini-2.0-flash", name="ops", tools=[run_shell],
         before_tool_callback=make_before_tool_callback(subject="user:alice", mode="enforce"),
+        after_tool_callback=make_after_tool_callback(),
     )
+
+The after-callback is the result side of the same gate: ADK hands it
+``tool_response`` and a dict return REPLACES it, so a credential sitting in
+an otherwise-allowed tool's output is masked before the model reads it.
 """
 from __future__ import annotations
 
@@ -28,9 +33,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
 
-__all__ = ["make_before_tool_callback", "PrismorBlocked"]
+__all__ = ["make_before_tool_callback", "make_after_tool_callback", "PrismorBlocked"]
 
 _TYPE_FIELD = {
     "shell": "command",
@@ -98,5 +104,29 @@ def make_before_tool_callback(
             # not an exception.
             return {"error": f"⛔ Prismor blocked this tool call: {reason}"}
         return None  # None -> proceed with the real tool call
+
+    return callback
+
+
+def make_after_tool_callback(
+    *,
+    workspace: Optional[Union[str, Path]] = None,
+) -> Callable[[Any, Dict[str, Any], Any, Any], Optional[Any]]:
+    """Build a Prismor after_tool_callback that redacts the tool's OUTPUT.
+
+    ``before_tool_callback`` sees only the request. This one is handed the
+    tool's response, and a non-``None`` return REPLACES it — ADK's own
+    substitution mechanism, the same one the before-callback denies through.
+    Best-effort by contract: it never raises, so a masking failure can never
+    turn into a failed tool call.
+    """
+    ws = Path(workspace) if workspace else Path.cwd()
+
+    def callback(tool: Any, args: Dict[str, Any], tool_context: Any,
+                 tool_response: Any) -> Optional[Any]:
+        redacted = redact_tool_result(tool_response, workspace=ws)
+        # None -> ADK keeps the original response (which, for a result object
+        # redacted in place, is already the masked one).
+        return redacted if redacted != tool_response else None
 
     return callback

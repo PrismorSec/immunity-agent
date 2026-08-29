@@ -16,6 +16,11 @@ checked carefully rather than assumed, after finding a *different*
 framework's documented "before execution" hook did NOT actually block in
 practice — see the Mastra adapter's notes.)
 
+RESULT REDACTION: not available here. The other adapters wrap the tool's
+entrypoint and so hold its return value; this one attaches a listener to a
+"start" event and never sees the output, so a credential in an allowed tool's
+result is out of reach on this surface (see contract.SURFACES["sdk-adapter"]).
+
 Easy path::
 
     from prismor.beeai import guard_tool
