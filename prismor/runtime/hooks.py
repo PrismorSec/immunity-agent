@@ -377,6 +377,52 @@ def _strip_prismor_scrub_wrapper(cmd: str) -> str:
     return inner or cmd
 
 
+# Post-tool payloads carry what the tool actually returned - the file body, the
+# command output, the fetched page. The per-tool normalizers keep only the
+# arguments (a Read becomes `{type: file_read, path}`), so the content layers -
+# the injection rules and the semantic guard - saw nothing on exactly the events
+# where untrusted text enters the session. Attach it once here, for every agent,
+# instead of in each of the fifteen normalizers.
+_RESULT_KEYS = ("tool_response", "toolResult", "tool_result", "response", "output", "result")
+_RESULT_LIMIT = 8000
+
+
+def _result_text(value: Any) -> str:
+    """Best-effort text of a tool result, whatever shape the agent sent."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        # Claude nests a file read one level down: {"file": {"content": ...}}.
+        for candidate in (value, *(v for v in value.values() if isinstance(v, dict))):
+            for key in ("content", "text", "stdout", "output"):
+                inner = candidate.get(key)
+                if isinstance(inner, str) and inner.strip():
+                    extra = candidate.get("stderr") if key == "stdout" else None
+                    return inner + ("\n" + extra if isinstance(extra, str) and extra else "")
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _attach_tool_result(event: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Copy the tool's own output onto the event as ``response``, truncated.
+
+    Pre-tool payloads carry no result, so this is a no-op there, and a
+    normalizer that already set ``response`` (tool_result events) keeps its own.
+    """
+    if event.get("response"):
+        return
+    for key in _RESULT_KEYS:
+        if key in payload:
+            text = _result_text(payload[key]).strip()
+            if text:
+                event["response"] = text[:_RESULT_LIMIT]
+            return
+
+
 def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -> Dict[str, Any]:
     session_id = (
         payload.get("session_id")
@@ -422,6 +468,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_cursor(payload, session_id)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
         event["command"] = _strip_prismor_scrub_wrapper(event["command"])
+    if isinstance(event, dict):
+        _attach_tool_result(event, payload)
     # Which enforcement point saw this call. One agent can be governed by more
     # than one surface at a time (hooks plus the mirror), and without this the
     # telemetry cannot say which of them actually made the decision.

@@ -24,6 +24,10 @@ flowchart TD
 The LLM is only called for the uncertain zone — roughly 1–2% of events in
 production workloads. The rest is handled in under a millisecond.
 
+"Any event" includes what a tool hands back: on a post-tool hook the file body,
+command output, or fetched page is screened alongside the arguments, which is
+where injected text usually arrives.
+
 ## Attack Families Detected
 
 The heuristic layer covers:
@@ -59,19 +63,26 @@ claude --version               # confirms it works
 Not using Claude Code? Point the LLM layer at any provider instead — see
 [Any agent, any model](#any-agent-any-model) below.
 
-### Step 2 — Enable per workspace
+### Step 2 — Point it at a model (optional)
 
-Create or edit `.prismor/policy.yaml` in your project root:
+The guard is on by default in `auto` mode: the heuristic pre-screen runs on every
+event, and the uncertain zone escalates to whatever model you configure. With no
+model configured you get the heuristic layer alone.
 
 ```yaml
 # .prismor/policy.yaml
 settings:
   semantic_guard:
-    enabled: true
+    model: claude-haiku-4-5-20251001   # or gpt-4o-mini, ollama/llama3, …
 ```
 
-That's it. The rest of the defaults are sensible out of the box. Reinstall hooks
-if already running:
+Keep that model small. It runs per uncertain event on the hook path, so a
+frontier model here costs latency on tool calls that a classifier does not need.
+
+To use the local Claude Code CLI as the subagent instead of an API, set
+`mode: hybrid`. It is an explicit opt-in because spawning a Claude Code process
+takes seconds, against a few hundred milliseconds for the same verdict over an
+API. Reinstall hooks if already running:
 
 ```bash
 prismor install-hooks --agent all --mode enforce
@@ -100,11 +111,13 @@ All fields are optional — the defaults are shown below.
 ```yaml
 settings:
   semantic_guard:
-    enabled: false          # must be set to true to activate
+    enabled: true           # set false to turn the layer off for a workspace
 
-    mode: hybrid            # hybrid | heuristic | api
-                            #   hybrid     — heuristic pre-screen; uncertain zone goes to the
-                            #                local Claude CLI if present, else to `model` (recommended)
+    mode: auto              # auto | hybrid | heuristic | api
+                            #   auto       — heuristic pre-screen; uncertain zone goes to
+                            #                `model`. Never spawns a process (default)
+                            #   hybrid     — same, but prefers the local Claude CLI as the
+                            #                subagent when one is installed
                             #   heuristic  — regex signals only, no LLM, <1 ms
                             #   api        — every event goes to `model` (no pre-screen)
 
@@ -127,7 +140,8 @@ settings:
 | Mode | Speed | Accuracy | Requires |
 |---|---|---|---|
 | `heuristic` | <1 ms | Regex patterns only | Nothing |
-| `hybrid` | <1 ms + ~0.5–2 s when uncertain | Best overall | Claude Code CLI **or** any litellm model |
+| `auto` | <1 ms + one API call when uncertain | Best overall | Any litellm model |
+| `hybrid` | <1 ms + a Claude Code startup when uncertain | Best overall | Claude Code CLI **or** any litellm model |
 | `api` | ~300–500 ms always | High | `pip install "prismor[semantic]"` + a provider key |
 
 Use `heuristic` in latency-critical CI pipelines. Use `hybrid` everywhere else.
@@ -263,7 +277,13 @@ sinks, session taint tracking, and `prismor status`.
 
 ## Troubleshooting
 
-**Guard shows `heuristic_only` instead of `hybrid_local_llm`**
+**Guard shows `heuristic_only` instead of `hybrid_api`**
+
+No model is configured and no provider key was found. Set
+`settings.semantic_guard.model`, or `$PRISMOR_SEMANTIC_MODEL`, or a provider key
+(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`).
+
+**Guard shows `heuristic_only` instead of `hybrid_local_llm` in `mode: hybrid`**
 
 The Claude CLI was not found. Check:
 

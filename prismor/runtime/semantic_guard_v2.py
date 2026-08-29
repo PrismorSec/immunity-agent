@@ -110,6 +110,12 @@ def _default_claude_cli() -> str:
 
 CLAUDE_CLI = _default_claude_cli()
 
+# The CLI subagent otherwise runs on whatever model the host defaults to, which
+# on a Max account is a frontier model doing a one-token classification. Pinned
+# to a small one; `settings.semantic_guard.model` overrides it when it names a
+# Claude id (a litellm id like `ollama/llama3` means nothing to `claude --model`).
+CLI_MODEL = "claude-haiku-4-5-20251001"
+
 _PRISMOR_CONTEXT = """\
 You are the Semantic Security Evaluator for Prismor, an AI agent runtime security monitor.
 
@@ -182,6 +188,7 @@ def _llm_analyze(
     heuristic_signals: List[str],
     cli: str = "",
     model: str = "",
+    allow_cli: bool = True,
 ) -> SemanticRisk:
     """Semantic subagent for the uncertain zone.
 
@@ -197,7 +204,7 @@ def _llm_analyze(
         f"Text to evaluate:\n\n{text[:3000]}"
     )
     cli = cli or CLAUDE_CLI
-    if not os.path.exists(cli):
+    if not allow_cli or not os.path.exists(cli):
         from prismor.runtime.semantic_guard import _api_analyze
         return _api_analyze(text, model, system=_PRISMOR_CONTEXT, user=prompt)
 
@@ -218,10 +225,15 @@ def _llm_analyze(
         # kill the whole process group rather than just the direct child.
         proc = subprocess.Popen(
             [cli, "-p", prompt, "--output-format", "text",
+             "--model", model if model.startswith("claude") else CLI_MODEL,
              "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=tempfile.gettempdir(), start_new_session=True,
-            env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1"},
+            # The subagent's own prompt is the attack text, and its own
+            # Prismor hooks screen it: without this marker the evaluator
+            # escalates, and so does the evaluator's evaluator.
+            env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1",
+                 "PRISMOR_SEMANTIC_SUBAGENT": "1"},
         )
         try:
             stdout, _ = proc.communicate(timeout=30)
@@ -284,10 +296,21 @@ class SemanticGuardV2:
       5. Merge: take higher risk_score of heuristic + LLM
     """
 
-    def __init__(self, cli_path: Optional[str] = None, model: str = "") -> None:
+    def __init__(
+        self,
+        cli_path: Optional[str] = None,
+        model: str = "",
+        allow_cli: bool = True,
+    ) -> None:
         from prismor.runtime.semantic_guard import _LLM_FN, default_model
         self._cli = cli_path or CLAUDE_CLI
-        self._cli_available = os.path.exists(self._cli)
+        # A CLI escalation spawns a whole Claude Code process. Measured on an
+        # idle Ubuntu host, pinned to Haiku, MCP already disabled: 22s, against
+        # 0.4s for the same verdict over the API. Callers on the hook path pass
+        # allow_cli=False so a host with no model configured degrades to
+        # heuristic-only instead of stalling the agent on every escalation.
+        self._allow_cli = allow_cli
+        self._cli_available = allow_cli and os.path.exists(self._cli)
         self._model = model or default_model()
         self._api_available = bool(self._model) or _LLM_FN is not None
 
@@ -321,7 +344,10 @@ class SemanticGuardV2:
             return HybridRisk(h, None, h, False)
 
         # Step 4: uncertain zone — escalate to local LLM
-        llm = _llm_analyze(text, effective_score, h.signals, cli=self._cli, model=self._model)
+        llm = _llm_analyze(
+            text, effective_score, h.signals,
+            cli=self._cli, model=self._model, allow_cli=self._allow_cli,
+        )
 
         # Step 5: merge — take higher risk_score, prefer LLM category/reason
         if llm.risk_score >= h.risk_score:

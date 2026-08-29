@@ -273,13 +273,20 @@ settings:
   # MITRE-ATLAS, nested-file injection): F1 0.697 -> 0.822, semantic-attack
   # recall 8% -> 72%, LLM invoked on 1.8% of events.
   semantic_guard:
-    enabled: false           # opt-in; set true in project policy to activate
-    mode: hybrid             # one of: heuristic | hybrid | api
+    enabled: true            # heuristic pre-screen on every screened event
+    mode: auto               # one of: auto | heuristic | hybrid | api
+                             # auto  -> uncertain zone escalates to `model` over
+                             #          the API (~0.4s); heuristic-only when no
+                             #          model is configured.
+                             # hybrid-> also allows the local claude CLI as the
+                             #          subagent. Same verdict, ~22s per call,
+                             #          so it is an explicit opt-in.
     cli_path: ""             # override path to claude CLI; "" auto-discovers
     model: ""                # litellm model id for the LLM layer when no claude CLI
                              # (or mode: api), e.g. gpt-4o-mini, ollama/llama3,
                              # gemini/gemini-2.0-flash. "" -> $PRISMOR_SEMANTIC_MODEL,
                              # else picked from whichever provider key is set.
+                             # Keep it small: this runs per uncertain event.
     low_threshold: 0.30      # heuristic < this  -> allow without LLM
     high_threshold: 0.75     # heuristic >= this -> block without LLM
     warn_threshold: 0.45     # final score >= this & < block_threshold -> warn
