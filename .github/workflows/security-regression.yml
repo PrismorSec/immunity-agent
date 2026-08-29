@@ -61,6 +61,8 @@ jobs:
           python -m build --wheel --outdir dist
           python -m pip install --quiet (Get-ChildItem dist/*.whl).FullName
       - name: prismor setup end to end
+        env:
+          PRISMOR_NO_UPDATE_CHECK: "1"
         run: |
           # pwsh 7.4 turns any non-zero native exit code into a terminating
           # error under the runner's $ErrorActionPreference='Stop', so a
@@ -75,3 +77,6 @@ jobs:
           $code = $LASTEXITCODE
           Write-Host "check exit: $code"
           if ($code -ne 2) { throw "expected the destructive-command block (exit 2), got $code" }
+          # The runner appends `exit $LASTEXITCODE` to every pwsh step, so the
+          # blocked check's own exit 2 would fail the step it just satisfied.
+          exit 0
