@@ -1,5 +1,25 @@
 ## [Unreleased]
 
+### Added
+- **`type: otel` telemetry sink** — findings export over OTLP/HTTP to any
+  OpenTelemetry collector, so Prismor's decisions land in the observability
+  stack a team already runs (Grafana, Honeycomb, Datadog, an OTel-fed SIEM)
+  without Prismor knowing which one is downstream. Emitted as *logs*, not
+  spans: a finding is a point-in-time detection, not a unit of work with a
+  duration. Every field the generic event carries — including runtime extras
+  like `agent`, `mode` and `subject` — becomes a `prismor.*` log attribute, so
+  the sink does not need updating when the event grows a field. No new
+  dependency: OTLP/JSON is a POST, built with the same stdlib `urllib` as the
+  webhook and Splunk sinks, and it inherits their best-effort dispatch, so a
+  collector that is down warns on stderr and never blocks a tool call.
+
+  ```yaml
+  outputs:
+    - type: otel
+      endpoint: http://localhost:4318        # /v1/logs appended if absent
+      headers: { "Authorization": "Bearer ${OTEL_TOKEN}" }
+  ```
+
 ## [1.44.0] — 2026-08-27
 
 ### Added

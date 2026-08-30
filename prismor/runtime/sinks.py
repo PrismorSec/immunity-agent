@@ -20,6 +20,9 @@ Supported sink types (configured under ``settings.outputs`` in policy.yaml):
     - type: datadog            # Datadog Logs intake (OCSF body)
       api_key: ${DD_API_KEY}
       site: datadoghq.com
+    - type: otel               # OpenTelemetry collector (OTLP/HTTP logs)
+      endpoint: http://localhost:4318   # base URL; the sink appends /v1/logs
+      headers: { "Authorization": "Bearer ${OTEL_TOKEN}" }
     - type: prismor              # first-party control-plane sink
       # No config needed — the device key + endpoint come from the enrolled
       # identity at ~/.prismor/identity.json (see `prismor enroll`). Sends a
@@ -198,6 +201,85 @@ def _dispatch_datadog(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     req.add_header("User-Agent", _http_user_agent())
     with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
         resp.read(16)
+
+
+# OTLP severity numbers (spec): 9 INFO, 13 WARN, 17 ERROR, 21 FATAL.
+_OTLP_SEVERITY = {"CRITICAL": 21, "HIGH": 17, "MEDIUM": 13, "LOW": 9}
+
+
+def _otlp_attr(key: str, value: Any) -> Dict[str, Any]:
+    """One OTLP KeyValue. Everything is stringified — findings carry free-form
+    evidence and nested subjects, and a collector must never reject the batch
+    over a type mismatch."""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value)
+    return {"key": key, "value": {"stringValue": str(value)}}
+
+
+def _format_otlp_logs(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a Prismor finding event to an OTLP/JSON ExportLogsServiceRequest.
+
+    Logs, not spans: a finding is a point-in-time detection, not a unit of work
+    with a duration. Any OTel collector fans this out to Grafana, Datadog,
+    Honeycomb and friends without Prismor knowing which one is downstream.
+    """
+    sev_name = str(event.get("severity", "LOW")).upper()
+    try:
+        ts = datetime.fromisoformat(str(event.get("@timestamp", "")).replace("Z", "+00:00"))
+    except ValueError:
+        ts = datetime.now(timezone.utc)
+
+    # Everything _build_event and its `extra` produced, minus the fields already
+    # carried by dedicated log-record/resource slots, becomes an attribute — so
+    # runtime extras (agent, mode, workspace, subject) ride along untouched.
+    skip = {"@timestamp", "severity", "title", "source", "hostname"}
+    attributes = [
+        _otlp_attr(f"prismor.{k}", v)
+        for k, v in event.items()
+        if k not in skip and v is not None
+    ]
+
+    return {
+        "resourceLogs": [{
+            "resource": {"attributes": [
+                _otlp_attr("service.name", "prismor"),
+                _otlp_attr("host.name", event.get("hostname") or _hostname()),
+            ]},
+            "scopeLogs": [{
+                "scope": {"name": "prismor.runtime.sinks"},
+                "logRecords": [{
+                    "timeUnixNano": str(int(ts.timestamp() * 1_000_000_000)),
+                    "severityNumber": _OTLP_SEVERITY.get(sev_name, 9),
+                    "severityText": sev_name,
+                    "body": {"stringValue": event.get("title") or event.get("evidence") or "Prismor finding"},
+                    "attributes": attributes,
+                }],
+            }],
+        }],
+    }
+
+
+def _dispatch_otel(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """OTLP/HTTP logs exporter. Config: endpoint (base URL, /v1/logs appended
+    unless already present), [headers], [timeout_seconds]."""
+    import urllib.request
+
+    endpoint = cfg.get("endpoint") or cfg.get("url")
+    if not endpoint:
+        return
+    url = str(endpoint).rstrip("/")
+    if not url.endswith("/v1/logs"):
+        url = f"{url}/v1/logs"
+    headers = {"Content-Type": "application/json"}
+    extra_headers = cfg.get("headers") or {}
+    if isinstance(extra_headers, dict):
+        for k, v in extra_headers.items():
+            headers[str(k)] = str(v)
+    data = json.dumps(_format_otlp_logs(event)).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
+        resp.read(16)  # drain
 
 
 def _format_cef(event: Dict[str, Any]) -> str:
@@ -432,6 +514,7 @@ _DISPATCHERS = {
     "file": _dispatch_file,
     "splunk": _dispatch_splunk_hec,
     "datadog": _dispatch_datadog,
+    "otel": _dispatch_otel,
 }
 
 
