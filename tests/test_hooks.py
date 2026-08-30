@@ -146,6 +146,47 @@ class TestLegacyEnforceBridge(unittest.TestCase):
         self.assertIsNotNone(legacy_should_block(
             [{"category": "secret_access"}], event, self.CATS))
 
+    def test_reporting_action_is_not_blocked(self):
+        """warn/log are reports, not verdicts — even inside a block category."""
+        event = {"agent_event": "PreToolUse", "type": "shell"}
+        for action in ("warn", "log"):
+            self.assertIsNone(legacy_should_block(
+                [{"category": "destructive_command", "action": action}], event, self.CATS),
+                f"action: {action} should not block")
+
+    def test_verdict_actions_still_block(self):
+        """Every real verdict keeps blocking; absent action still defaults to block."""
+        event = {"agent_event": "PreToolUse", "type": "shell"}
+        for action in ("block", "step_up", "defer", "modify"):
+            self.assertIsNotNone(legacy_should_block(
+                [{"category": "destructive_command", "action": action}], event, self.CATS),
+                f"action: {action} must still block")
+        self.assertIsNotNone(legacy_should_block(
+            [{"category": "destructive_command"}], event, self.CATS))
+
+    def test_warn_finding_does_not_mask_a_later_block(self):
+        """A warn finding is skipped, not treated as the decision for the event."""
+        event = {"agent_event": "PreToolUse", "type": "shell"}
+        findings = [
+            {"category": "destructive_command", "action": "warn"},
+            {"category": "secret_exfiltration", "action": "block"},
+        ]
+        blocking = legacy_should_block(findings, event, self.CATS)
+        self.assertIsNotNone(blocking)
+        self.assertEqual(blocking["category"], "secret_exfiltration")
+
+    def test_shipped_warn_rule_does_not_block_under_the_bridge(self):
+        """End-to-end: the bundled policy is legacy, and its action: warn rules
+        must not hard-block when installed --mode enforce."""
+        from prismor.runtime.policy_engine import PolicyEngine
+        engine = PolicyEngine()
+        self.assertTrue(engine.is_legacy_policy)
+        event = {"agent_event": "PreToolUse", "type": "shell",
+                 "command": "npm install -g typescript", "tool": "Bash"}
+        findings = engine.evaluate(event, 0)
+        self.assertTrue(any(f.get("ruleId") == "pkg-install-global" for f in findings))
+        self.assertIsNone(legacy_should_block(findings, event, engine.block_categories))
+
 
 class TestIsLegacyPolicy(unittest.TestCase):
     """PolicyEngine.is_legacy_policy gates the enforce bridge."""

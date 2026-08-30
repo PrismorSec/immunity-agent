@@ -545,13 +545,22 @@ def legacy_should_block(
     semantics: on a pre-action event, block a finding whose category is in the
     policy's ``block_categories`` — with the same read carve-out as the modern
     path. Only invoked by cli.py when installed with ``--mode enforce``.
+
+    A rule that declares a reporting action (``warn``/``log``) is honored as a
+    report even inside a blocking category, mirroring the carve-out
+    ``PolicyEngine._resolve_mode`` already applies on the modern path. Without
+    it a warn-intended rule hard-blocks purely because of the company its
+    category keeps.
     """
+    from prismor.runtime.contract import BLOCK, VERDICTS
     if not block_categories:
         return None
     if not _is_pre_action(str(event.get("agent_event", ""))):
         return None
     for finding in findings:
         if finding.get("contextInert"):
+            continue
+        if str(finding.get("action") or BLOCK).lower() not in VERDICTS:
             continue
         if finding.get("category") in block_categories:
             if (
