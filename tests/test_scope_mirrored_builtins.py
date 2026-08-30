@@ -148,6 +148,63 @@ def test_gateway_fronted_servers_get_their_own_families(tmp_path):
     assert "mcp__prismor-tools__*" in fams
 
 
+def test_mirror_is_not_expanded_when_a_gateway_config_exists(tmp_path, monkeypatch):
+    """A mirror entry carries no --config, so the upstream lookup falls back to
+    ~/.prismor/mcp-gateway.json. On any machine that also runs the gateway that
+    file exists, and expanding the mirror against it replaced
+    ``mcp__prismor-tools__*`` with families the mirror does not serve — leaving
+    every mirrored built-in matching no family, i.e. denied by omission.
+
+    The test above only caught this where a real gateway config happened to be
+    present, so it passed in CI and failed on a developer box. Force the
+    condition with a fake HOME instead.
+    """
+    import json as _json
+    from prismor.runtime.scoped_agent import discover_mcp_families
+
+    home = tmp_path / "home"
+    (home / ".prismor").mkdir(parents=True)
+    (home / ".prismor" / "mcp-gateway.json").write_text(
+        _json.dumps({"mcpServers": {"cfdocs": {}, "mslearn": {}}}))
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / ".mcp.json").write_text(_json.dumps({"mcpServers": {
+        "prismor-tools": {"command": "python3",
+                          "args": ["-m", "x", "mcp-gateway", "--mirror"]},
+    }}))
+
+    fams = discover_mcp_families(ws)
+    assert "mcp__prismor-tools__*" in fams
+    # It must not inherit the gateway's upstreams, which it does not front.
+    assert "mcp__prismor-tools__cfdocs__*" not in fams
+    assert "mcp__prismor-tools__mslearn__*" not in fams
+
+
+def test_gateway_without_config_still_expands_against_the_default(tmp_path, monkeypatch):
+    """The --config fallback is load-bearing for a real gateway entry; only the
+    mirror is exempt. Guards against fixing the mirror by breaking the default."""
+    import json as _json
+    from prismor.runtime.scoped_agent import discover_mcp_families
+
+    home = tmp_path / "home"
+    (home / ".prismor").mkdir(parents=True)
+    (home / ".prismor" / "mcp-gateway.json").write_text(
+        _json.dumps({"mcpServers": {"cfdocs": {}}}))
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / ".mcp.json").write_text(_json.dumps({"mcpServers": {
+        "prismor": {"command": "prismor", "args": ["mcp-gateway", "--mode", "enforce"]},
+    }}))
+
+    fams = discover_mcp_families(ws)
+    assert "mcp__prismor__cfdocs__*" in fams
+    assert "mcp__prismor__*" not in fams
+
+
 def test_gateway_family_token_matches_the_fronted_server_name(tmp_path):
     from prismor.runtime.scoped_agent import _mcp_family_tokens
     assert "filesystem" in _mcp_family_tokens("mcp__prismor__filesystem__*")

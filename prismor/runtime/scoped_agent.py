@@ -159,12 +159,19 @@ def _gateway_upstreams(entry, home):
     aggregates every upstream under ONE server name, so scoping must see
     through it to the upstreams -- otherwise the only family is
     ``mcp__<gateway>__*`` and no task prompt ever names it, so every gatewayed
-    MCP tool is denied by omission."""
+    MCP tool is denied by omission.
+
+    ``--mirror`` is not a fan-out point: it serves the agent's own built-ins
+    under one family and fronts nothing, so it keeps ``mcp__<mirror>__*``.
+    Expanding it would replace that family with upstreams it does not serve,
+    leaving the mirrored built-ins matching no family at all — denied by
+    omission, which is the failure this function exists to prevent. Same guard
+    as ``_gateway_inner_servers``."""
     if not isinstance(entry, dict):
         return None
     args = entry.get("args") or []
     argv = " ".join(str(a) for a in args)
-    if "mcp-gateway" not in argv:
+    if "mcp-gateway" not in argv or "--mirror" in args:
         return None
     cfg = None
     for i, a in enumerate(args):
