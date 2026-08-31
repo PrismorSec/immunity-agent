@@ -198,6 +198,12 @@ def build_record(
         # parent session. See hooks.py (_normalize_claude).
         "subagent_id": _subagent_id(event),
         "subagent_type": _subagent_type(event),
+        # The agent's own id for this tool call. One call produces several
+        # records (pre-call screening, post-call result screening), so the
+        # dashboard needs a key to fold them back into a single node instead
+        # of drawing the same command twice. Opaque agent-generated id, no
+        # user content — carried in redacted mode.
+        "tool_use_id": _tool_use_id(event),
         # Repo + policy scope so the org dashboard can show which repo an event
         # came from and whether it ran under an admin-granted exemption (vs full
         # org policy). Only managed/company repos report, so the repo identifier
@@ -267,6 +273,33 @@ def _tool_name(event: Dict[str, Any], extra: Dict[str, Any]) -> Optional[str]:
         return str(meta["tool_name"])
     # Fall back to the normalized event type as a coarse tool name.
     return str(event.get("type")) if event.get("type") else None
+
+
+# Field names different agents use for their per-tool-call id, in the raw hook
+# payload we pass through untouched.
+_TOOL_USE_ID_KEYS = ("tool_use_id", "toolUseId", "call_id", "callId", "tool_call_id", "toolCallId")
+
+
+def _tool_use_id(event: Dict[str, Any]) -> Optional[str]:
+    """The agent's id for the tool call this record is about, if it gave one.
+
+    Set directly on metadata by the inference-hook path; for hook agents it
+    lives in the raw payload (Claude's ``tool_use_id``, Codex's ``call_id``,
+    ...). Both the pre- and post-call record for one call carry the same id.
+    """
+    meta = event.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    sources = [meta]
+    raw = meta.get("raw")
+    if isinstance(raw, dict):
+        sources.append(raw)
+    for src in sources:
+        for key in _TOOL_USE_ID_KEYS:
+            val = src.get(key)
+            if val:
+                return str(val)[:120]
+    return None
 
 
 def _subagent_id(event: Dict[str, Any]) -> Optional[str]:

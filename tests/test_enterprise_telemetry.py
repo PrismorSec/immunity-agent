@@ -103,6 +103,28 @@ def test_record_carries_agent_instance_name():
     telemetry.assert_redacted(named)  # names are labels, never evidence
 
 
+def test_tool_use_id_pairs_pre_and_post_records():
+    # One tool call produces a pre-call and a post-call record. Both must carry
+    # the agent's own call id so the dashboard folds them into one node instead
+    # of drawing the same command twice.
+    pre = {"type": "shell", "command": "cat secrets.txt",
+           "agent_event": "PreToolUse",
+           "metadata": {"tool_name": "Bash",
+                        "raw": {"tool_use_id": "toolu_014sX7Bh", "tool_name": "Bash"}}}
+    post = {**pre, "agent_event": "PostToolUse"}
+    a = telemetry.build_record(SECRET_FINDING, pre, extra={})
+    b = telemetry.build_record(SECRET_FINDING, post, extra={})
+    assert a["tool_use_id"] == b["tool_use_id"] == "toolu_014sX7Bh"
+    # Codex-style call_id on the raw payload, and the inference-hook path which
+    # sets it on metadata directly.
+    codex = {"type": "shell", "metadata": {"raw": {"call_id": "call_7"}}}
+    assert telemetry.build_record(SECRET_FINDING, codex, extra={})["tool_use_id"] == "call_7"
+    inline = {"type": "shell", "metadata": {"tool_use_id": "t1"}}
+    assert telemetry.build_record(SECRET_FINDING, inline, extra={})["tool_use_id"] == "t1"
+    # Absent on agents that do not report one - never invented.
+    assert telemetry.build_record(SECRET_FINDING, SECRET_EVENT, extra={})["tool_use_id"] is None
+
+
 def test_evidence_hash_is_stable_and_distinct():
     a = telemetry.build_record(SECRET_FINDING, SECRET_EVENT, extra={})
     b = telemetry.build_record(SECRET_FINDING, SECRET_EVENT, extra={})
