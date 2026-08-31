@@ -2,6 +2,12 @@
 
 Full detail behind the three methods in the [README Quick Start](../README.md#quick-start), plus the less-common paths.
 
+| | Platform | Install | Notes |
+|---|---|---|---|
+| <img src="https://svgl.app/library/apple.svg" width="16" height="16" alt=""> | macOS | curl, pip, clone | everything supported |
+| <img src="https://svgl.app/library/linux.svg" width="16" height="16" alt=""> | Linux | curl, pip, clone | everything supported |
+| <img src="https://svgl.app/library/windows.svg" width="16" height="16" alt=""> | Windows | pip | hooks, policy and audit trail; [see below](#windows) |
+
 ## Curl
 
 ```bash
@@ -65,3 +71,39 @@ Prefer the interactive wizard? Drop the env vars:
 ```bash
 bash ~/.prismor/scripts/init.sh .
 ```
+
+## Windows
+
+<img src="https://svgl.app/library/windows.svg" width="16" height="16" alt=""> Install with pip and run the wizard — the curl installer and `init.sh` are
+shell scripts and are not the path here:
+
+```powershell
+pip install prismor
+prismor setup
+```
+
+CI runs `prismor setup` on `windows-latest`, and the enforcement path is
+verified end to end on Windows Server 2022 with Claude Code: setup exits 0, the
+hook fires in a real session, a floor rule blocks, and the audit trail is
+written and signed.
+
+What is different under the hood:
+
+- **Hooks run through a shim.** Agent configs store a hook as a *shell string*,
+  and the shell on Windows is `cmd.exe`, which has no `VAR=value cmd` syntax.
+  `prismor setup` writes `hook-dispatch.py` into `$PRISMOR_HOME` and registers
+  `"<python>" "<shim>" hook-dispatch ...` — the one command shape `sh` and
+  `cmd.exe` both accept. The shim does the `sys.path` fix-up the old
+  `PYTHONPATH` prefix did, so hooks survive a launcher that strips user
+  site-packages. If you edit hooks by hand, keep that shape: a broken hook
+  fails *open* (agents treat hook failure as non-blocking), which reads as
+  "installed" while screening nothing.
+- **Threat-feed signatures need the `cryptography` extra.** There is no
+  `openssl` to shell out to, so install `pip install "prismor[signing]"` — the
+  same extra that signs the [audit trail](audit-trail.md). Without it, setup
+  reports the verification as skipped rather than failed.
+
+Not yet on Windows:
+
+- **[Cloak](sweep-and-cloak.md)** — its hooks are bash scripts registered by
+  path, so `cmd.exe` cannot run them. Use it from WSL or Git Bash.

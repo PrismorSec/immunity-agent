@@ -142,6 +142,8 @@ tamper-evident JSON payload:
 
 Point it at a SIEM webhook, a Slack/PagerDuty bridge, or your own collector.
 Delivery is best-effort with a short timeout so it never blocks the hook path.
+To route *every* finding the same way, not just canary trips, see
+[Telemetry sinks](telemetry-sinks.md).
 
 ---
 

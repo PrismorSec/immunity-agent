@@ -36,6 +36,10 @@ Dashboard (AgentMonitoringView)   ← polls /api/telemetry/stats every 15s
 For this to be automatic, the **code the hook runs** must contain the cloud
 sink, and the machine must be **enrolled** (`prismor enroll <token>`).
 
+This page is about the first-party control-plane sink. To send the same
+findings to a SIEM or an OpenTelemetry collector instead of, or alongside, the
+console, see [Telemetry sinks](telemetry-sinks.md).
+
 ## Why it wasn't happening automatically
 
 Diagnosed on 2026-06-10. The dashboard was frozen at ~3h old because:
