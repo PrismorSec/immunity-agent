@@ -304,12 +304,12 @@ def test_on_approves_only_this_server_in_local_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(mirror_cli, "_preflight", lambda entry, timeout=25.0: (True, "Bash, Read"))
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "settings.local.json").write_text(
-        json.dumps({"enabledMcpjsonServers": ["some-other"], "permissions": {"allow": ["WebFetch"]}}))
+        json.dumps({"enabledMcpjsonServers": ["some-other"], "permissions": {"allow": ["WebSearch"]}}))
 
     assert mirror_cli.mirror_on(tmp_path) == 0
     local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     assert local["enabledMcpjsonServers"] == ["some-other", "prismor-tools"]
-    assert local["permissions"] == {"allow": ["WebFetch"]}, "unrelated local settings must survive"
+    assert local["permissions"] == {"allow": ["WebSearch"]}, "unrelated local settings must survive"
     # Never the blanket grant: that would auto-trust every server any repo declares.
     assert "enableAllProjectMcpServers" not in local
 
@@ -356,7 +356,7 @@ def test_existing_allow_posture_is_carried_onto_the_mirrored_names(tmp_path, mon
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     # User had Bash/Read allowed outright, Glob only for one pattern.
     (home / ".claude" / "settings.json").write_text(json.dumps(
-        {"permissions": {"allow": ["Bash", "Read", "Glob(src/**)", "WebFetch"]}}))
+        {"permissions": {"allow": ["Bash", "Read", "Glob(src/**)", "WebSearch"]}}))
     ws = tmp_path / "proj"; ws.mkdir()
 
     assert mirror_cli.mirror_on(ws) == 0
@@ -598,3 +598,110 @@ def test_opencode_is_the_highest_value_mirror_target():
     assert g["hooks"] is False
     assert g["recommended"] == "mirror"
     assert "opencode" in INSTALLABLE_AGENTS
+
+
+# -- Claude Desktop ----------------------------------------------------------
+
+def test_claude_desktop_round_trips_its_machine_config(tmp_path, monkeypatch):
+    """The desktop app has one machine-wide config and no trust gate, so `on`
+    is a single edit to mcpServers and `off` must undo exactly that, leaving
+    the user's unrelated preferences untouched."""
+    from prismor.runtime import mirror_cli
+    monkeypatch.setattr(mirror_cli, "_preflight", lambda entry, timeout=25.0: (True, "Bash, Read"))
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text(json.dumps({"preferences": {"dockBounceEnabled": True},
+                               "mcpServers": {"someone-elses": {"command": "x"}}}))
+    monkeypatch.setattr(mirror_cli, "_claude_desktop_config_path", lambda: cfg)
+    monkeypatch.setattr(mirror_cli, "_claude_desktop_record_path",
+                        lambda: tmp_path / "mirror-install-claude-desktop.json")
+
+    assert mirror_cli.mirror_on_claude_desktop(tmp_path) == 0
+    data = json.loads(cfg.read_text())
+    entry = data["mcpServers"]["prismor-tools"]
+    assert "--mirror" in entry["args"]
+    assert data["mcpServers"]["someone-elses"] == {"command": "x"}
+    assert data["preferences"] == {"dockBounceEnabled": True}, "unrelated config must survive"
+    assert (tmp_path / "claude_desktop_config.json.pre-mirror.bak").exists()
+
+    assert mirror_cli.mirror_off_claude_desktop(tmp_path) == 0
+    data = json.loads(cfg.read_text())
+    assert "prismor-tools" not in data["mcpServers"]
+    assert data["mcpServers"]["someone-elses"] == {"command": "x"}, "another server is not ours to remove"
+    assert data["preferences"] == {"dockBounceEnabled": True}
+
+
+def test_claude_desktop_off_without_an_install_changes_nothing(tmp_path, monkeypatch):
+    from prismor.runtime import mirror_cli
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text(json.dumps({"preferences": {}}))
+    monkeypatch.setattr(mirror_cli, "_claude_desktop_config_path", lambda: cfg)
+    monkeypatch.setattr(mirror_cli, "_claude_desktop_record_path",
+                        lambda: tmp_path / "nope.json")
+    assert mirror_cli.mirror_off_claude_desktop(tmp_path) == 0
+    assert json.loads(cfg.read_text()) == {"preferences": {}}
+
+
+def test_claude_desktop_is_installable():
+    from prismor.runtime.mirror_cli import INSTALLABLE_AGENTS
+    assert "claude-desktop" in INSTALLABLE_AGENTS
+
+
+# -- WebFetch ----------------------------------------------------------------
+
+def test_webfetch_is_screened_as_network_before_and_tool_result_after():
+    """The URL must reach the egress rules pre-call, and the fetched page must
+    reach the injection rules post-call — a page that arrives as a `network`
+    event skips the injection scan entirely."""
+    from prismor.runtime import mirror
+    assert "WebFetch" in mirror.mirror_tool_names()
+    pre = mirror.shape_call_event("WebFetch", {"url": "https://evil.test/x"})
+    assert pre == {"type": "network", "url": "https://evil.test/x"}
+    post = mirror.shape_result_event("WebFetch", {"url": "https://evil.test/x"}, "<!-- ignore -->")
+    assert post["type"] == "tool_result"
+    assert post["response"] == "<!-- ignore -->"
+    assert post["url"] == "https://evil.test/x"
+
+
+def test_webfetch_refuses_non_http_schemes(tmp_path):
+    """A mirrored tool runs with Prismor's filesystem access, so file:// would
+    turn a screened 'fetch' into an unscreened local read."""
+    from prismor.runtime import mirror
+    for url in ("file:///etc/passwd", "ftp://host/x", ""):
+        with pytest.raises(mirror.MirrorError):
+            mirror.execute("WebFetch", {"url": url}, tmp_path)
+
+
+def test_webfetch_converts_html_to_text(tmp_path, monkeypatch):
+    from prismor.runtime import mirror
+
+    class _Resp:
+        headers = type("H", (), {"get_content_type": lambda self: "text/html",
+                                 "get_content_charset": lambda self: "utf-8"})()
+
+        def read(self, n):
+            return (b"<html><head><style>p{color:red}</style></head><body>"
+                    b"<script>alert(1)</script><h1>Title</h1><p>Hello &amp; bye</p>"
+                    b"</body></html>")
+
+        def geturl(self):
+            return "https://example.test/page"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(mirror.urllib.request, "urlopen", lambda req, timeout=0: _Resp())
+    out = mirror.execute("WebFetch", {"url": "https://example.test/page"}, tmp_path)
+    assert "Title" in out and "Hello & bye" in out
+    assert "alert(1)" not in out and "color:red" not in out
+
+
+def test_opencode_native_webfetch_is_disabled_but_claude_code_keeps_its_own():
+    """OpenCode has no hooks, so its unwatched fetch must go. Claude Code's is
+    already hook-screened and summarises the page — replacing it would be a
+    downgrade."""
+    from prismor.runtime import mirror, mirror_cli
+    assert "webfetch" in mirror_cli._OPENCODE_NATIVE_TOOLS
+    assert "WebFetch" not in mirror.NATIVE_TOOLS_TO_DISABLE

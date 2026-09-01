@@ -113,7 +113,7 @@ server died).
 Hooks see a tool call before it runs, but they cannot hand the model a
 *redacted* file, and hostless agents have no hooks at all. With `--mirror` the
 gateway also serves Prismor-executed look-alikes of the agent's own
-`Bash` / `Read` / `Write` / `Edit` / `Glob` / `Grep` — same names, same
+`Bash` / `Read` / `Write` / `Edit` / `Glob` / `Grep` / `WebFetch` — same names, same
 schemas — so the tool executes inside Prismor: policy before, the real output
 redacted after, one telemetry event, reported under the native tool name so
 every rule and deny written against `Bash` keeps applying.

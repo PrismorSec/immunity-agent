@@ -53,7 +53,7 @@ from prismor.runtime import mirror
 #: about what has been verified by driving a real session, since a half-wired
 #: host leaves the agent with no tools at all. `prismor setup` reads this to
 #: decide which agents may be offered the mirror as a choice.
-INSTALLABLE_AGENTS: Tuple[str, ...] = ("claude", "codex", "opencode")
+INSTALLABLE_AGENTS: Tuple[str, ...] = ("claude", "codex", "opencode", "claude-desktop")
 
 # ── output helpers (match cli.py's ANSI style, no deps) ──────────────────────
 _RESET = "\033[0m"
@@ -530,6 +530,9 @@ def mirror_on(workspace: Path, *, mode: str = "enforce",
     if agent == "opencode":
         _announce_workspace(workspace)
         return mirror_on_opencode(workspace, mode=mode)
+    if agent == "claude-desktop":
+        _announce_workspace(workspace)
+        return mirror_on_claude_desktop(workspace, mode=mode)
     if agent not in INSTALLABLE_AGENTS:
         print(_c(f"prismor mirror on: agent '{agent}' is not wired yet.", _RED))
         print(_c(f"  Wired today: {', '.join(INSTALLABLE_AGENTS)}. For anything else, run "
@@ -677,6 +680,8 @@ def mirror_off(workspace: Path, *, agent: str = "claude") -> int:
     if agent == "opencode":
         _announce_workspace(workspace)
         return mirror_off_opencode(workspace)
+    if agent == "claude-desktop":
+        return mirror_off_claude_desktop(workspace)
     _announce_workspace(workspace)
     done = 0
     for sc in ("project",):
@@ -928,7 +933,12 @@ def mirror_off_codex(workspace: Path) -> int:
 # the agent's toolkit (OpenCode also derives a matching `permission: deny` from
 # it, visible in `opencode debug config`).
 
-_OPENCODE_NATIVE_TOOLS = ("bash", "read", "write", "edit", "grep", "glob")
+# webfetch is in this list but NOT in NATIVE_TOOLS_TO_DISABLE for Claude Code:
+# OpenCode has no hooks, so its native fetch is completely unwatched and the
+# mirrored one is strictly better; Claude Code already screens its own WebFetch
+# through hooks and its version summarises the page, so denying it there would
+# trade a richer tool for no extra coverage.
+_OPENCODE_NATIVE_TOOLS = ("bash", "read", "write", "edit", "grep", "glob", "webfetch")
 
 
 def _opencode_config_path(workspace: Path) -> Path:
@@ -1052,6 +1062,124 @@ def mirror_off_opencode(workspace: Path) -> int:
     return 0
 
 
+# ── Claude Desktop ─────────────────────────────────────────────────────
+#
+# The desktop app, not Claude Code. One machine-wide config file
+# (`claude_desktop_config.json`, `mcpServers` — the same shape `_server_entry`
+# already produces), and no trust gate to satisfy: a server added there loads on
+# the next app restart.
+#
+# IMPORTANT and unlike every other host here: this ADDS a governed toolset, it
+# does not REPLACE the natives. The desktop app has no permissions.deny and no
+# feature switches — its own tools (web search, file access, the cowork/VM
+# sandbox) stay exactly as they were and are not screened. So `on` says that out
+# loud rather than letting the install imply a coverage it does not have.
+
+
+def _claude_desktop_config_path() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "Claude" / "claude_desktop_config.json"
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "Claude" / "claude_desktop_config.json"
+
+
+def _claude_desktop_record_path() -> Path:
+    """Machine-level record for a machine-level install, so `off` works from
+    any directory rather than only the one that ran `on`."""
+    from prismor.runtime.pause import prismor_home
+    return prismor_home() / "mirror-install-claude-desktop.json"
+
+
+def mirror_on_claude_desktop(workspace: Path, *, mode: str = "enforce") -> int:
+    path = _claude_desktop_config_path()
+    entry = _server_entry(workspace, mode)
+    print(f"  {_c('host', _DIM)}      Claude Desktop  {_c('(machine-wide — one config for the app)', _DIM)}")
+
+    print(f"  {_c('checking', _DIM)}  starting the mirror server once to verify it serves tools...")
+    ok, detail = _preflight(entry)
+    if not ok:
+        print(_c(f"  prismor mirror on: the mirror server failed to start — {detail}", _RED))
+        print(_c("  Nothing was changed.", _DIM))
+        return 1
+    print(f"  {_c('ok', _GREEN)}        serves: {detail}")
+
+    try:
+        cfg = _load_json(path)
+    except Exception as exc:
+        print(_c(f"prismor mirror on: cannot read {path}: {exc}", _RED))
+        return 1
+    servers = cfg.get("mcpServers")
+    if servers is None:
+        servers = cfg["mcpServers"] = {}
+    if not isinstance(servers, dict):
+        print(_c(f"prismor mirror on: {path} has an unrecognised 'mcpServers' block — not touching it.", _RED))
+        return 1
+
+    _backup_once(path)
+    servers[mirror.MIRROR_SERVER_NAME] = entry
+    _write_json(path, cfg)
+
+    _write_json(_claude_desktop_record_path(), {
+        "agent": "claude-desktop", "scope": "machine", "mode": mode,
+        "server": mirror.MIRROR_SERVER_NAME,
+        "config_path": str(path),
+        "workspace": str(workspace),
+        "at": time.time(),
+    })
+    mirror.set_mirror_config(workspace, override=True)
+
+    print(f"  {_c('Prismor mirror is on for Claude Desktop', _GREEN)} ({mode} mode, machine-wide)")
+    print(f"  {_c('server', _DIM)}    {path}  →  mcpServers.{mirror.MIRROR_SERVER_NAME}")
+    print(f"  {_c('policy', _DIM)}    resolved for {workspace}")
+    print()
+    print(_c("  This ADDS governed tools; it does not disable the app's own. Claude", _YELLOW))
+    print(_c("  Desktop has no deny-list or feature switch for its built-in tools, so", _DIM))
+    print(_c("  its native file/search/sandbox tools stay available and unscreened —", _DIM))
+    print(_c("  the model can still reach for them instead of the mirrored ones.", _DIM))
+    print()
+    print(f"  {_c('Quit and reopen Claude Desktop for it to take effect.', _BOLD)}")
+    print(f"  {_c('If it gets in your way:', _DIM)}  prismor pause")
+    print(f"  {_c('To remove it:', _DIM)}  prismor mirror off --agent claude-desktop")
+    return 0
+
+
+def mirror_off_claude_desktop(workspace: Path) -> int:
+    try:
+        rec = _load_json(_claude_desktop_record_path())
+    except Exception:
+        rec = {}
+    path = Path(rec.get("config_path") or _claude_desktop_config_path())
+    server = rec.get("server") or mirror.MIRROR_SERVER_NAME
+    try:
+        cfg = _load_json(path)
+    except Exception as exc:
+        print(_c(f"prismor mirror off: cannot read {path}: {exc}", _RED))
+        return 1
+
+    servers = cfg.get("mcpServers")
+    if not isinstance(servers, dict) or server not in servers:
+        print("  Prismor mirror was not configured for Claude Desktop — nothing to undo.")
+        return 0
+    del servers[server]
+    if not servers:
+        del cfg["mcpServers"]
+    _write_json(path, cfg)
+    print(f"  {_c('server', _DIM)}    removed mcpServers.{server} from {path}")
+    try:
+        p = _claude_desktop_record_path()
+        if p.exists():
+            p.unlink()
+    except OSError:
+        pass
+    print()
+    print(f"  {_c('Prismor mirror is off for Claude Desktop.', _GREEN)} "
+          f"{_c('Quit and reopen the app.', _BOLD)}")
+    return 0
+
+
 # ── runtime switch ───────────────────────────────────────────────────────────
 
 def mirror_passthrough(workspace: Path, on: bool) -> int:
@@ -1099,6 +1227,15 @@ def mirror_status(workspace: Path) -> int:
                 print(f"  {_c('natives off', _DIM)}   {', '.join(rec['deny_added'])}")
     if not configured:
         print(f"  {_c('Claude Code', _DIM)}   not configured — `prismor mirror on` to enable")
+
+    try:
+        drec = _load_json(_claude_desktop_record_path())
+    except Exception:
+        drec = {}
+    if drec.get("server"):
+        configured = True
+        print(f"  {_c('Claude Desktop', _DIM)} server {drec['server']} · {drec.get('mode') or '?'} mode"
+              f" · machine-wide · natives NOT disabled (the app has no deny-list)")
 
     state = mirror.passthrough_state(workspace)
     if state is None:

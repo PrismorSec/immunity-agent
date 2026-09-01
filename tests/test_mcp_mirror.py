@@ -134,7 +134,7 @@ def test_make_upstream_returns_local(ws):
 def test_local_upstream_lists_and_calls(ws):
     up = UpstreamLocal(UpstreamSpec(name="builtins", local=True), ws)
     names = [t["name"] for t in up.request("tools/list", {})["tools"]]
-    assert names == ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+    assert names == ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"]
     res = up.request("tools/call", {"name": "Read",
                                     "arguments": {"file_path": str(ws / "calc.py")}})
     assert res["isError"] is False

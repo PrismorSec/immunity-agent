@@ -34,7 +34,7 @@ replaced; everything it can do is screened, including tools Prismor has no
 mirror for. Installed by `prismor setup` or `prismor install-hooks`.
 
 **The MCP mirror (`prismor mirror on`).** Prismor serves look-alike built-ins
-(`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) over MCP and the agent's own
+(`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`) over MCP and the agent's own
 are switched off. The tool then runs *inside* Prismor, which buys the one thing
 a hook structurally cannot do: the output can be **repaired** instead of merely
 refused, so a hardcoded credential in ordinary source is redacted before the
