@@ -1229,8 +1229,11 @@ def discover_webmcp(workspace: Path) -> List[BrowserSurfaceRecord]:
                 name=flag,
                 location=str(user_data / "Local State"),
                 risk="medium",
-                findings=["Pages in this browser can register tools for an "
-                          "in-tab agent to call."],
+                # Deliberately says "enabled", not what the flag does. Chrome
+                # 152 ships two (enable-webmcp-testing, devtools-webmcp-support)
+                # and only the first exposes the API to pages, so a single
+                # claim about page tool registration is wrong for the other.
+                findings=["WebMCP experiment enabled in this browser."],
             ))
 
         for profile in _profile_dirs(user_data):

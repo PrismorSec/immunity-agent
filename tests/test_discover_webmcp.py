@@ -121,6 +121,17 @@ def test_enabled_flag_is_reported(fake_host):
     assert flag.location.endswith("Local State")
 
 
+@pytest.mark.parametrize("flag", ["enable-webmcp-testing", "devtools-webmcp-support"])
+def test_the_flags_chrome_actually_ships_are_matched(fake_host, flag):
+    """Both WebMCP entries present in the Chrome 152 binary. Verified against
+    /Applications/Google Chrome.app — enabling `WebMCP` there takes
+    `document.modelContext` from undefined to a live object that accepts
+    registerTool(). If a future Chrome renames these, this is the canary."""
+    discover, home, ws = fake_host
+    _enable_flags(home, [flag, "enable-quic@1"])
+    assert [r.name for r in discover.discover_webmcp(ws)] == [flag]
+
+
 def test_flag_matching_survives_a_rename(fake_host):
     """Matched on substrings because the flag gets renamed between milestones
     while the capability it gates stays the same."""
