@@ -1170,8 +1170,12 @@ def _bundle_names_webmcp(bundle: Path) -> bool:
     except OSError:
         return False
     for root, dirs, files in walker:
-        dirs[:] = [d for d in dirs if d != "_locales"]
-        for filename in files:
+        # Sorted, because the ceilings below mean the walk can stop early and
+        # os.walk hands back whatever order the filesystem keeps. Unsorted,
+        # which files got scanned would vary by platform and the same bundle
+        # could report a finding on one machine and not on another.
+        dirs[:] = sorted(d for d in dirs if d != "_locales")
+        for filename in sorted(files):
             if not filename.endswith((".js", ".mjs", ".ts", ".html")):
                 continue
             if scanned_files >= _MAX_EXT_SCAN_FILES or scanned_bytes >= _MAX_EXT_SCAN_BYTES:

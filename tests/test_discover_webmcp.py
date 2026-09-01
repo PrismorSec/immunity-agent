@@ -300,7 +300,13 @@ def test_report_is_json_serialisable(fake_host):
 
 def test_source_scan_is_bounded(fake_host, monkeypatch):
     """A bundle's size is chosen by whoever published it, and this runs on a
-    schedule — the scan gives up rather than reading an unbounded tree."""
+    schedule — the scan gives up rather than reading an unbounded tree.
+
+    Also pins the ordering: the walk is sorted, so the two files scanned here
+    are the two that sort first on every platform. Unsorted, os.walk hands back
+    filesystem order — arbitrary on ext4 — and whether the marker in the last
+    file was reached would differ between a developer's Mac and CI.
+    """
     discover, home, ws = fake_host
     monkeypatch.setattr(discover, "_MAX_EXT_SCAN_FILES", 2)
     sources = {f"chunk{i}.js": "// filler" for i in range(5)}
