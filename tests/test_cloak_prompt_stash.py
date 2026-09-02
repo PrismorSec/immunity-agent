@@ -30,6 +30,7 @@ os.environ["PRISMOR_SECRETS_DIR"] = str(_SECRETS)
 os.environ["PRISMOR_PROMPT_STASH_DIR"] = str(_STASH)
 
 _GUARD = _REPO / "prismor" / "runtime" / "cloaking" / "hooks" / "userprompt-guard.sh"
+_GNU_STAT_SHIM = '#!/bin/sh\n# Mimic GNU coreutils stat: -c prints the mtime, -f means --file-system\n# (prints a report to stdout AND exits non-zero).\ncase "$1" in\n  -c) exec /usr/bin/stat -f %m "$3" ;;\n  -f) printf \'  File: "%s"\\n    ID: deadbeef Namelen: 255\\n\' "$3"\n      echo "stat: cannot read file system information" >&2\n      exit 1 ;;\nesac\nexit 1\n'
 # Synthetic JWT-shaped canary, assembled at runtime so no literal token sits in
 # this file (the cloaking Write guard would otherwise vault it).
 _JWT = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJDQU5BUlkiLCJpYXQiOjB9",
@@ -50,10 +51,15 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         print(f"  FAIL  {name}  {detail}")
 
 
-def run(prompt: str, session: str = "sess-A") -> dict | None:
+_last_stderr = ""
+
+
+def run(prompt: str, session: str = "sess-A", env: dict | None = None) -> dict | None:
+    global _last_stderr
     payload = {"prompt": prompt, "cwd": str(_HOME), "session_id": session}
     proc = subprocess.run(["bash", str(_GUARD)], input=json.dumps(payload),
-                          capture_output=True, text=True, env=os.environ)
+                          capture_output=True, text=True, env=env or os.environ)
+    _last_stderr = proc.stderr
     out = proc.stdout.strip()
     return json.loads(out) if out else None
 
@@ -130,6 +136,38 @@ def test_allow_bypass_still_reloads():
     run(_PROMPT, session="sess-G")
     res = run("!!allow just checking", session="sess-G")
     check("!!allow follow-up still reloads stash", "@@SECRET:auto_" in context_of(res))
+
+
+def test_reload_works_with_gnu_stat():
+    """Regression, issue #342.
+
+    On GNU coreutils `stat -f` means --file-system: it prints a report to
+    *stdout* and exits non-zero, so the `||` fallback ran too and $mtime went
+    multi-line, aborting the hook under `set -u` ("File: unbound variable").
+    The stash then never reloaded on Linux -- silently. macOS `stat -f` works,
+    so reproducing it here needs a GNU-behaving `stat` on PATH.
+    """
+    shim_dir = _HOME / "gnu-bin"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "stat"
+    shim.write_text(_GNU_STAT_SHIM)
+    shim.chmod(0o755)
+
+    env = dict(os.environ, PATH=f"{shim_dir}:{os.environ['PATH']}")
+    # Sanity: the shim really does behave like GNU stat.
+    probe = subprocess.run(["stat", "-f", "%m", str(shim)], capture_output=True,
+                           text=True, env=env)
+    check("shim reproduces GNU stat -f",
+          probe.returncode != 0 and "File:" in probe.stdout,
+          f"rc={probe.returncode} out={probe.stdout[:80]!r}")
+
+    run(_PROMPT, session="sess-H", env=env)
+    check("stash written under GNU stat", (_STASH / "sess-H").is_file())
+    res = run("go", session="sess-H", env=env)
+    check("stash reloads under GNU stat",
+          "@@SECRET:auto_" in context_of(res), str(res)[:200])
+    check("hook emits no stderr under GNU stat",
+          _last_stderr.strip() == "", _last_stderr[:200])
 
 
 if __name__ == "__main__":

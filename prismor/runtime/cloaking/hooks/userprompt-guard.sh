@@ -48,7 +48,11 @@ stash_file="$STASH_DIR/$session_id"
 # prismor_stash_age_ok <file> — 0 if the stash is younger than STASH_TTL.
 prismor_stash_age_ok() {
   local f="$1" mtime now
-  mtime="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+  # GNU form first: on BSD/macOS `stat -c` fails cleanly with empty stdout,
+  # whereas GNU `stat -f` means --file-system and prints a report to stdout
+  # *and* exits non-zero, so the fallback runs too and $mtime goes multi-line.
+  mtime="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
   now="$(date +%s)"
   [[ $(( now - mtime )) -le "$STASH_TTL" ]]
 }
