@@ -828,9 +828,22 @@ def save_session_snapshot(
             ],
         )
 
+        # OR IGNORE, not a bare INSERT (issue #345). finding_id is derived
+        # ("<session>:<rule>-<eventIndex>"), not random, and persist_runtime_findings
+        # stores the very same id for a finding it has already enforced on. The
+        # DELETE above spares those runtime rows on purpose, so re-analysing a
+        # session re-derives ids that are still present -- a UNIQUE violation.
+        # Being an executemany, that aborted the WHOLE batch, so one duplicate
+        # silently dropped every other finding with it, surfacing only as
+        # "[prismor] analysis error: UNIQUE constraint failed: findings.finding_id".
+        #
+        # IGNORE rather than REPLACE: the surviving row is the runtime one, and
+        # replacing it would overwrite its `source: runtime` enrichment, putting
+        # it back in scope for the next snapshot's DELETE -- reintroducing the
+        # vanishing-blocks bug that DELETE's carve-out exists to prevent.
         cursor.executemany(
             """
-            INSERT INTO findings (
+            INSERT OR IGNORE INTO findings (
                 finding_id, session_id, event_index, severity, category, title, evidence, enrichment_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
