@@ -11,9 +11,16 @@ matter here are:
     directly onto a hook payload's ``tool_name``/``tool_input``.
 
 ``user``
-    When ``message.content`` is a plain string it is genuine user input, which
-    replays as ``UserPromptSubmit``. When it carries ``toolUseResult`` it is a
-    tool *result* — post-action, and deliberately skipped (see below).
+    Genuine user input, which replays as ``UserPromptSubmit``.
+    ``message.content`` is a plain string for a typed prompt and a block list
+    (``text`` blocks, plus ``image`` blocks for pasted screenshots) whenever
+    the prompt was assembled from parts — both carry real prompt text, so both
+    are replayed. A record carrying ``toolUseResult``, or a ``tool_result``
+    block, is a tool *result* — post-action, and deliberately skipped.
+
+Every other ``type`` (``system``, ``attachment``, ``ai-title``, ``mode``,
+``queue-operation``, ``file-history-snapshot``, …) is session bookkeeping this
+adapter does not claim; see `handles`.
 
 Only pre-action payloads are emitted. `hooks._is_pre_action` gates
 `should_block`, so replaying a tool result as if it were a tool call would both
@@ -32,6 +39,28 @@ from prismor.runtime.transcripts.base import (
     env_root,
     home,
 )
+
+
+def _prompt_text(content: Any) -> str:
+    """Prompt text from either content shape, or "" if this is not a prompt.
+
+    A block list mixing in a ``tool_result`` is a result carrier that happens
+    to lack ``toolUseResult``; replaying it as a prompt would report an action
+    the agent had already taken.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_result":
+            return ""
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(parts).strip()
 
 
 class ClaudeAdapter(JsonlAdapter):
@@ -57,11 +86,19 @@ class ClaudeAdapter(JsonlAdapter):
             return None
         return Path("/" + encoded[1:].replace("-", "/"))
 
+    #: Record types that carry agent activity. Everything else Claude Code
+    #: writes is session bookkeeping, so a transcript made only of those is an
+    #: abandoned session, not an adapter mismatch.
+    _CLAIMED_TYPES = ("assistant", "user")
+
+    def handles(self, record: Dict[str, Any]) -> bool:
+        return record.get("type") in self._CLAIMED_TYPES
+
     def record_to_payloads(
         self, record: Dict[str, Any], session: DiscoveredSession
     ) -> Iterator[Dict[str, Any]]:
         record_type = record.get("type")
-        if record_type not in ("assistant", "user"):
+        if record_type not in self._CLAIMED_TYPES:
             return
 
         session_id = str(record.get("sessionId") or session.session_id)
@@ -86,11 +123,12 @@ class ClaudeAdapter(JsonlAdapter):
             # Tool results arrive as user records; they are post-action.
             if record.get("toolUseResult") is not None:
                 return
-            if isinstance(content, str) and content.strip():
+            prompt = _prompt_text(content)
+            if prompt:
                 yield {
                     **base,
                     "hook_event_name": "UserPromptSubmit",
-                    "prompt": content,
+                    "prompt": prompt,
                 }
             return
 

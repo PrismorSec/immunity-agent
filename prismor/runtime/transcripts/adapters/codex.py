@@ -105,6 +105,14 @@ class CodexAdapter(JsonlAdapter):
         match = _ROLLOUT_RE.match(path.stem)
         return match.group(1) if match else path.stem
 
+    #: Payload types that carry agent activity; every other envelope Codex
+    #: writes (session_meta, token counts, reasoning, …) is bookkeeping.
+    _CLAIMED_KINDS = ("user_message", "function_call", "custom_tool_call")
+
+    def handles(self, record: Dict[str, Any]) -> bool:
+        payload = record.get("payload")
+        return isinstance(payload, dict) and payload.get("type") in self._CLAIMED_KINDS
+
     def record_to_payloads(
         self, record: Dict[str, Any], session: DiscoveredSession
     ) -> Iterator[Dict[str, Any]]:
@@ -123,7 +131,7 @@ class CodexAdapter(JsonlAdapter):
                 yield {**base, "hook_event_name": "UserPromptSubmit", "prompt": message}
             return
 
-        if kind not in ("function_call", "custom_tool_call"):
+        if kind not in self._CLAIMED_KINDS:
             return
 
         native = str(payload.get("name") or "")

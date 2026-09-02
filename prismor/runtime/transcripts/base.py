@@ -84,9 +84,16 @@ def record_shape(record: Dict[str, Any]) -> str:
 class ParseStats:
     """Per-file parse accounting, surfaced so a silent adapter is detectable.
 
-    An adapter that yields zero payloads for a non-empty file is the failure
-    mode that matters most here: the sweep looks like it worked and quietly
-    protects nothing. `--strict` turns that into a non-zero exit.
+    An adapter that yields zero payloads for a file whose records it
+    *recognizes* is the failure mode that matters most here: the sweep looks
+    like it worked and quietly protects nothing. `--strict` turns that into a
+    non-zero exit.
+
+    Records outside the adapter's vocabulary are counted separately: a
+    transcript made only of those (Claude writes `attachment`, `system`,
+    `ai-title`, `queue-operation` bookkeeping lines for a session that was
+    opened and abandoned) has nothing to replay and is not evidence of a
+    mismatch.
     """
 
     records_read: int = 0
@@ -100,12 +107,17 @@ class ParseStats:
     #: transcripts (issue #346). Keys are schema only -- a discriminator value
     #: like `type=summary` and top-level field NAMES -- never field values.
     skip_reasons: Dict[str, int] = field(default_factory=dict)
+    #: Records the adapter does not claim at all. Excluded from the silence
+    #: test, which otherwise reported every abandoned session as a mismatch.
+    unclaimed_records: int = 0
 
     #: Bound on distinct shapes tracked per file; the rest fold into `other`.
     MAX_SKIP_REASONS: ClassVar[int] = 12
 
-    def note_skip(self, reason: str) -> None:
+    def note_skip(self, reason: str, *, claimed: bool = True) -> None:
         self.skipped_records += 1
+        if not claimed:
+            self.unclaimed_records += 1
         if reason not in self.skip_reasons and len(self.skip_reasons) >= self.MAX_SKIP_REASONS:
             reason = "other"
         self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
@@ -115,6 +127,7 @@ class ParseStats:
         self.payloads_emitted += other.payloads_emitted
         self.malformed_lines += other.malformed_lines
         self.skipped_records += other.skipped_records
+        self.unclaimed_records += other.unclaimed_records
         self.errors.extend(other.errors)
         for reason, count in other.skip_reasons.items():
             if reason not in self.skip_reasons and len(self.skip_reasons) >= self.MAX_SKIP_REASONS:
@@ -122,8 +135,13 @@ class ParseStats:
             self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + count
 
     @property
+    def claimed_records(self) -> int:
+        """Records whose shape the adapter is supposed to understand."""
+        return max(0, self.records_read - self.unclaimed_records)
+
+    @property
     def looks_silent(self) -> bool:
-        return self.records_read > 0 and self.payloads_emitted == 0
+        return self.claimed_records > 0 and self.payloads_emitted == 0
 
     @property
     def top_skip_reasons(self) -> List[Tuple[str, int]]:
@@ -236,6 +254,16 @@ class JsonlAdapter:
     ) -> Iterator[Dict[str, Any]]:  # pragma: no cover - overridden
         raise NotImplementedError
 
+    def handles(self, record: Dict[str, Any]) -> bool:
+        """Is this record one the adapter is *meant* to turn into a payload?
+
+        Only a record the adapter claims can evidence a format mismatch, so
+        this is what separates "the format changed under us" from "this
+        session never contained a tool call". Default True keeps the
+        conservative behaviour for adapters that do not override it.
+        """
+        return True
+
     def iter_records(self, session: DiscoveredSession, stats: ParseStats) -> Iterator[Dict[str, Any]]:
         """Stream decoded records, tolerating malformed lines.
 
@@ -279,7 +307,7 @@ class JsonlAdapter:
                 stats.errors.append(f"{session.path}: {type(exc).__name__}: {exc}")
                 continue
             if not emitted:
-                stats.note_skip(record_shape(record))
+                stats.note_skip(record_shape(record), claimed=self.handles(record))
                 continue
             for payload in emitted:
                 stats.payloads_emitted += 1

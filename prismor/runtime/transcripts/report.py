@@ -238,7 +238,7 @@ def format_report(result: SweepResult, *, since_label: str = "all history") -> s
         lines.append(
             _c("⚠  ", "\033[33m")
             + f"{_plural(len(result.silent_sessions), 'transcript')} produced no events "
-            f"despite containing records — likely an adapter format mismatch."
+            f"despite containing records the adapter recognizes."
         )
         # Basenames, not full paths. The paths are ~110 characters of home
         # directory and project slug that wrap over two lines each and bury the

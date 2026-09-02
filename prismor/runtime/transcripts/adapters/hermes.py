@@ -47,6 +47,14 @@ class HermesAdapter(JsonlAdapter):
         base = env_root("HERMES_HOME", home() / ".hermes")
         return [base / "sessions"]
 
+    def handles(self, record: Dict[str, Any]) -> bool:
+        return (
+            record.get("hookEvent") is not None
+            or record.get("hook_event") is not None
+            or record.get("toolName") is not None
+            or record.get("tool_name") is not None
+        )
+
     def record_to_payloads(
         self, record: Dict[str, Any], session: DiscoveredSession
     ) -> Iterator[Dict[str, Any]]:

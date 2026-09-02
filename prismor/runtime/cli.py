@@ -5654,9 +5654,14 @@ def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:
             )
 
     if args.strict and result.silent_sessions:
+        detail = "; ".join(
+            f"{s.path.name}: "
+            + ", ".join(f"{shape} x{n}" for shape, n in s.stats.top_skip_reasons[:3])
+            for s in result.silent_sessions[:5]
+        )
         raise SystemExit(
-            f"{len(result.silent_sessions)} transcript(s) produced no events; "
-            f"the adapter may not match the on-disk format"
+            f"{len(result.silent_sessions)} transcript(s) produced no events "
+            f"despite records the adapter recognizes — {detail}"
         )
 
 
