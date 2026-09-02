@@ -31,6 +31,18 @@ _INERT_SINKS = frozenset({
     "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack", "jq", "pbcopy", "gh",
 })
 
+# Commands that run their payload in ANOTHER execution context -- a different
+# host, container, or namespace. A local rule about Prismor's own policy or
+# credential has no jurisdiction over what these run, because the thing they
+# reach is a different install with its own policy (issue #344). Deliberately
+# NOT used to downgrade rules about the payload's own effect: `ssh host
+# "rm -rf /"` still destroys a real machine and must still block.
+_REMOTE_CONTEXTS = frozenset({
+    "ssh", "sshpass", "docker", "podman", "nerdctl", "kubectl", "oc",
+    "lxc", "incus", "vagrant", "nsenter", "distrobox", "toolbox",
+    "multipass", "machinectl", "chroot",
+})
+
 # git subcommands that take a human-authored message argument.
 _GIT_MESSAGE_SUBCOMMANDS = frozenset({"commit", "tag", "notes", "stash"})
 
@@ -153,3 +165,45 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
         return argv0 in _INERT_SINKS
     return False
 
+
+def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
+    """True when the match lies inside the payload of a context-switching command.
+
+    Answers "will the LOCAL shell run this?", not "is this dangerous?". Used
+    only for rules whose jurisdiction is this machine -- Prismor's own policy,
+    credential, and hook config -- where a match inside an `ssh`/`docker`
+    argument describes an operation on a *different* install (issue #344).
+
+    Conservative in the same direction as is_inert_match: it returns True only
+    on positive evidence that the match sits inside a closed quoted argument of
+    a recognised context-switching command. `ssh -V; prismor allow` runs
+    `prismor allow` locally -- the match is outside every quoted span, so this
+    returns False and the finding stands.
+    """
+    if match_start < 0 or match_end > len(command):
+        return False
+    spans = quoted_spans(command)
+    if not spans:
+        return False
+    bare = _outside_quotes(command, spans)
+
+    for start, end, _is_payload, is_closed in spans:
+        if not is_closed:
+            continue
+        # Containment is judged on where the match ENDS, not where it starts.
+        # Several self-edit patterns deliberately include the wrapper that
+        # opens the quote, so the match begins outside the span while the
+        # invocation itself sits inside it. The +1 mirrors is_inert_match: a
+        # pattern anchored on a trailing delimiter may consume the closing
+        # quote.
+        if not (start < match_end <= end + 1):
+            continue
+        seg_start = 0
+        for k in range(start):
+            if bare[k] in _SEPARATORS:
+                seg_start = k + 1
+        tokens = bare[seg_start:start].split()
+        if not tokens:
+            return False
+        return tokens[0].rsplit("/", 1)[-1] in _REMOTE_CONTEXTS
+    return False

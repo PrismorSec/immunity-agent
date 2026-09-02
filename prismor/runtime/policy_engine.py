@@ -64,6 +64,7 @@ _NON_OVERRIDABLE_RULE_IDS = frozenset({
     # generates its copy of the floor by parsing this frozenset, and a quote
     # character splits the parse — see scripts/generate-default-policy-rules.js.)
     "agent-config-tampering",
+    "agent-config-tampering-path",
     "prismor-self-edit",
 })
 
@@ -94,9 +95,25 @@ _CORE_BLOCK_CATEGORIES = frozenset({
 # (prismor unlock — see runtime/unlock.py), checked at dispatch, never here.
 _SELF_PROTECTION_RULE_IDS = frozenset({
     "agent-config-tampering",
+    "agent-config-tampering-path",
     "prismor-self-edit",
     "audit-trail-tampering",
     "memory-integrity-mismatch",
+})
+
+# Self-protection rules whose jurisdiction is strictly THIS machine: they guard
+# Prismor's own policy file, unlock credential, and the agent hook config. When
+# one of them matches inside an ssh/docker/kubectl payload, the thing being
+# edited is a different install with its own policy, so the finding is reported
+# but not blocked. See shell_context.is_remote_payload (issue #344).
+#
+# Not a floor constant and deliberately not parsed by prismor-web: it narrows
+# nothing an overlay can reach, it only decides local-vs-remote for a match that
+# already fired.
+_LOCAL_JURISDICTION_RULE_IDS = frozenset({
+    "prismor-self-edit",
+    "agent-config-tampering",
+    "agent-config-tampering-path",
 })
 
 # Canonical field for each event type when 'fields' is not specified in the rule.
@@ -1312,12 +1329,24 @@ class PolicyEngine:
             context_inert = False
             if event_type == "shell" and matched_evidence:
                 try:
-                    from prismor.runtime.shell_context import is_inert_match
+                    from prismor.runtime.shell_context import (
+                        is_inert_match, is_remote_payload)
                     _m = rule.patterns.search(matched_evidence)
                     if _m is not None:
                         context_inert = is_inert_match(
                             matched_evidence, _m.start(), _m.end()
                         )
+                        # A self-protection rule guards THIS install. When the
+                        # match sits inside an ssh/docker/kubectl payload it
+                        # describes another machine's Prismor, which this policy
+                        # does not govern and whose remediation ("run it
+                        # yourself") cannot help. Report it, do not block it.
+                        # Scoped to these rules on purpose: a remote `rm -rf /`
+                        # still destroys a real machine (issue #344).
+                        if not context_inert and rule.id in _LOCAL_JURISDICTION_RULE_IDS:
+                            context_inert = is_remote_payload(
+                                matched_evidence, _m.start(), _m.end()
+                            )
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False

@@ -96,6 +96,10 @@ map:
     - owasp-llm-top10:LLM06
     - owasp-agentic-t10:T03
 
+  agent-config-tampering-path:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T03
+
   # ── Resource / unbounded consumption ────────────────────────────────
   dos-resource-exhaustion:
     - owasp-llm-top10:LLM10

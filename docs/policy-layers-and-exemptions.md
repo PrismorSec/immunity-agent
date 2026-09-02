@@ -43,8 +43,8 @@ instead of blocking there. The floor's *definitions* still cannot be weakened
 (disable/patterns/action edits are ignored), the setting is stripped if it
 arrives via a signed org bundle, and enrolled/org-managed devices always keep
 the full blocking floor. Prismor's **self-protection rules**
-(`agent-config-tampering`, `prismor-self-edit`, `audit-trail-tampering`,
-`memory-integrity-mismatch`) are never selectable and force-enforce in every
+(`agent-config-tampering`, `agent-config-tampering-path`, `prismor-self-edit`,
+`audit-trail-tampering`, `memory-integrity-mismatch`) are never selectable and force-enforce in every
 configuration — they are what keeps the selection itself honest. The only
 sanctioned relaxation is the human-opened, password-gated
 [`prismor unlock` window](cli-reference.md#making-exceptions), during which an

@@ -1019,15 +1019,45 @@ rules:
     action: warn
 
   # ── CRITICAL: Agent config tampering ──────────────────────────────
+  # Split into a shell rule and a path rule on purpose. A rule's patterns are
+  # one alternation applied to every field it names, so while these lived in a
+  # single rule the bare-path forms below were also tested against `command` —
+  # and since they end in `$`, ANY command ending in the path matched. That
+  # blocked `cat`/`ls`/`stat`/`grep` on a settings file and told the operator a
+  # read was a "modification/deletion" (issue #343).
   - id: agent-config-tampering
     severity: CRITICAL
     category: security_bypass
     title: Blocks modification/deletion of agent hook configurations
-    event_types: [shell, file_write]
-    fields: [command, path]
+    event_types: [shell]
+    fields: [command]
+    # A mutating verb is required. Reading these files is diagnosis, not
+    # tampering — an agent has to be able to explain its own posture.
+    #
+    # `\b` around the verbs so `confirm` does not read as `rm`. `[^\n;&|]*`
+    # rather than `[^\n]*` so the verb and the path must be in the SAME command
+    # segment: `pip install x; cat ~/.claude/settings.json` is a read that
+    # merely follows an unrelated command, and matched before.
+    #
+    # `tee` and `(\.local)?` are new here. Both cases used to be caught only by
+    # the bare-path form below, which is exactly the over-match being removed,
+    # so without them the split would have opened a real gap.
     patterns:
-      - '(>|rm|mv|cp|truncate)[^\n]*\.claude/settings\.json'
-      - '(>|rm|mv|cp|truncate)[^\n]*\.prismor(-warden)?/policy\.yaml'
+      - '(>|\b(rm|mv|cp|tee|truncate|sed)\b)[^\n;&|]*\.claude/settings(\.local)?\.json'
+      - '(>|\b(rm|mv|cp|tee|truncate|sed)\b)[^\n;&|]*\.prismor(-warden)?/policy\.yaml'
+    action: block
+
+  # The same protection for the file-write surface, where the field IS a bare
+  # path and no verb exists to gate on. Kept as its own rule id so the anchored
+  # path forms are never applied to a command string. Listed alongside
+  # agent-config-tampering in _SELF_PROTECTION_RULE_IDS / _NON_OVERRIDABLE_RULE_IDS.
+  - id: agent-config-tampering-path
+    severity: CRITICAL
+    category: security_bypass
+    title: Blocks writes to agent hook configurations
+    event_types: [file_write]
+    fields: [path]
+    patterns:
       - '(^|/)\.claude/settings(\.local)?\.json$'
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
     action: block
