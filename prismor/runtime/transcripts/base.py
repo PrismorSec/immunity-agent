@@ -24,7 +24,10 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Protocol, runtime_checkable
+from typing import (
+    Any, ClassVar, Dict, Iterator, List, Optional, Protocol, Tuple,
+    runtime_checkable,
+)
 
 
 @dataclass
@@ -49,6 +52,34 @@ class DiscoveredSession:
             return 0
 
 
+#: Fields that discriminate a record's kind across the supported transcript
+#: formats. Their VALUES are schema tags ("assistant", "summary",
+#: "function_call"), not user content, so they are safe to report.
+_SHAPE_KEYS = ("type", "role", "kind", "event")
+
+#: Longest discriminator value echoed back. Guards against a value that is
+#: really content sneaking into a report.
+_SHAPE_VALUE_MAX = 40
+
+
+def record_shape(record: Dict[str, Any]) -> str:
+    """A short, content-free description of why a record could be unrecognised.
+
+    Reported back to the user so a silent transcript can be triaged without
+    anyone handing over the transcript itself (issue #346). Emits a
+    discriminator such as ``type=summary`` when the record has one, else the
+    sorted top-level field names, which is what an adapter would have keyed on.
+    """
+    for key in _SHAPE_KEYS:
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            if len(value) > _SHAPE_VALUE_MAX:
+                return f"{key}=<{len(value)} chars>"
+            return f"{key}={value}"
+    keys = sorted(k for k in record.keys() if isinstance(k, str))[:6]
+    return f"keys={','.join(keys)}" if keys else "empty-record"
+
+
 @dataclass
 class ParseStats:
     """Per-file parse accounting, surfaced so a silent adapter is detectable.
@@ -63,6 +94,21 @@ class ParseStats:
     malformed_lines: int = 0
     skipped_records: int = 0
     errors: List[str] = field(default_factory=list)
+    #: Record shape -> how many records of that shape emitted nothing. A bare
+    #: count told a user their transcripts were silent but not *what* about
+    #: them did not match, which is untriageable without handing over personal
+    #: transcripts (issue #346). Keys are schema only -- a discriminator value
+    #: like `type=summary` and top-level field NAMES -- never field values.
+    skip_reasons: Dict[str, int] = field(default_factory=dict)
+
+    #: Bound on distinct shapes tracked per file; the rest fold into `other`.
+    MAX_SKIP_REASONS: ClassVar[int] = 12
+
+    def note_skip(self, reason: str) -> None:
+        self.skipped_records += 1
+        if reason not in self.skip_reasons and len(self.skip_reasons) >= self.MAX_SKIP_REASONS:
+            reason = "other"
+        self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
     def merge(self, other: "ParseStats") -> None:
         self.records_read += other.records_read
@@ -70,10 +116,19 @@ class ParseStats:
         self.malformed_lines += other.malformed_lines
         self.skipped_records += other.skipped_records
         self.errors.extend(other.errors)
+        for reason, count in other.skip_reasons.items():
+            if reason not in self.skip_reasons and len(self.skip_reasons) >= self.MAX_SKIP_REASONS:
+                reason = "other"
+            self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + count
 
     @property
     def looks_silent(self) -> bool:
         return self.records_read > 0 and self.payloads_emitted == 0
+
+    @property
+    def top_skip_reasons(self) -> List[Tuple[str, int]]:
+        """Skip shapes, most common first."""
+        return sorted(self.skip_reasons.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
 @runtime_checkable
@@ -224,7 +279,7 @@ class JsonlAdapter:
                 stats.errors.append(f"{session.path}: {type(exc).__name__}: {exc}")
                 continue
             if not emitted:
-                stats.skipped_records += 1
+                stats.note_skip(record_shape(record))
                 continue
             for payload in emitted:
                 stats.payloads_emitted += 1

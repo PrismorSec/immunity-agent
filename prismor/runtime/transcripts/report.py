@@ -244,7 +244,15 @@ def format_report(result: SweepResult, *, since_label: str = "all history") -> s
         # directory and project slug that wrap over two lines each and bury the
         # one thing worth reading, which is how many and from which agent.
         for session in result.silent_sessions[:3]:
-            lines.append(_c(f"     {session.agent}: …/{session.path.name}", _DIM))
+            # Name the record shapes that emitted nothing. "likely an adapter
+            # format mismatch" on its own is untriageable without handing over
+            # the transcript; the shape is schema, not content (issue #346).
+            reasons = ", ".join(
+                f"{shape} ×{count}"
+                for shape, count in session.stats.top_skip_reasons[:3]
+            )
+            suffix = f"  ({reasons})" if reasons else ""
+            lines.append(_c(f"     {session.agent}: …/{session.path.name}{suffix}", _DIM))
         extra = len(result.silent_sessions) - 3
         if extra > 0:
             lines.append(_c(f"     … and {extra} more", _DIM))
@@ -311,7 +319,25 @@ def report_payload(result: SweepResult) -> Dict[str, Any]:
         "elapsedSeconds": round(result.elapsed_seconds, 2),
         "truncated": result.truncated,
         "emptyAgents": result.empty_agents,
-        "silentSessions": [str(s.path) for s in result.silent_sessions],
+        # Objects, not bare path strings: a silent transcript is only
+        # actionable if the report says which adapter read it and which record
+        # shapes it could not turn into events (issue #346). `path` is kept as
+        # the first key so existing readers that index it still work.
+        "silentSessions": [
+            {
+                "path": str(s.path),
+                "agent": s.agent,
+                "recordsRead": s.stats.records_read,
+                "malformedLines": s.stats.malformed_lines,
+                "skippedRecords": s.stats.skipped_records,
+                "skipReasons": [
+                    {"shape": shape, "count": count}
+                    for shape, count in s.stats.top_skip_reasons
+                ],
+                "errors": s.stats.errors[:5],
+            }
+            for s in result.silent_sessions
+        ],
         "wouldBlock": [
             {"ruleId": r, "count": c, "severity": s, "mostRecent": t}
             for r, c, s, t in _group(would_block)

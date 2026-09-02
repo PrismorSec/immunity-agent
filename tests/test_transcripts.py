@@ -660,3 +660,111 @@ def test_setup_parser_accepts_backfill_flags():
     assert parser.parse_args(["setup", "--no-backfill"]).backfill is False
     # Unspecified means "ask", which is distinct from an explicit no.
     assert parser.parse_args(["setup"]).backfill is None
+
+
+# --------------------------------------------------------------------------
+# Silent transcripts (issue #346)
+
+
+def test_record_shape_names_the_discriminator():
+    from prismor.runtime.transcripts.base import record_shape
+
+    assert record_shape({"type": "summary", "summary": "..."}) == "type=summary"
+    assert record_shape({"role": "tool", "content": "x"}) == "role=tool"
+    # No discriminator: fall back to the field NAMES an adapter would key on.
+    assert record_shape({"beta": 1, "alpha": 2}) == "keys=alpha,beta"
+    assert record_shape({}) == "empty-record"
+
+
+def test_record_shape_never_echoes_content():
+    """The point of reporting a shape is that it can be shared; a long `type`
+    is content wearing a schema field's name, so it is summarised away."""
+    from prismor.runtime.transcripts.base import record_shape
+
+    secret = "sk-" + "A" * 80
+    assert secret not in record_shape({"type": secret})
+    assert record_shape({"type": secret}) == "type=<83 chars>"
+
+
+def test_skip_reasons_are_bounded():
+    from prismor.runtime.transcripts.base import ParseStats
+
+    stats = ParseStats()
+    for i in range(40):
+        stats.note_skip(f"type=kind{i}")
+    assert stats.skipped_records == 40
+    assert len(stats.skip_reasons) <= ParseStats.MAX_SKIP_REASONS + 1
+    assert "other" in stats.skip_reasons
+
+
+def test_skip_reasons_merge_across_files():
+    from prismor.runtime.transcripts.base import ParseStats
+
+    a, b = ParseStats(), ParseStats()
+    a.note_skip("type=summary")
+    b.note_skip("type=summary")
+    b.note_skip("type=system")
+    a.merge(b)
+    assert a.skip_reasons == {"type=summary": 2, "type=system": 1}
+    assert a.top_skip_reasons[0] == ("type=summary", 2)
+
+
+@pytest.fixture
+def silent_claude_home(tmp_path, monkeypatch):
+    """A Claude transcript whose records the adapter recognises none of.
+
+    Exactly the reported situation: the file has records, so it is not empty,
+    but every one of them is a kind the adapter does not turn into a payload.
+    """
+    root = tmp_path / "claude-silent"
+    _write_jsonl(
+        root / "projects" / "-tmp-demo" / "99999999-0000-0000-0000-000000000000.jsonl",
+        [
+            {"type": "summary", "summary": "Session about refactoring"},
+            {"type": "summary", "summary": "Another summary"},
+            {"type": "file-history-snapshot", "snapshot": {}},
+            # An `assistant` record with no message body still emits nothing.
+            {"type": "assistant", "sessionId": "x", "message": None},
+        ],
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
+    return root
+
+
+def test_silent_transcript_reports_why_per_shape(silent_claude_home, tmp_path):
+    """The blanket "likely an adapter format mismatch" is not triageable.
+
+    A user cannot act on it without handing over personal transcripts, so the
+    sweep names the record shapes that produced nothing instead.
+    """
+    result = sweep(_options(tmp_path))
+    assert result.silent_sessions, "the fixture transcript must read as silent"
+
+    stats = result.silent_sessions[0].stats
+    assert stats.records_read == 4
+    assert stats.payloads_emitted == 0
+    assert dict(stats.top_skip_reasons) == {
+        "type=summary": 2,
+        "type=file-history-snapshot": 1,
+        "type=assistant": 1,
+    }
+
+
+def test_silent_session_json_carries_the_reasons(silent_claude_home, tmp_path):
+    from prismor.runtime.transcripts.report import report_payload
+
+    payload = report_payload(sweep(_options(tmp_path)))
+    entry = payload["silentSessions"][0]
+    assert entry["agent"] == "claude"
+    assert entry["recordsRead"] == 4
+    assert entry["path"].endswith(".jsonl")
+    shapes = {r["shape"]: r["count"] for r in entry["skipReasons"]}
+    assert shapes["type=summary"] == 2
+
+
+def test_silent_session_human_report_names_the_shapes(silent_claude_home, tmp_path):
+    from prismor.runtime.transcripts.report import format_report
+
+    text = format_report(sweep(_options(tmp_path)))
+    assert "produced no events" in text
+    assert "type=summary" in text
