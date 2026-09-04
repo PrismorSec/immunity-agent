@@ -108,6 +108,12 @@ These capabilities map to the [OWASP Top 10 for LLM Applications](https://genai.
 
 ---
 
+## Scenarios and Use Cases<a name="scenarios-and-use-cases" />
+
+Real workflows with the commands and config that make them work — onboarding a team in observe mode, per-user IAM attribution for multi-agent and framework pipelines, shadow AI discovery, step-up approval for high-stakes operations, and generating a signed attestation bundle for a compliance audit. See [USE_CASES.md](USE_CASES.md).
+
+---
+
 ## Configuration<a name="configuration" />
 
 ### Command Reference
