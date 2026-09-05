@@ -40,6 +40,10 @@ settings:
   tool_tags:
     enabled: true
     mode: enforce
+    # Off, or the rule below reads as "no command may follow a file read" —
+    # inference tags every shell/write `critical_action` and every read
+    # `untrusted_content`. See docs/policy-templates.md.
+    inference_enabled: false
     rules:
       # Read a contributor's issue/PR, then push, publish or send. The classic
       # "helpful agent implements the injected instruction" path.
@@ -62,6 +66,10 @@ rules:
     mode: enforce
   - id: npm-git-install
     mode: enforce
+  # Both match SHELL edits of a lockfile (sed/echo/vim). A lockfile rewritten
+  # through the agent's own Write tool is reported by `risky-write`, which stays
+  # in observe here because it also covers package.json — and a maintainer edits
+  # that legitimately several times a day.
   - id: lockfile-direct-edit
     mode: enforce
   - id: lockfile-deletion

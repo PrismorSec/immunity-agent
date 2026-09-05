@@ -64,12 +64,16 @@ settings:
   tool_tags:
     enabled: true
     mode: enforce
+    # Even here, off. Inference tags every shell/write `critical_action` and
+    # every read `untrusted_content`, which turns the first rule below into
+    # "no command may follow a file read" — that is not strictness, it is an
+    # agent that cannot work. Tag your consequential tools explicitly instead.
+    inference_enabled: false
     rules:
       - "untrusted_content then critical_action -> block"
       - "untrusted_content then egress.offlist -> block"
       - "untrusted_content then egress.denied -> block"
       - "untrusted_content then data.secret -> block"
-      - "untrusted_content with private_data with external_comms -> block"
 
   semantic_guard:
     enabled: true
@@ -104,11 +108,15 @@ rules:
     mode: enforce
   - id: raw-ip-outbound
     mode: enforce
+  # NOT promoted: `network-exfil-tool` matches any `curl -d/-F/--upload-file`,
+  # so in enforce it blocks every outbound POST — including one to a host this
+  # template's own allow list names. `egress.default: deny` already bounds the
+  # destination set far more precisely, which is the whole point of this file.
+  - id: network-exfil-tool
+    mode: observe
   - id: bind-all-interfaces
     mode: enforce
   - id: reverse-tunnel
-    mode: enforce
-  - id: network-exfil-tool
     mode: enforce
   - id: tls-verification-disabled
     mode: enforce

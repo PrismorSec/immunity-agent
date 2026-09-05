@@ -53,6 +53,10 @@ settings:
   tool_tags:
     enabled: true
     mode: enforce
+    # Off, or the rule below reads as "no command may follow a file read" —
+    # inference tags every shell/write `critical_action` and every read
+    # `untrusted_content`. See docs/policy-templates.md.
+    inference_enabled: false
     rules:
       # A ticket, alert or runbook page is untrusted input. Acting on it with
       # production credentials in the same session is the sequence to stop.
@@ -128,6 +132,18 @@ rules:
       - '\bprisma\s+migrate\s+reset\b'
       - '\bflushall\b|\bFLUSHALL\b'
     action: block
+
+  # NOT promoted: `git-remote-hijack` flags every `git push --force`, including
+  # `--force-with-lease` on a feature branch, which is ordinary work. The rule
+  # below says the same thing precisely — force-push to a PROTECTED branch, and
+  # not the lease-guarded form — so this one only over-blocks.
+  - id: git-remote-hijack
+    mode: observe
+
+  # Nor `network-exfil-tool`: any `curl -d` is a POST, and an ops agent posts to
+  # its own APIs all day. The egress allow list above bounds where.
+  - id: network-exfil-tool
+    mode: observe
 
   - id: git-history-rewrite-protected
     severity: HIGH

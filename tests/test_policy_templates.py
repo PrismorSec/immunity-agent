@@ -143,6 +143,66 @@ class TemplateBehaviourTests(unittest.TestCase):
         self.assertEqual(engine.data_boundary.mode, "enforce")
 
 
+class OverBlockTests(unittest.TestCase):
+    """Guards for the over-blocking measured on a real hook run (see #257).
+
+    Each of these was a live false positive on routine work before the template
+    was corrected; they are the cases most likely to silently come back.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = self._tmp.name
+
+    def test_tag_inference_is_off_wherever_a_combination_rule_blocks(self):
+        # Inference tags every shell/file_write `critical_action` and every
+        # file_read `untrusted_content`, so with it on, "untrusted_content then
+        # critical_action" means "no command may follow a read". Measured: 3 of
+        # 5 routine web-research sequences blocked.
+        for path in _templates():
+            with self.subTest(template=path.stem):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tt = _engine(tmp, path.stem).tool_tags
+                    if tt.get("enabled"):
+                        self.assertIs(tt.get("inference_enabled"), False)
+
+    def test_web_research_agent_can_still_do_its_job(self):
+        engine = _engine(self.tmp, "web-research-agent")
+        sid = "sess-research"
+        engine.evaluate({"type": "network", "url": "https://blog.example.test/post",
+                         "metadata": {"tool_name": "WebFetch"}}, 1, session_id=sid)
+        # Reading a page then writing notes about it is the whole use case.
+        findings = engine.evaluate(
+            {"type": "file_write", "path": "notes/summary.md", "content": "The post argues...",
+             "metadata": {"tool_name": "Write"}}, 2, session_id=sid)
+        self.assertEqual([f for f in findings if str(f.get("ruleId", "")).startswith("tag-rule")], [])
+
+    def test_broad_post_rule_is_not_enforced_where_egress_is_the_control(self):
+        # `network-exfil-tool` matches any `curl -d`, so in enforce it blocks
+        # every outbound POST — including to a host the template allow-lists.
+        for name in ("ci-agent", "production-ops", "regulated-data", "high-assurance"):
+            with self.subTest(template=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    engine = _engine(tmp, name)
+                    self.assertEqual(
+                        _modes(engine.check_command(
+                            "curl -X POST https://api.anthropic.com/v1/messages -d '{}'"),
+                            "network-exfil-tool"), ["observe"])
+
+    def test_production_ops_allows_lease_guarded_feature_branch_pushes(self):
+        engine = _engine(self.tmp, "production-ops")
+        cmd = "git push --force-with-lease origin feat/retry-backoff"
+        self.assertNotIn("enforce", _modes(engine.check_command(cmd), "git-remote-hijack"))
+        self.assertEqual(_modes(engine.check_command(cmd), "git-history-rewrite-protected"), [])
+
+    def test_production_ops_allows_object_store_paths(self):
+        # `s3://bucket` is not a network destination; under deny-by-default it
+        # used to be screened as the host "app-artifacts".
+        engine = _engine(self.tmp, "production-ops")
+        self.assertEqual(engine.check_command("aws s3 ls s3://app-artifacts/"), [])
+
+
 class SettingsMergeTests(unittest.TestCase):
     """A template that tightens one nested key must not drop its siblings."""
 

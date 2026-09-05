@@ -75,6 +75,12 @@ settings:
   tool_tags:
     enabled: true
     mode: enforce
+    # Without this, every shell/write event is inferred `critical_action` and
+    # every read `untrusted_content`, so the default combination rule blocks any
+    # command that follows a file read — most of a build. Off means the rule
+    # fires on genuinely consequential tools (send_email, create_pull_request,
+    # execute_sql, delete/create) and whatever you tag yourself.
+    inference_enabled: false
 
 rules:
   # A CI job that installs from a URL or a git ref has stepped outside the
@@ -104,6 +110,13 @@ rules:
   # permanent. Never a warning here.
   - id: tls-verification-disabled
     mode: enforce
+
+  # NOT promoted: `network-exfil-tool` matches any `curl -d/-F/--upload-file`,
+  # which is how half of CI uploads an artifact or posts a status. The
+  # deny-by-default egress list above is the precise control for where a build
+  # may talk; this rule only adds noise on top of it.
+  - id: network-exfil-tool
+    mode: observe
 
 # ── Customize ───────────────────────────────────────────────────────────────
 # Add your own hosts — an internal artifact registry, a status webhook:

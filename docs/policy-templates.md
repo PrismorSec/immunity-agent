@@ -147,6 +147,18 @@ without a `deny` keeps the default cloud-metadata denies. Every other settings
 key (`sandbox`, `tool_tags`, …) replaces wholesale, because for those "unset" is
 meaningful.
 
+**The scoped-agent layer is not part of your template, and it can block on its
+own.** [Scoped Agent](scoped-agent.md) synthesizes a per-session tool/path
+allowance from your first prompt, and it denies by omission — a tool the scope
+did not name is refused for the rest of the session, whatever the policy says.
+Measured on these templates: the templates alone allowed 47/47 routine actions,
+and adding a first user prompt dropped that to 42/47, every one of the five
+blocked by `scoped-agent` (a research prompt whose synthesized scope denied
+`WebFetch`; a review prompt whose scope denied `Write`). If a template behaves
+and something still gets refused, read the rule id in the block — if it says
+`scoped-agent`, that is [#257](https://github.com/PrismorSec/prismor/issues/257),
+not your policy.
+
 **An org policy outranks your file.** On an org-managed workspace the signed
 remote policy is merged after yours and can tighten anything here. A template is
 the right shape for a *project* policy; it is not a way to opt out of a fleet

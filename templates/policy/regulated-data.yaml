@@ -59,6 +59,16 @@ settings:
     default: allow
 
 rules:
+  # `network-exfil-tool` matches any `curl -d/-F/--upload-file`, which under
+  # `default_mode: enforce` means every outbound POST — including the one to
+  # your own mail vendor that `data_boundary.per_domain` explicitly allows.
+  # Demoted because in THIS template the precise control is the data boundary:
+  # it screens what the call carries against where it is going, which is the
+  # actual question. Measured: this rule alone blocked a legitimate
+  # `POST https://api.resend.com/emails`.
+  - id: network-exfil-tool
+    mode: observe
+
   - id: pii-exposure
     mode: enforce
   - id: bulk-pii-exfiltration

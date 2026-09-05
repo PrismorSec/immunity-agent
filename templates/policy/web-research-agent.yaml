@@ -45,7 +45,16 @@ settings:
     enabled: true
     mode: enforce
     defaults_enabled: true       # WebFetch/WebSearch/mcp read_* are pre-tagged
-    inference_enabled: true      # untagged tools get a tag from their event type
+    # OFF deliberately, and this is the single most important line in the file.
+    # Inference tags every shell/file_write event `critical_action` and every
+    # file_read `untrusted_content` — so with it on, the rules below block
+    # `WebFetch` followed by *any* Bash or Write. That is the entire job of a
+    # research agent, and measured on this template it blocked 3 of 5 routine
+    # sequences (read a page then save a summary; read a page then grep; search
+    # then run the tests). With it off, `critical_action` means what it says:
+    # the pre-tagged consequential tools (send_email, create_pull_request,
+    # execute_sql, delete/create) plus anything you tag yourself below.
+    inference_enabled: false
     rules:
       # The generalized lethal trifecta: read untrusted -> then act critically.
       - "untrusted_content then critical_action -> block"

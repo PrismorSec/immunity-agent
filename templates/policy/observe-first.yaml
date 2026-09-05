@@ -40,6 +40,11 @@ settings:
   tool_tags:
     enabled: true
     mode: observe
+    # Matches the enforcing templates, so what you measure here predicts what
+    # they will do. With inference on, every shell/write is `critical_action`
+    # and every read `untrusted_content`, and the log fills with combinations
+    # that are just "the agent did two things".
+    inference_enabled: false
 
   # Inspected script/Makefile/Dockerfile content is reported with file:line
   # provenance but never blocks. Already the default; restated so this file
