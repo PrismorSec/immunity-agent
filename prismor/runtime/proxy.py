@@ -149,7 +149,7 @@ class ProxyConfig:
         if path is None or not path.exists():
             return cls()
         try:
-            return cls(json.loads(path.read_text()))
+            return cls(json.loads(path.read_text(encoding="utf-8")))
         except ProxyConfigError:
             raise
         except Exception as exc:
